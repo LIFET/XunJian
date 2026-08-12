@@ -23,4 +23,10 @@ enum FinderDateFormatting {
         formatters[locale.identifier] = formatter
         return formatter
     }
+
+    /// One-call convenience for views that only need the string (e.g.
+    /// `date.map(FinderDateFormatting.string(for:))`).
+    static func string(for date: Date) -> String {
+        formatter(for: .autoupdatingCurrent).string(from: date)
+    }
 }
