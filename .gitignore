@@ -1,0 +1,9 @@
+.DS_Store
+DerivedData/
+.derivedData*/
+build/
+Release/
+*.xcuserstate
+xcuserdata/
+*.profraw
+*.profdata

@@ -1,0 +1,160 @@
+name: XunJian
+options:
+  minimumXcodeGenVersion: 2.40.0
+  developmentLanguage: zh-Hans
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    MACOSX_DEPLOYMENT_TARGET: 14.0
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+    SWIFT_EMIT_LOC_STRINGS: YES
+    LOCALIZATION_PREFERS_STRING_CATALOGS: YES
+    GENERATE_INFOPLIST_FILE: YES
+    INFOPLIST_KEY_CFBundleName: 寻简
+    INFOPLIST_KEY_CFBundleDisplayName: 寻简
+    INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+    MARKETING_VERSION: 0.1.0
+    CURRENT_PROJECT_VERSION: 1
+targets:
+  XunJian:
+    type: application
+    platform: macOS
+    sources:
+      - path: XunJian
+        excludes:
+          - XunJian.entitlements
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xingmingbo.XunJian
+        PRODUCT_NAME: 寻简
+        PRODUCT_MODULE_NAME: XunJian
+        CODE_SIGN_ENTITLEMENTS: XunJian/XunJian.entitlements
+    entitlements:
+      path: XunJian/XunJian.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.files.user-selected.read-write: true
+        com.apple.security.network.client: true
+    dependencies:
+      - target: XunJianOAuthBridge
+  XunJianOAuthBridge:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: XunJianOAuthBridge
+        excludes:
+          - Resources
+      - path: XunJianOAuthBridge/Resources/CodexAppServer
+        type: folder
+        buildPhase: resources
+      - path: XunJianOAuthBridge/Resources/GrokRuntime
+        type: folder
+        buildPhase: resources
+      - path: XunJian/Infrastructure/OAuthBridgeProtocol.swift
+    info:
+      path: XunJianOAuthBridge/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        XPCService:
+          ServiceType: Application
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xingmingbo.XunJian.OAuthBridge
+        PRODUCT_NAME: XunJianOAuthBridge
+        PRODUCT_MODULE_NAME: XunJianOAuthBridge
+        ENABLE_APP_SANDBOX: NO
+        SKIP_INSTALL: YES
+  XunJianTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: XunJianTests
+        excludes:
+          - OAuthProcessTests.swift
+      - path: XunJianOAuthBridge/Core
+    dependencies:
+      - target: XunJian
+      - target: XunJianUnauthorizedClient
+      - target: XunJianUntrustedOAuthBridge
+      - target: XunJianFakeJSONLServer
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xingmingbo.XunJianTests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/寻简.app/Contents/MacOS/寻简"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+  XunJianOAuthProcessTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: XunJianTests/OAuthProcessTests.swift
+      - path: XunJianOAuthBridge/Core
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xingmingbo.XunJianOAuthProcessTests
+        GENERATE_INFOPLIST_FILE: YES
+        ENABLE_APP_SANDBOX: NO
+  XunJianFakeJSONLServer:
+    type: application
+    platform: macOS
+    sources:
+      - path: XunJianTests/OAuthProtocolClientTests.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.XunJianFakeJSONLServer
+        PRODUCT_NAME: XunJianFakeJSONLServer
+        INFOPLIST_KEY_LSBackgroundOnly: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: XUNJIAN_FAKE_JSONL_SERVER
+        ENABLE_APP_SANDBOX: NO
+        SKIP_INSTALL: YES
+  XunJianUnauthorizedClient:
+    type: application
+    platform: macOS
+    sources:
+      - path: XunJianTests/OAuthBridgeTests.swift
+      - path: XunJian/Infrastructure/OAuthBridgeProtocol.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.XunJianUnauthorizedClient
+        PRODUCT_NAME: XunJianUnauthorizedClient
+        INFOPLIST_KEY_LSBackgroundOnly: YES
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: XUNJIAN_UNAUTHORIZED_CLIENT
+        ENABLE_APP_SANDBOX: NO
+        SKIP_INSTALL: YES
+    dependencies:
+      - target: XunJianOAuthBridge
+  XunJianUntrustedOAuthBridge:
+    type: xpc-service
+    platform: macOS
+    sources:
+      - path: XunJianTests/OAuthBridgeTests.swift
+      - path: XunJian/Infrastructure/OAuthBridgeProtocol.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.XunJianUntrustedOAuthBridge
+        PRODUCT_NAME: XunJianUntrustedOAuthBridge
+        PRODUCT_MODULE_NAME: XunJianUntrustedOAuthBridge
+        SWIFT_ACTIVE_COMPILATION_CONDITIONS: XUNJIAN_UNTRUSTED_BRIDGE
+        ENABLE_APP_SANDBOX: NO
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: XunJianOAuthBridge/Info.plist
+        SKIP_INSTALL: YES
+schemes:
+  XunJian:
+    build:
+      targets:
+        XunJian: all
+        XunJianOAuthBridge: all
+        XunJianTests: [test]
+        XunJianOAuthProcessTests: [test]
+        XunJianFakeJSONLServer: [test]
+    test:
+      gatherCoverageData: true
+      targets:
+        - XunJianTests
+        - XunJianOAuthProcessTests
