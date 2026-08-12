@@ -12,6 +12,7 @@ struct AppShellView: View {
     @State private var sidebarWasAutoCollapsed = false
     @State private var inspectorWasAutoCollapsed = false
     @State private var showsGlobalNewCategory = false
+    @State private var showsCommandPalette = false
 
     var body: some View {
         GeometryReader { geometry in
@@ -126,6 +127,20 @@ struct AppShellView: View {
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRequestNewCategory)) { _ in
                 showsGlobalNewCategory = true
             }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianShowCommandPalette)) { _ in
+                showsCommandPalette = true
+            }
+            .overlay {
+                if showsCommandPalette {
+                    CommandPaletteView(
+                        isPresented: $showsCommandPalette,
+                        selection: $selection
+                    )
+                    .environment(\.locale, locale)
+                    .transition(.opacity)
+                }
+            }
+            .xunjianAnimation(value: showsCommandPalette)
             .alert(
                 "操作未完成",
                 isPresented: Binding(

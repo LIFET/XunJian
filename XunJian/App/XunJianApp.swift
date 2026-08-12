@@ -573,6 +573,17 @@ struct XunJianApp: App {
         .commands {
             SidebarCommands()
             CommandGroup(replacing: .newItem) {}
+            // Listed in the menu bar so the shortcut is discoverable rather
+            // than something the user has to already know about.
+            CommandGroup(after: .toolbar) {
+                Button(AppLanguage.localized("命令面板…", english: "Command Palette…")) {
+                    NotificationCenter.default.post(
+                        name: .xunJianShowCommandPalette,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut("k", modifiers: .command)
+            }
         }
 
         Settings {
