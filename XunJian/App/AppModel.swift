@@ -51,11 +51,8 @@ final class AppModel: ObservableObject {
     @Published private(set) var isSearching = false
     @Published private(set) var scanProgress: ScanProgress?
     @Published private(set) var isScanning = false
-    @Published private(set) var aiProviderSettings: [AIProviderSettings] = []
-    @Published private(set) var activeAIProviderKind: AIProviderKind?
-    @Published private(set) var activeAIAuthenticationMode: AIAuthenticationMode?
-    @Published private(set) var aiConnectionStates: [AIProviderKind: AIConnectionState] = [:]
-    @Published private(set) var aiCredentialErrors: [AIProviderKind: String] = [:]
+    // AI session state now lives on `ai` (AISessionCoordinator); see the
+    // forwarding section below for the compatible names.
     @Published private(set) var aiSearchResults: [IndexedFile]?
     @Published private(set) var aiSearchPlan: AISearchPlan?
     @Published private(set) var aiSearchQuery: String?
@@ -97,6 +94,11 @@ final class AppModel: ObservableObject {
     /// observing the same names.
     let oauth: OAuthCoordinator
     private var oauthObservation: AnyCancellable?
+
+    /// AI session state machine (settings, verification, active provider),
+    /// extracted so it can be tested without the file-index machinery.
+    let ai: AISessionCoordinator
+    private var aiObservation: AnyCancellable?
     private static let selectedKindPreferenceKey = "allFiles.selectedKind"
     private static let searchResultBatchSize = 500
     private var scanTask: Task<Void, Never>?
@@ -117,15 +119,10 @@ final class AppModel: ObservableObject {
     private var pendingFileChanges: [UUID: Set<FileSystemChangeEvent>] = [:]
     private var pendingFullRescanSourceIDs = Set<UUID>()
     private var activeSecurityScopes: [UUID: URL] = [:]
-    private var aiVerificationFingerprints: [AIProviderKind: String] = [:]
-    private var aiVerificationGenerations: [AIProviderKind: UUID] = [:]
-    private var aiVerificationTasks: [AIProviderKind: Task<Void, Never>] = [:]
     private var categoryMutationTasks: [FileCategoryAssignmentKey: Task<Void, Never>] = [:]
     private var pendingCategoryAssignments: [
         FileCategoryAssignmentKey: PendingCategoryAssignment
     ] = [:]
-    private var pendingActiveAIProviderKind: AIProviderKind?
-    private var pendingActiveAIAuthenticationMode: AIAuthenticationMode?
 
     init(
         oauthBridgeService: any OAuthBridgeServicing = OAuthBridgeClient.shared,
@@ -141,9 +138,15 @@ final class AppModel: ObservableObject {
             bridgeService: oauthBridgeService,
             isRunningTests: isRunningTests
         )
+        self.ai = AISessionCoordinator(
+            credentialStore: credentialStore,
+            aiConfigurationStore: aiConfigurationStore,
+            oauthBridgeService: oauthBridgeService,
+            oauth: oauth,
+            isRunningTests: isRunningTests
+        )
         wireOAuthCoordinator()
-        pendingActiveAIProviderKind = aiConfigurationStore.activeKind
-        pendingActiveAIAuthenticationMode = aiConfigurationStore.activeAuthenticationMode
+        wireAISessionCoordinator()
         let oauthKindToRefresh: AIProviderKind? = if !isRunningTests,
                                                     aiConfigurationStore.activeAuthenticationMode == .oauth,
                                                     let activeKind = aiConfigurationStore.activeKind,
@@ -180,27 +183,6 @@ final class AppModel: ObservableObject {
             errorMessage = Self.message(for: error)
         }
 
-        if isRunningTests {
-            aiProviderSettings = AIProviderKind.allCases.map {
-                AIProviderSettings(
-                    kind: $0,
-                    baseURL: $0.defaultBaseURL,
-                    model: $0.defaultModel,
-                    hasAPIKey: false
-                )
-            }
-            aiConnectionStates = Dictionary(
-                uniqueKeysWithValues: AIProviderKind.allCases.map { ($0, .notConfigured) }
-            )
-        } else {
-            aiVerificationFingerprints = Dictionary(
-                uniqueKeysWithValues: AIProviderKind.allCases.compactMap { kind in
-                    aiConfigurationStore.apiKeyVerificationFingerprint(for: kind)
-                        .map { (kind, $0) }
-                }
-            )
-            reloadAISettings()
-        }
         Task { [weak self] in
             await self?.reloadIndex()
         }
@@ -215,9 +197,13 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
-        oauth.applicationResignedActive()
-        aiVerificationTasks.values.forEach { $0.cancel() }
         categoryMutationTasks.values.forEach { $0.cancel() }
+        let oauth = oauth
+        let ai = ai
+        Task { @MainActor in
+            oauth.applicationResignedActive()
+            ai.cancelAllTasks()
+        }
     }
 
     var selectedFile: IndexedFile? {
@@ -638,6 +624,18 @@ final class AppModel: ObservableObject {
         }
     }
 
+    static func shouldDeactivateActiveAPIKeyForVerification(
+        activeKind: AIProviderKind?,
+        activeMode: AIAuthenticationMode?,
+        testedKind: AIProviderKind
+    ) -> Bool {
+        AISessionCoordinator.shouldDeactivateActiveAPIKeyForVerification(
+            activeKind: activeKind,
+            activeMode: activeMode,
+            testedKind: testedKind
+        )
+    }
+
     static func categoryAssignmentAfterToggle(
         persistedAssignment: Bool,
         pendingAssignment: Bool?
@@ -697,179 +695,11 @@ final class AppModel: ObservableObject {
         fileCategoryLinks = links
     }
 
-    func aiSettings(for kind: AIProviderKind) -> AIProviderSettings {
-        aiProviderSettings.first(where: { $0.kind == kind })
-            ?? AIProviderSettings(
-                kind: kind,
-                baseURL: kind.defaultBaseURL,
-                model: kind.defaultModel,
-                hasAPIKey: false
-            )
-    }
-
-    func aiConnectionState(for kind: AIProviderKind) -> AIConnectionState {
-        aiConnectionStates[kind] ?? .notConfigured
-    }
-
-    func aiCredentialError(for kind: AIProviderKind) -> String? {
-        aiCredentialErrors[kind]
-    }
-
-    @discardableResult
-    func saveAIProvider(
-        _ kind: AIProviderKind,
-        baseURL: String,
-        model: String,
-        apiKey: String
-    ) -> Bool {
-        do {
-            guard AIProviderFactory.validatedBaseURL(baseURL) != nil else {
-                throw AIServiceError.invalidBaseURL
-            }
-            let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !model.isEmpty else { throw AIServiceError.invalidModel }
-
-            let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedKey.isEmpty {
-                try credentialStore.save(trimmedKey, account: kind.rawValue)
-            }
-            let settings = AIProviderSettings(
-                kind: kind,
-                baseURL: baseURL.trimmingCharacters(in: .whitespacesAndNewlines),
-                model: model,
-                hasAPIKey: !trimmedKey.isEmpty || aiSettings(for: kind).hasAPIKey
-            )
-            aiConfigurationStore.save(settings)
-            cancelAIProviderTest(kind)
-            aiVerificationGenerations[kind] = UUID()
-            aiVerificationFingerprints.removeValue(forKey: kind)
-            aiConfigurationStore.setAPIKeyVerificationFingerprint(nil, for: kind)
-            reloadAISettings()
-            return true
-        } catch {
-            errorMessage = Self.message(for: error)
-            return false
-        }
-    }
-
-    func deleteAIKey(for kind: AIProviderKind) {
-        do {
-            cancelAIProviderTest(kind)
-            aiVerificationGenerations[kind] = UUID()
-            aiVerificationFingerprints.removeValue(forKey: kind)
-            aiConfigurationStore.setAPIKeyVerificationFingerprint(nil, for: kind)
-            try credentialStore.delete(account: kind.rawValue)
-            if (activeAIProviderKind == kind && activeAIAuthenticationMode == .apiKey)
-                || (pendingActiveAIProviderKind == kind
-                    && pendingActiveAIAuthenticationMode == .apiKey) {
-                clearActiveAIProvider()
-            }
-            reloadAISettings()
-        } catch {
-            errorMessage = Self.message(for: error)
-        }
-    }
-
-    func setActiveAIProvider(_ kind: AIProviderKind) {
-        guard aiSettings(for: kind).hasAPIKey,
-              aiConnectionState(for: kind) == .verified else {
-            errorMessage = AIServiceError.notConfigured.localizedDescription
-            return
-        }
-        setActiveAIProvider(kind, authenticationMode: .apiKey)
-    }
-
-    func setActiveOAuthAIProvider(_ kind: AIProviderKind) {
-        guard OAuthCoordinator.oauthProvider(for: kind) != nil,
-              oauth.states[kind] == .connected else {
-            errorMessage = AIServiceError.notConfigured.localizedDescription
-            return
-        }
-        setActiveAIProvider(kind, authenticationMode: .oauth)
-    }
-
-    private func setActiveAIProvider(
-        _ kind: AIProviderKind,
-        authenticationMode: AIAuthenticationMode
-    ) {
-        aiConfigurationStore.activeKind = kind
-        aiConfigurationStore.activeAuthenticationMode = authenticationMode
-        activeAIProviderKind = kind
-        activeAIAuthenticationMode = authenticationMode
-        pendingActiveAIProviderKind = kind
-        pendingActiveAIAuthenticationMode = authenticationMode
-        if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            scheduleSearch()
-        }
-    }
-
-    func testAIProvider(_ kind: AIProviderKind) {
-        cancelAIProviderTest(kind)
-        let generation = UUID()
-        aiVerificationGenerations[kind] = generation
-        aiConnectionStates[kind] = .testing
-        if Self.shouldDeactivateActiveAPIKeyForVerification(
-            activeKind: activeAIProviderKind,
-            activeMode: activeAIAuthenticationMode,
-            testedKind: kind
-        ) {
-            deactivateCurrentAIProvider(preservingPreference: true)
-        }
-        let testedSettings = aiSettings(for: kind)
-        aiVerificationTasks[kind] = Task { [weak self] in
-            guard let self else { return }
-            defer {
-                if self.aiVerificationGenerations[kind] == generation {
-                    self.aiVerificationTasks.removeValue(forKey: kind)
-                }
-            }
-            do {
-                let provider = try provider(for: kind, authenticationMode: .apiKey)
-                _ = try await provider.chat([
-                    AIMessage(role: .system, content: "这是连接测试。"),
-                    AIMessage(role: .user, content: "请只回复 OK")
-                ])
-                try Task.checkCancellation()
-                guard aiVerificationGenerations[kind] == generation,
-                      aiSettings(for: kind).baseURL == testedSettings.baseURL,
-                      aiSettings(for: kind).model == testedSettings.model else {
-                    return
-                }
-                guard let secret = try credentialStore.read(account: kind.rawValue) else {
-                    return
-                }
-                let fingerprint = AIConfigurationStore.apiKeyVerificationFingerprint(
-                    settings: testedSettings,
-                    secret: secret
-                )
-                aiVerificationFingerprints[kind] = fingerprint
-                aiConfigurationStore.setAPIKeyVerificationFingerprint(fingerprint, for: kind)
-                aiConnectionStates[kind] = .verified
-                restorePendingActiveAIProviderIfEligible()
-            } catch is CancellationError {
-                guard aiVerificationGenerations[kind] == generation else { return }
-                aiConnectionStates[kind] = testedSettings.hasAPIKey ? .saved : .notConfigured
-            } catch {
-                guard aiVerificationGenerations[kind] == generation else { return }
-                aiConnectionStates[kind] = .failed(Self.message(for: error))
-            }
-        }
-    }
-
-    func cancelAIProviderTest(_ kind: AIProviderKind) {
-        guard aiConnectionStates[kind] == .testing || aiVerificationTasks[kind] != nil else {
-            return
-        }
-        aiVerificationGenerations[kind] = UUID()
-        aiVerificationTasks.removeValue(forKey: kind)?.cancel()
-        aiConnectionStates[kind] = aiSettings(for: kind).hasAPIKey ? .saved : .notConfigured
-    }
-
     func performAISearch(_ query: String) async throws {
         guard let database else {
             throw FileIndexError.database("database unavailable")
         }
-        let service = try currentAIService()
+        let service = try ai.currentService()
         let plan = try await service.searchPlan(for: query)
         try Task.checkCancellation()
 
@@ -902,11 +732,11 @@ final class AppModel: ObservableObject {
     }
 
     func explainWithAI(_ file: IndexedFile) async throws -> String {
-        try await currentAIService().explain(file: try await fileWithText(file))
+        try await ai.currentService().explain(file: try await fileWithText(file))
     }
 
     func askAI(_ question: String, about file: IndexedFile) async throws -> String {
-        try await currentAIService().answer(
+        try await ai.currentService().answer(
             question: question,
             about: try await fileWithText(file)
         )
@@ -919,7 +749,7 @@ final class AppModel: ObservableObject {
         for file in files {
             filesWithText.append(try await fileWithText(file))
         }
-        return try await currentAIService().classify(files: filesWithText, categories: categories)
+        return try await ai.currentService().classify(files: filesWithText, categories: categories)
     }
 
     func applyAIClassification(
@@ -954,188 +784,6 @@ final class AppModel: ObservableObject {
         await reloadIndex()
     }
 
-    private func reloadAISettings() {
-        var settings: [AIProviderSettings] = []
-        var states: [AIProviderKind: AIConnectionState] = [:]
-        var credentialErrors: [AIProviderKind: String] = [:]
-        for kind in AIProviderKind.allCases {
-            let secret: String?
-            do {
-                secret = try credentialStore.read(account: kind.rawValue)
-            } catch {
-                let message = Self.message(for: error)
-                credentialErrors[kind] = message
-                let previousHasAPIKey = aiProviderSettings
-                    .first(where: { $0.kind == kind })?.hasAPIKey ?? false
-                settings.append(
-                    aiConfigurationStore.settings(for: kind, hasAPIKey: previousHasAPIKey)
-                )
-                states[kind] = .failed(message)
-                continue
-            }
-            let hasAPIKey = secret != nil
-            let currentSettings = aiConfigurationStore.settings(
-                for: kind,
-                hasAPIKey: hasAPIKey
-            )
-            settings.append(currentSettings)
-            let fingerprint = secret.map {
-                AIConfigurationStore.apiKeyVerificationFingerprint(
-                    settings: currentSettings,
-                    secret: $0
-                )
-            }
-            states[kind] = if hasAPIKey,
-                              aiVerificationFingerprints[kind] == fingerprint {
-                .verified
-            } else if hasAPIKey {
-                .saved
-            } else {
-                .notConfigured
-            }
-        }
-        aiProviderSettings = settings
-        aiConnectionStates = states
-        aiCredentialErrors = credentialErrors
-        guard let activeKind = aiConfigurationStore.activeKind else {
-            clearActiveAIProvider()
-            return
-        }
-        let storedMode = aiConfigurationStore.activeAuthenticationMode
-        let mode = storedMode ?? .apiKey
-        switch mode {
-        case .apiKey:
-            guard settings.first(where: { $0.kind == activeKind })?.hasAPIKey == true,
-                  states[activeKind] == .verified else {
-                deactivateCurrentAIProvider(preservingPreference: true)
-                return
-            }
-        case .oauth:
-            guard OAuthCoordinator.oauthProvider(for: activeKind) != nil,
-                  oauth.states[activeKind] == .connected else {
-                deactivateCurrentAIProvider(preservingPreference: true)
-                return
-            }
-        }
-        aiConfigurationStore.activeAuthenticationMode = mode
-        activeAIProviderKind = activeKind
-        activeAIAuthenticationMode = mode
-    }
-
-    static func shouldDeactivateActiveAPIKeyForVerification(
-        activeKind: AIProviderKind?,
-        activeMode: AIAuthenticationMode?,
-        testedKind: AIProviderKind
-    ) -> Bool {
-        activeKind == testedKind && activeMode == .apiKey
-    }
-
-    private func provider(
-        for kind: AIProviderKind,
-        authenticationMode: AIAuthenticationMode
-    ) throws -> any AIProvider {
-        switch authenticationMode {
-        case .apiKey:
-            return try AIProviderFactory.make(
-                settings: aiSettings(for: kind),
-                credentialStore: credentialStore
-            )
-        case .oauth:
-            guard oauthStateAllowsGeneration(oauth.states[kind]) else {
-                throw AIServiceError.notConfigured
-            }
-            return try AIProviderFactory.makeOAuth(
-                settings: aiSettings(for: kind),
-                bridge: oauthBridgeService
-            )
-        }
-    }
-
-    private func currentAIService() throws -> AIService {
-        guard let activeAIProviderKind,
-              let activeAIAuthenticationMode else {
-            throw AIServiceError.notConfigured
-        }
-        switch activeAIAuthenticationMode {
-        case .apiKey:
-            guard aiConnectionStates[activeAIProviderKind] == .verified else {
-                throw AIServiceError.notConfigured
-            }
-        case .oauth:
-            guard oauth.states[activeAIProviderKind] == .connected else {
-                throw AIServiceError.notConfigured
-            }
-        }
-        let provider = try provider(
-            for: activeAIProviderKind,
-            authenticationMode: activeAIAuthenticationMode
-        )
-        if activeAIAuthenticationMode == .oauth {
-            return AIService(provider: OAuthStatePromotingProvider(
-                base: provider,
-                onSuccess: { [weak self] in
-                    await MainActor.run {
-                        guard let self,
-                              self.activeAIProviderKind == activeAIProviderKind,
-                              self.activeAIAuthenticationMode == .oauth else { return }
-                        self.oauth.markConnected(activeAIProviderKind)
-                    }
-                }
-            ))
-        }
-        return AIService(provider: provider)
-    }
-
-    private func oauthStateAllowsGeneration(_ state: AIOAuthState?) -> Bool {
-        state == .connected
-    }
-
-    private func clearActiveAIProvider() {
-        aiConfigurationStore.activeKind = nil
-        aiConfigurationStore.activeAuthenticationMode = nil
-        pendingActiveAIProviderKind = nil
-        pendingActiveAIAuthenticationMode = nil
-        activeAIProviderKind = nil
-        activeAIAuthenticationMode = nil
-    }
-
-    private func deactivateCurrentAIProvider(preservingPreference: Bool) {
-        if !preservingPreference {
-            aiConfigurationStore.activeKind = nil
-            aiConfigurationStore.activeAuthenticationMode = nil
-            pendingActiveAIProviderKind = nil
-            pendingActiveAIAuthenticationMode = nil
-        }
-        activeAIProviderKind = nil
-        activeAIAuthenticationMode = nil
-    }
-
-    private func restorePendingActiveAIProviderIfEligible() {
-        guard activeAIProviderKind == nil,
-              let pendingKind = pendingActiveAIProviderKind,
-              let pendingMode = pendingActiveAIAuthenticationMode else { return }
-        switch pendingMode {
-        case .apiKey:
-            guard aiConnectionStates[pendingKind] == .verified else { return }
-        case .oauth:
-            guard oauth.states[pendingKind] == .connected else { return }
-        }
-        activeAIProviderKind = pendingKind
-        activeAIAuthenticationMode = pendingMode
-    }
-
-    private func clearActiveOAuthProviderIfNeeded(
-        _ kind: AIProviderKind,
-        preservingPreference: Bool = true
-    ) {
-        let isRuntimeActive = activeAIProviderKind == kind
-            && activeAIAuthenticationMode == .oauth
-        let isPendingActive = pendingActiveAIProviderKind == kind
-            && pendingActiveAIAuthenticationMode == .oauth
-        guard isRuntimeActive || isPendingActive else { return }
-        deactivateCurrentAIProvider(preservingPreference: preservingPreference)
-    }
-
     // MARK: - OAuth forwarding
 
     /// Connects the OAuth coordinator to the AI layer and re-emits its
@@ -1143,13 +791,13 @@ final class AppModel: ObservableObject {
     /// changes exactly as they did before the extraction.
     private func wireOAuthCoordinator() {
         oauth.onProviderUnavailable = { [weak self] kind, preservingPreference in
-            self?.clearActiveOAuthProviderIfNeeded(
+            self?.ai.clearActiveOAuthProviderIfNeeded(
                 kind,
                 preservingPreference: preservingPreference
             )
         }
         oauth.onProviderConnected = { [weak self] in
-            self?.restorePendingActiveAIProviderIfEligible()
+            self?.ai.restorePendingActiveProviderIfEligible()
         }
         oauth.onFailure = { [weak self] message in
             self?.errorMessage = message
@@ -1157,6 +805,68 @@ final class AppModel: ObservableObject {
         oauthObservation = oauth.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
+    }
+
+    private func wireAISessionCoordinator() {
+        ai.onError = { [weak self] message in
+            self?.errorMessage = message
+        }
+        ai.onActiveProviderChanged = { [weak self] in
+            self?.scheduleSearch()
+        }
+        aiObservation = ai.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
+    }
+
+    // MARK: - AI forwarding
+
+    var aiProviderSettings: [AIProviderSettings] { ai.providerSettings }
+    var activeAIProviderKind: AIProviderKind? { ai.activeProviderKind }
+    var activeAIAuthenticationMode: AIAuthenticationMode? { ai.activeAuthenticationMode }
+    var aiConnectionStates: [AIProviderKind: AIConnectionState] { ai.connectionStates }
+    var aiCredentialErrors: [AIProviderKind: String] { ai.credentialErrors }
+
+    func aiSettings(for kind: AIProviderKind) -> AIProviderSettings {
+        ai.settings(for: kind)
+    }
+
+    func aiConnectionState(for kind: AIProviderKind) -> AIConnectionState {
+        ai.connectionState(for: kind)
+    }
+
+    func aiCredentialError(for kind: AIProviderKind) -> String? {
+        ai.credentialError(for: kind)
+    }
+
+    @discardableResult
+    func saveAIProvider(
+        _ kind: AIProviderKind,
+        baseURL: String,
+        model: String,
+        apiKey: String
+    ) -> Bool {
+        ai.saveProvider(kind, baseURL: baseURL, model: model, apiKey: apiKey)
+    }
+
+    func deleteAIKey(for kind: AIProviderKind) {
+        ai.deleteAPIKey(for: kind)
+    }
+
+    func setActiveAIProvider(_ kind: AIProviderKind) {
+        ai.setActiveAPIKeyProvider(kind)
+    }
+
+    func setActiveOAuthAIProvider(_ kind: AIProviderKind) {
+        ai.setActiveOAuthProvider(kind)
+    }
+
+    func testAIProvider(_ kind: AIProviderKind) {
+        ai.testProvider(kind)
+    }
+
+    func cancelAIProviderTest(_ kind: AIProviderKind) {
+        ai.cancelTest(kind)
     }
 
     // Compatibility surface: keep the pre-extraction names working so views
@@ -1794,18 +1504,5 @@ final class AppModel: ObservableObject {
                 .appendingPathComponent("index.sqlite3")
         }
         return try FileIndexDatabase.defaultDatabaseURL()
-    }
-}
-
-private struct OAuthStatePromotingProvider: AIProvider {
-    let base: any AIProvider
-    let onSuccess: @Sendable () async -> Void
-
-    var kind: AIProviderKind { base.kind }
-
-    func chat(_ messages: [AIMessage]) async throws -> String {
-        let response = try await base.chat(messages)
-        await onSuccess()
-        return response
     }
 }
