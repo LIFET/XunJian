@@ -12,6 +12,7 @@
 		184566558FB095A703D5586B /* NavigationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43201D1654A730877ECBF75B /* NavigationModelTests.swift */; };
 		19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 96B78063D48252AA329210EC /* Localizable.xcstrings */; };
+		2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */; };
 		2EF552A035D80815291AA5BA /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
 		3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFD5F7C7584F04173E53789 /* SidebarView.swift */; };
 		3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B18C3237ECC61CD2CD82C /* FileKind.swift */; };
@@ -143,6 +144,7 @@
 		3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
 		3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedRuntimeStore.swift; sourceTree = "<group>"; };
 		43201D1654A730877ECBF75B /* NavigationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationModelTests.swift; sourceTree = "<group>"; };
+		483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexCoordinator.swift; sourceTree = "<group>"; };
 		4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeTests.swift; sourceTree = "<group>"; };
 		518EAC055AAB2A35A145333E /* AllFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllFilesView.swift; sourceTree = "<group>"; };
 		52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -228,6 +230,7 @@
 			children = (
 				98687EB9C90408470170D710 /* AISessionCoordinator.swift */,
 				628A1CBBBA38BBDDFB782D69 /* AppModel.swift */,
+				483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */,
 				3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */,
 				CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */,
 			);
@@ -643,6 +646,7 @@
 				7323293492E005D8D79D6727 /* AppShellView.swift in Sources */,
 				F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */,
 				D31131EFD9936B501A29E50B /* FileCategory.swift in Sources */,
+				2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */,
 				FDBA47E30EAE388F63E23AF1 /* FileIndexInfrastructure.swift in Sources */,
 				87FA06B46B89AF69D4E738AA /* FileInspectorEmptyView.swift in Sources */,
 				3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */,
