@@ -167,6 +167,15 @@ enum SearchIndexText {
         return tokens.map { "\"\($0)\"*" }.joined(separator: " AND ")
     }
 
+    /// FTS expression matching any of the given keywords (F13): each keyword
+    /// expands to its own AND-group and the groups are OR-ed, so AI search
+    /// issues one query instead of one per keyword.
+    static func matchExpression(forKeywords keywords: [String]) -> String? {
+        let groups = keywords.compactMap { matchExpression(for: $0) }
+        guard !groups.isEmpty else { return nil }
+        return groups.map { "(\($0))" }.joined(separator: " OR ")
+    }
+
     private static func isCJK(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF,

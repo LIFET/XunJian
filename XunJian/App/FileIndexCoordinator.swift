@@ -15,8 +15,12 @@ import Foundation
 @MainActor
 final class FileIndexCoordinator: ObservableObject {
     @Published private(set) var sources: [FileSource] = []
-    @Published private(set) var files: [IndexedFile] = []
-    @Published private(set) var categories: [FileCategory] = []
+    @Published private(set) var files: [IndexedFile] = [] {
+        didSet { rebuildDerivedIndexes() }
+    }
+    @Published private(set) var categories: [FileCategory] = [] {
+        didSet { rebuildDerivedIndexes() }
+    }
     @Published private(set) var fileCategoryLinks: [String: Set<UUID>] = [:]
     @Published private(set) var searchResults: [IndexedFile]? = nil
     @Published private(set) var searchResultTotalCount: Int? = nil
@@ -181,6 +185,12 @@ final class FileIndexCoordinator: ObservableObject {
         return try await database.searchFiles(matching: query, limit: limit)
     }
 
+    /// FTS lookup across many keywords in a single query (F13).
+    func searchFiles(matchingAnyOf keywords: [String], limit: Int) async throws -> [IndexedFile] {
+        guard let database else { throw FileIndexError.database("database unavailable") }
+        return try await database.searchFiles(matchingAnyOf: keywords, limit: limit)
+    }
+
     /// Applies AI-suggested category changes and reloads the index.
     func applyAICategories(
         _ changes: [AIClassificationChange],
@@ -232,8 +242,21 @@ final class FileIndexCoordinator: ObservableObject {
         fileCategoryLinks[file.id]?.contains(category.id) == true
     }
 
+    /// F12: O(1) per-kind counts instead of scanning `files` once per kind on
+    /// the home page (7 scans of up to 100k files each).
+    private var fileCountsByKind: [FileKind: Int] = [:]
+
     func fileCount(for kind: FileKind) -> Int {
-        files.lazy.filter { $0.kind == kind }.count
+        fileCountsByKind[kind] ?? 0
+    }
+
+    /// Rebuilt once per `files`/`categories` change, not per row.
+    private func rebuildDerivedIndexes() {
+        var counts: [FileKind: Int] = [:]
+        for file in files {
+            counts[file.kind, default: 0] += 1
+        }
+        fileCountsByKind = counts
     }
 
     // MARK: - Search

@@ -522,77 +522,21 @@ private struct APIErrorEnvelope: Decodable {
     let error: APIError
 }
 
-struct CodexProvider: AIProvider {
-    let kind = AIProviderKind.codex
+/// All API-key providers are OpenAI-compatible; they differ only by `kind`.
+/// F22 collapsed four copy-pasted wrapper structs into this single type.
+struct OpenAICompatibleAIProvider: AIProvider {
+    let kind: AIProviderKind
     private let provider: OpenAICompatibleProvider
 
     init(
+        kind: AIProviderKind,
         apiKey: String,
         baseURL: URL,
         model: String,
         transport: any AIHTTPTransport = URLSessionAITransport()
     ) {
-        provider = OpenAICompatibleProvider(
-            kind: kind, apiKey: apiKey, baseURL: baseURL, model: model, transport: transport
-        )
-    }
-
-    func chat(_ messages: [AIMessage]) async throws -> String {
-        try await provider.chat(messages)
-    }
-}
-
-struct GrokProvider: AIProvider {
-    let kind = AIProviderKind.grok
-    private let provider: OpenAICompatibleProvider
-
-    init(
-        apiKey: String,
-        baseURL: URL,
-        model: String,
-        transport: any AIHTTPTransport = URLSessionAITransport()
-    ) {
-        provider = OpenAICompatibleProvider(
-            kind: kind, apiKey: apiKey, baseURL: baseURL, model: model, transport: transport
-        )
-    }
-
-    func chat(_ messages: [AIMessage]) async throws -> String {
-        try await provider.chat(messages)
-    }
-}
-
-struct DeepSeekProvider: AIProvider {
-    let kind = AIProviderKind.deepSeek
-    private let provider: OpenAICompatibleProvider
-
-    init(
-        apiKey: String,
-        baseURL: URL,
-        model: String,
-        transport: any AIHTTPTransport = URLSessionAITransport()
-    ) {
-        provider = OpenAICompatibleProvider(
-            kind: kind, apiKey: apiKey, baseURL: baseURL, model: model, transport: transport
-        )
-    }
-
-    func chat(_ messages: [AIMessage]) async throws -> String {
-        try await provider.chat(messages)
-    }
-}
-
-struct QwenProvider: AIProvider {
-    let kind = AIProviderKind.qwen
-    private let provider: OpenAICompatibleProvider
-
-    init(
-        apiKey: String,
-        baseURL: URL,
-        model: String,
-        transport: any AIHTTPTransport = URLSessionAITransport()
-    ) {
-        provider = OpenAICompatibleProvider(
+        self.kind = kind
+        self.provider = OpenAICompatibleProvider(
             kind: kind, apiKey: apiKey, baseURL: baseURL, model: model, transport: transport
         )
     }
@@ -669,16 +613,13 @@ enum AIProviderFactory {
             throw AIServiceError.notConfigured
         }
 
-        switch settings.kind {
-        case .codex:
-            return CodexProvider(apiKey: apiKey, baseURL: baseURL, model: model, transport: transport)
-        case .grok:
-            return GrokProvider(apiKey: apiKey, baseURL: baseURL, model: model, transport: transport)
-        case .deepSeek:
-            return DeepSeekProvider(apiKey: apiKey, baseURL: baseURL, model: model, transport: transport)
-        case .qwen:
-            return QwenProvider(apiKey: apiKey, baseURL: baseURL, model: model, transport: transport)
-        }
+        return OpenAICompatibleAIProvider(
+            kind: settings.kind,
+            apiKey: apiKey,
+            baseURL: baseURL,
+            model: model,
+            transport: transport
+        )
     }
 
     static func validatedBaseURL(_ rawValue: String) -> URL? {

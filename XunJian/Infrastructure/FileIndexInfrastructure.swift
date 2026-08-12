@@ -980,6 +980,19 @@ actor FileIndexDatabase {
         try searchFilesPage(matching: query, limit: limit).files
     }
 
+    /// Single-query FTS lookup for multiple keywords (F13): AI search used to
+    /// run one query per keyword (up to 12 round-trips); now they OR together
+    /// into one MATCH expression.
+    func searchFiles(matchingAnyOf keywords: [String], limit: Int = 500) throws -> [IndexedFile] {
+        guard let matchExpression = SearchIndexText.matchExpression(forKeywords: keywords) else {
+            return []
+        }
+        return try searchFilesPage(
+            matchExpression: matchExpression,
+            limit: limit
+        ).files
+    }
+
     func searchFilesPage(
         matching query: String,
         limit: Int = 500,
@@ -988,6 +1001,18 @@ actor FileIndexDatabase {
         guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
             return FileSearchPage(files: [], totalCount: 0)
         }
+        return try searchFilesPage(
+            matchExpression: matchExpression,
+            limit: limit,
+            includesHiddenFiles: includesHiddenFiles
+        )
+    }
+
+    private func searchFilesPage(
+        matchExpression: String,
+        limit: Int,
+        includesHiddenFiles: Bool = true
+    ) throws -> FileSearchPage {
 
         let requestedLimit = Int64(max(1, limit))
 
@@ -1453,6 +1478,7 @@ actor FileIndexDatabase {
 
             CREATE INDEX IF NOT EXISTS files_source_id_idx ON files(source_id);
             CREATE INDEX IF NOT EXISTS files_modified_at_idx ON files(modified_at DESC);
+            CREATE INDEX IF NOT EXISTS files_path_idx ON files(path);
 
             CREATE TABLE IF NOT EXISTS categories (
                 id TEXT PRIMARY KEY,
@@ -1476,17 +1502,15 @@ actor FileIndexDatabase {
         )
 
         if try userVersion(database) < 2 {
+            // F24: FileCategory.defaults is the single source of truth; the
+            // migration no longer hard-codes its own copy of the list.
+            let valueRows = FileCategory.defaults.enumerated().map { index, category in
+                "('\(category.id.uuidString)', '\(category.name)', '\(category.symbolName)', \(index + 1))"
+            }.joined(separator: ",\n    ")
             try execute(
                 """
                 INSERT OR IGNORE INTO categories (id, name, icon, created_at) VALUES
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A01', '工作', 'briefcase', 1),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A02', '项目', 'folder', 2),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A03', '设计', 'paintbrush', 3),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A04', '资料', 'books.vertical', 4),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A05', '合同', 'doc.text', 5),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A06', '财务', 'banknote', 6),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A07', '个人', 'person', 7),
-                    ('B2D19E64-0184-4B30-9364-0C05DD2A2A08', '归档', 'archivebox', 8);
+                \(valueRows);
                 PRAGMA user_version = 2;
                 """,
                 on: database

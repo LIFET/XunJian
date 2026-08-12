@@ -1862,7 +1862,8 @@ final class PhaseSixAITests: XCTestCase {
             data: Data(#"{"choices":[{"message":{"content":"完成"}}]}"#.utf8),
             statusCode: 200
         )
-        let provider = DeepSeekProvider(
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
             apiKey: "test-secret",
             baseURL: URL(string: "https://api.deepseek.com")!,
             model: "deepseek-v4-flash",

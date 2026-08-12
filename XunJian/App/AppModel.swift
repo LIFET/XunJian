@@ -210,11 +210,12 @@ final class AppModel: ObservableObject {
         if plan.keywords.isEmpty {
             candidates = index.files
         } else {
+            // F13: one OR query instead of up to 12 separate FTS round-trips.
+            // The candidate order comes from `files` either way, so batching
+            // the lookup does not change the result set.
             var candidateByID: [String: IndexedFile] = [:]
-            for keyword in plan.keywords {
-                for file in try await index.searchFiles(matching: keyword, limit: 500) {
-                    candidateByID[file.id] = file
-                }
+            for file in try await index.searchFiles(matchingAnyOf: plan.keywords, limit: 500) {
+                candidateByID[file.id] = file
             }
             candidates = index.files.filter { candidateByID[$0.id] != nil }
         }
