@@ -6,6 +6,8 @@ struct SettingsView: View {
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.simplifiedChinese.rawValue
     @State private var sourcePendingRemoval: FileSource?
+    /// Highlighted while a folder is dragged over the authorisation area (F06).
+    @State private var droppedFolderTargeted = false
 
     var body: some View {
         Form {
@@ -64,6 +66,27 @@ struct SettingsView: View {
                         .disabled(!appModel.isDatabaseAvailable)
                     }
                 }
+                .dropDestination(for: URL.self) { urls, _ in
+                    // Drop a folder here to authorise it (F06).
+                    for url in urls {
+                        var isDirectory: ObjCBool = false
+                        guard FileManager.default.fileExists(
+                            atPath: url.path,
+                            isDirectory: &isDirectory
+                        ), isDirectory.boolValue else { continue }
+                        appModel.addFolderDropped(url: url)
+                    }
+                    return true
+                } isTargeted: { isTargeted in
+                    droppedFolderTargeted = isTargeted
+                }
+                .padding(4)
+                .background(
+                    droppedFolderTargeted
+                        ? XunJianUI.Fill.selectedSoft
+                        : Color.clear,
+                    in: RoundedRectangle(cornerRadius: XunJianUI.Radius.control, style: .continuous)
+                )
 
                 ForEach(appModel.sources) { source in
                     ViewThatFits(in: .horizontal) {

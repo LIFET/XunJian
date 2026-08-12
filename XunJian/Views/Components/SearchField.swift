@@ -135,12 +135,48 @@ struct SearchField: View {
     @Binding var text: String
     @FocusState private var isFocused: Bool
 
+    /// Shared so the field can offer recent searches without every call site
+    /// having to thread a store through (N03).
+    @ObservedObject private var history = SearchHistoryStore.shared
+    @State private var dismissedHistoryForCurrentFocus = false
+    @State private var hoveredHistoryEntry: String?
+
     @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 14
     @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 16
     @ScaledMetric(relativeTo: .body) private var clearButtonSide: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var fieldHeight: CGFloat = 36
 
+    /// Recent searches are an aid for starting a new query, so they only show
+    /// while the field is focused and empty — never on top of results the user
+    /// is already refining.
+    private var showsHistory: Bool {
+        isFocused
+            && !dismissedHistoryForCurrentFocus
+            && text.isEmpty
+            && !history.entries.isEmpty
+    }
+
     var body: some View {
+        searchRow
+            .overlay(alignment: .topLeading) {
+                if showsHistory {
+                    historyPanel
+                        .alignmentGuide(.top) { _ in -(fieldHeight + 6) }
+                }
+            }
+            // Lifts the field above the content below it in the shell's VStack
+            // so the dropdown is not painted over by later siblings.
+            .zIndex(showsHistory ? 1 : 0)
+            .onChange(of: isFocused) { _, focused in
+                if !focused { dismissedHistoryForCurrentFocus = false }
+            }
+            .onExitCommand {
+                dismissedHistoryForCurrentFocus = true
+            }
+            .xunjianAnimation(value: showsHistory)
+    }
+
+    private var searchRow: some View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: iconSize, weight: .medium))
@@ -159,6 +195,7 @@ struct SearchField: View {
             .font(.body)
             .focused($isFocused)
             .keyboardShortcut("f", modifiers: .command)
+            .onSubmit { history.record(text) }
             .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                 "搜索文件",
                 english: "Search Files"
@@ -195,6 +232,100 @@ struct SearchField: View {
                 )
         }
         .accessibilityElement(children: .contain)
+    }
+
+    // MARK: - Recent searches
+
+    private var historyPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(verbatim: AppLanguage.localized("最近搜索", english: "Recent Searches"))
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+                .accessibilityAddTraits(.isHeader)
+
+            ForEach(history.entries, id: \.self) { entry in
+                historyRow(entry)
+            }
+
+            Divider()
+
+            Button {
+                history.clear()
+            } label: {
+                Text(verbatim: AppLanguage.localized("清除搜索历史", english: "Clear Search History"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background {
+            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                .fill(.regularMaterial)
+            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func historyRow(_ entry: String) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                text = entry
+                history.record(entry)
+                dismissedHistoryForCurrentFocus = true
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: iconSize - 1))
+                        .foregroundStyle(.tertiary)
+                        .frame(width: iconWidth)
+                    Text(verbatim: entry)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                "搜索“\(entry)”",
+                english: "Search “\(entry)”"
+            )))
+
+            Button {
+                history.remove(entry)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: iconSize - 3, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .frame(width: clearButtonSide - 8, height: clearButtonSide - 8)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(hoveredHistoryEntry == entry ? 1 : 0)
+            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                "移除“\(entry)”",
+                english: "Remove “\(entry)”"
+            )))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 7)
+        .background(
+            hoveredHistoryEntry == entry ? XunJianUI.Fill.hover : .clear,
+            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.row, style: .continuous)
+        )
+        .padding(.horizontal, 4)
+        .onHover { isHovering in
+            hoveredHistoryEntry = isHovering ? entry : nil
+        }
     }
 }
 
@@ -279,9 +410,22 @@ struct SoftCardButtonStyle: ButtonStyle {
     var cornerRadius: CGFloat = XunJianUI.Radius.card
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .opacity(configuration.isPressed ? 0.78 : 1)
-            .scaleEffect(configuration.isPressed ? 0.985 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        PressFeedback(isPressed: configuration.isPressed) {
+            configuration.label
+        }
+    }
+
+    /// A `ButtonStyle` cannot read `@Environment` directly, so the press
+    /// feedback lives in a real view in order to honour Reduce Motion.
+    private struct PressFeedback<Label: View>: View {
+        let isPressed: Bool
+        @ViewBuilder var label: () -> Label
+
+        var body: some View {
+            label()
+                .opacity(isPressed ? 0.78 : 1)
+                .scaleEffect(isPressed ? 0.985 : 1)
+                .xunjianAnimation(XunJianUI.feedbackAnimation, value: isPressed)
+        }
     }
 }

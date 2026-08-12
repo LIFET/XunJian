@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct SidebarView: View {
+    @EnvironmentObject private var appModel: AppModel
     @Binding var selection: NavigationDestination?
     let categories: [FileCategory]
 
@@ -20,6 +21,13 @@ struct SidebarView: View {
                         symbol: category.symbolName,
                         destination: .category(category.id)
                     )
+                    // Drop a file onto a category to file it there (F06).
+                    .dropDestination(for: URL.self) { urls, _ in
+                        for url in urls {
+                            appModel.assignDroppedFile(url: url, to: category)
+                        }
+                        return true
+                    }
                 }
             }
 

@@ -698,7 +698,8 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Source management
 
-    private func addSource(_ url: URL) async {
+    /// Adds a folder as a scan source, e.g. dropped onto the Settings view.
+    func addSource(_ url: URL) async {
         guard let database else { return reportDatabaseUnavailable() }
 
         do {

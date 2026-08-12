@@ -501,6 +501,23 @@ final class AppModel: ObservableObject {
         index.addCategory(category, toFiles: selectedFiles)
     }
 
+    // MARK: - Drag and drop (F06)
+
+    /// A folder dropped onto the Settings view becomes a scan source.
+    func addFolderDropped(url: URL) {
+        Task { await index.addSource(url) }
+    }
+
+    /// A file dropped onto a category row gets that category. Files that are
+    /// not indexed yet are ignored (scan them first).
+    func assignDroppedFile(url: URL, to category: FileCategory) {
+        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        guard let file = index.files.first(where: {
+            $0.url.standardizedFileURL.path == path
+        }) else { return }
+        index.addCategory(category, toFiles: [file])
+    }
+
     func createCategory(name: String, symbolName: String) async throws {
         try await index.createCategory(name: name, symbolName: symbolName)
     }

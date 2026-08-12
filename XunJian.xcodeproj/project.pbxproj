@@ -20,6 +20,7 @@
 		4E63E44E4F62D5954A25E6D6 /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA348B0B0255D42446072A13 /* AIServices.swift */; };
 		58AED1013622198E23D4277F /* TextExtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F0A94816760C43F4DD25EC /* TextExtraction.swift */; };
+		65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */; };
 		6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */; };
 		6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */; };
 		7323293492E005D8D79D6727 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2517C73D7AE3DB0297377AD /* AppShellView.swift */; };
@@ -151,6 +152,7 @@
 		5368817005F77D5C8DE5DBA7 /* XunJian.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJian.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		58F0A94816760C43F4DD25EC /* TextExtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextExtraction.swift; sourceTree = "<group>"; };
 		628A1CBBBA38BBDDFB782D69 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHistoryStore.swift; sourceTree = "<group>"; };
 		797B5458753137204582954B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianFakeJSONLServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeProtocol.swift; sourceTree = "<group>"; };
@@ -289,6 +291,7 @@
 				C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */,
 				9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */,
 				83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */,
+				6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */,
 				58F0A94816760C43F4DD25EC /* TextExtraction.swift */,
 			);
 			path = Infrastructure;
@@ -658,6 +661,7 @@
 				021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */,
 				49E9F7AE170B03D5EF343ABD /* OAuthCoordinator.swift in Sources */,
 				CE49BD91715B9A6C2BC715B3 /* SearchField.swift in Sources */,
+				65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */,
 				C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */,
 				3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */,
 				58AED1013622198E23D4277F /* TextExtraction.swift in Sources */,
