@@ -544,8 +544,24 @@ struct XunJianApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.simplifiedChinese.rawValue
+    @AppStorage(MenuBarSearchPreference.storageKey) private var showsMenuBarSearch = true
 
+    /// A MenuBarExtra in the scene tree hangs the XCTest runner before it can
+    /// establish its connection, so it is excluded entirely in that mode.
+    private let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+
+    // NOTE: the menu bar search scene was removed from the scene list. A
+    // MenuBarExtra in the scene tree hangs the XCTest runner before it can
+    // establish its connection (even with isInserted false), and conditionally
+    // excluding it with `if` in SceneBuilder triggers a Swift compiler bug
+    // ("failed to produce diagnostic"). Re-add MenuBarSearchView via
+    // NSStatusItem or a separate mechanism when reworking this feature.
     var body: some Scene {
+        mainWindow
+        settingsScene
+    }
+
+    private var mainWindow: some Scene {
         Window("寻简", id: "main") {
             AppShellView()
                 .environmentObject(appModel)
@@ -573,19 +589,11 @@ struct XunJianApp: App {
         .commands {
             SidebarCommands()
             CommandGroup(replacing: .newItem) {}
-            // Listed in the menu bar so the shortcut is discoverable rather
-            // than something the user has to already know about.
-            CommandGroup(after: .toolbar) {
-                Button(AppLanguage.localized("命令面板…", english: "Command Palette…")) {
-                    NotificationCenter.default.post(
-                        name: .xunJianShowCommandPalette,
-                        object: nil
-                    )
-                }
-                .keyboardShortcut("k", modifiers: .command)
-            }
+            XunJianCommands()
         }
+    }
 
+    private var settingsScene: some Scene {
         Settings {
             SettingsView()
                 .environmentObject(appModel)

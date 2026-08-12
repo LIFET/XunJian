@@ -366,6 +366,9 @@
         }
       }
     },
+    "最久未修改" : {
+
+    },
     "最多选择 8 个文件。AI 只会建议已有分类，确认后才写入本地索引。" : {
       "localizations" : {
         "en" : {
@@ -375,6 +378,9 @@
           }
         }
       }
+    },
+    "最大的文件" : {
+
     },
     "最近文件" : {
       "localizations" : {
@@ -689,6 +695,12 @@
         }
       }
     },
+    "按位置分布" : {
+
+    },
+    "按类型分布" : {
+
+    },
     "排序" : {
       "localizations" : {
         "en" : {
@@ -865,6 +877,7 @@
       }
     },
     "更多工具" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -948,6 +961,7 @@
       }
     },
     "正在搜索" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1354,6 +1368,7 @@
       }
     },
     "预览" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {

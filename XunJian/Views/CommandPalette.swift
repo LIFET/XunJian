@@ -289,8 +289,28 @@ struct CommandPaletteView: View {
                 group: .action
             ) {
                 appModel.refreshAllSources()
+            },
+            PaletteCommand(
+                id: "action-storage-insights",
+                title: AppLanguage.localized("存储洞察", english: "Storage Insights"),
+                symbolName: "chart.pie",
+                group: .action
+            ) {
+                NotificationCenter.default.post(name: .xunJianShowStorageInsights, object: nil)
             }
-        ]
+        ] + FileListExport.Format.allCases.map { format in
+            PaletteCommand(
+                id: "action-export-\(format.rawValue)",
+                title: AppLanguage.localized(
+                    "导出文件清单为 \(format.localizedTitle)…",
+                    english: "Export File List as \(format.localizedTitle)…"
+                ),
+                symbolName: "square.and.arrow.up",
+                group: .action
+            ) {
+                FileListExport.run(appModel: appModel, format: format)
+            }
+        }
     }
 
     private func fileCommands(from files: [IndexedFile]) -> [PaletteCommand] {
