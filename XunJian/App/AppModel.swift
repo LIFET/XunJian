@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import Foundation
 
 enum AIOAuthState: Equatable, Sendable {
@@ -55,14 +56,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var activeAIAuthenticationMode: AIAuthenticationMode?
     @Published private(set) var aiConnectionStates: [AIProviderKind: AIConnectionState] = [:]
     @Published private(set) var aiCredentialErrors: [AIProviderKind: String] = [:]
-    @Published private(set) var aiOAuthStates: [AIProviderKind: AIOAuthState] = [
-        .codex: .statusUnknown,
-        .grok: .statusUnknown
-    ]
-    @Published private(set) var aiOAuthDeviceCodePresentations: [
-        AIProviderKind: AIOAuthDeviceCodePresentation
-    ] = [:]
-    @Published private(set) var aiOAuthVerificationsInFlight = Set<AIProviderKind>()
     @Published private(set) var aiSearchResults: [IndexedFile]?
     @Published private(set) var aiSearchPlan: AISearchPlan?
     @Published private(set) var aiSearchQuery: String?
@@ -98,6 +91,12 @@ final class AppModel: ObservableObject {
     private let credentialStore: LocalCredentialStore
     private let aiConfigurationStore: AIConfigurationStore
     private let oauthBridgeService: any OAuthBridgeServicing
+
+    /// OAuth state machine, extracted so it can be tested without the rest of
+    /// the app. Its mutations are forwarded below so existing views keep
+    /// observing the same names.
+    let oauth: OAuthCoordinator
+    private var oauthObservation: AnyCancellable?
     private static let selectedKindPreferenceKey = "allFiles.selectedKind"
     private static let searchResultBatchSize = 500
     private var scanTask: Task<Void, Never>?
@@ -118,17 +117,6 @@ final class AppModel: ObservableObject {
     private var pendingFileChanges: [UUID: Set<FileSystemChangeEvent>] = [:]
     private var pendingFullRescanSourceIDs = Set<UUID>()
     private var activeSecurityScopes: [UUID: URL] = [:]
-    private var oauthOperationGenerations: [AIProviderKind: UUID] = [:]
-    private var oauthLoginAttemptIDs: [AIProviderKind: UUID] = [:]
-    private var oauthLoginStartGenerations: [AIProviderKind: UUID] = [:]
-    private var oauthMutationGenerations: [AIProviderKind: UUID] = [:]
-    private var oauthMutationWaiters: [
-        AIProviderKind: [CheckedContinuation<Void, Never>]
-    ] = [:]
-    private var oauthStatusInFlight = Set<AIProviderKind>()
-    private var oauthStatusWaiters: [
-        AIProviderKind: [CheckedContinuation<Void, Never>]
-    ] = [:]
     private var aiVerificationFingerprints: [AIProviderKind: String] = [:]
     private var aiVerificationGenerations: [AIProviderKind: UUID] = [:]
     private var aiVerificationTasks: [AIProviderKind: Task<Void, Never>] = [:]
@@ -136,7 +124,6 @@ final class AppModel: ObservableObject {
     private var pendingCategoryAssignments: [
         FileCategoryAssignmentKey: PendingCategoryAssignment
     ] = [:]
-    private var oauthPollingTask: Task<Void, Never>?
     private var pendingActiveAIProviderKind: AIProviderKind?
     private var pendingActiveAIAuthenticationMode: AIAuthenticationMode?
 
@@ -148,14 +135,19 @@ final class AppModel: ObservableObject {
         self.oauthBridgeService = oauthBridgeService
         self.credentialStore = credentialStore
         self.aiConfigurationStore = aiConfigurationStore
-        pendingActiveAIProviderKind = aiConfigurationStore.activeKind
-        pendingActiveAIAuthenticationMode = aiConfigurationStore.activeAuthenticationMode
         let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         self.isRunningTests = isRunningTests
+        self.oauth = OAuthCoordinator(
+            bridgeService: oauthBridgeService,
+            isRunningTests: isRunningTests
+        )
+        wireOAuthCoordinator()
+        pendingActiveAIProviderKind = aiConfigurationStore.activeKind
+        pendingActiveAIAuthenticationMode = aiConfigurationStore.activeAuthenticationMode
         let oauthKindToRefresh: AIProviderKind? = if !isRunningTests,
                                                     aiConfigurationStore.activeAuthenticationMode == .oauth,
                                                     let activeKind = aiConfigurationStore.activeKind,
-                                                    Self.oauthProvider(for: activeKind) != nil {
+                                                    OAuthCoordinator.oauthProvider(for: activeKind) != nil {
             activeKind
         } else {
             nil
@@ -214,7 +206,7 @@ final class AppModel: ObservableObject {
         }
         if let oauthKindToRefresh {
             Task { [weak self] in
-                await self?.refreshOAuthStatus(
+                await self?.oauth.refreshStatus(
                     for: oauthKindToRefresh,
                     presentsFailure: false
                 )
@@ -223,7 +215,7 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
-        oauthPollingTask?.cancel()
+        oauth.applicationResignedActive()
         aiVerificationTasks.values.forEach { $0.cancel() }
         categoryMutationTasks.values.forEach { $0.cancel() }
     }
@@ -723,287 +715,6 @@ final class AppModel: ObservableObject {
         aiCredentialErrors[kind]
     }
 
-    func refreshOAuthStatus(
-        for kind: AIProviderKind,
-        presentsFailure: Bool = true
-    ) async {
-        guard let provider = Self.oauthProvider(for: kind),
-              oauthLoginStartGenerations[kind] == nil,
-              oauthMutationGenerations[kind] == nil,
-              !oauthStatusInFlight.contains(kind) else { return }
-        oauthStatusInFlight.insert(kind)
-        defer { finishOAuthStatus(for: kind) }
-        let generation = beginOAuthOperation(for: kind)
-
-        do {
-            let status = try await oauthBridgeService.authenticationStatus(for: provider)
-            applyOAuthStatus(status, to: kind, generation: generation)
-        } catch {
-            applyOAuthFailure(
-                error,
-                to: kind,
-                generation: generation,
-                presentsFailure: presentsFailure
-            )
-        }
-    }
-
-    func applicationBecameActive() {
-        guard !isRunningTests else { return }
-        oauthPollingTask?.cancel()
-        oauthPollingTask = Task { [weak self] in
-            guard let self else { return }
-            await self.refreshOAuthProviders(presentsFailure: false)
-            while !Task.isCancelled {
-                let shouldContinue = AIProviderKind.allCases.contains { kind in
-                    Self.oauthProvider(for: kind) != nil
-                        && self.aiOAuthStates[kind]?.shouldPoll == true
-                }
-                guard shouldContinue else { return }
-                do {
-                    try await Task.sleep(for: .seconds(1))
-                } catch {
-                    return
-                }
-                await self.refreshOAuthProviders(presentsFailure: false)
-            }
-        }
-    }
-
-    func applicationResignedActive() {
-        oauthPollingTask?.cancel()
-        oauthPollingTask = nil
-    }
-
-    private func refreshOAuthProviders(presentsFailure: Bool) async {
-        for kind in AIProviderKind.allCases where Self.oauthProvider(for: kind) != nil {
-            guard !Task.isCancelled else { return }
-            await refreshOAuthStatus(for: kind, presentsFailure: presentsFailure)
-        }
-    }
-
-    @discardableResult
-    func beginOAuthLogin(for kind: AIProviderKind) async -> URL? {
-        await beginOAuthLogin(for: kind, method: .browser)
-    }
-
-    @discardableResult
-    func beginOAuthDeviceCodeLogin(
-        for kind: AIProviderKind
-    ) async -> AIOAuthDeviceCodePresentation? {
-        guard kind == .codex else { return nil }
-        _ = await beginOAuthLogin(for: kind, method: .deviceCode)
-        guard let presentation = aiOAuthDeviceCodePresentations[kind],
-              case let .authenticating(attemptID, authorizationURL) = aiOAuthStates[kind],
-              attemptID == presentation.attemptID,
-              authorizationURL == presentation.verificationURL else {
-            return nil
-        }
-        return presentation
-    }
-
-    private func beginOAuthLogin(
-        for kind: AIProviderKind,
-        method: OAuthBridgeLoginMethod
-    ) async -> URL? {
-        guard let provider = Self.oauthProvider(for: kind) else { return nil }
-        guard method == .browser || kind == .codex else { return nil }
-        let waitedForStatus = oauthStatusInFlight.contains(kind)
-        await waitForOAuthStatus(for: kind)
-        if waitedForStatus {
-            guard case .disconnected = aiOAuthStates[kind] else { return nil }
-        }
-        guard oauthLoginStartGenerations[kind] == nil,
-              oauthMutationGenerations[kind] == nil,
-              oauthLoginAttemptIDs[kind] == nil else { return nil }
-        let generation = beginOAuthOperation(for: kind)
-        oauthLoginStartGenerations[kind] = generation
-        oauthLoginAttemptIDs.removeValue(forKey: kind)
-        aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-        aiOAuthStates[kind] = .starting
-        defer {
-            if oauthLoginStartGenerations[kind] == generation {
-                oauthLoginStartGenerations.removeValue(forKey: kind)
-            }
-        }
-
-        do {
-            let attempt = try await oauthBridgeService.startLogin(
-                for: provider,
-                method: method
-            )
-            guard oauthOperationGenerations[kind] == generation else {
-                _ = try? await oauthBridgeService.cancelLogin(
-                    for: provider,
-                    attemptID: attempt.attemptID
-                )
-                return nil
-            }
-            guard attempt.provider == provider else {
-                applyOAuthFailure(
-                    OAuthStateError.providerMismatch,
-                    to: kind,
-                    generation: generation
-                )
-                return nil
-            }
-            switch method {
-            case .browser:
-                guard attempt.userCode == nil else {
-                    applyOAuthFailure(
-                        OAuthStateError.invalidLoginPresentation,
-                        to: kind,
-                        generation: generation
-                    )
-                    return nil
-                }
-            case .deviceCode:
-                guard kind == .codex,
-                      let verificationURL = attempt.authorizationURL,
-                      Self.validOAuthAuthorizationURL(verificationURL),
-                      let userCode = attempt.userCode,
-                      Self.validDeviceUserCode(userCode) else {
-                    applyOAuthFailure(
-                        OAuthStateError.invalidLoginPresentation,
-                        to: kind,
-                        generation: generation
-                    )
-                    return nil
-                }
-                aiOAuthDeviceCodePresentations[kind] = AIOAuthDeviceCodePresentation(
-                    attemptID: attempt.attemptID,
-                    verificationURL: verificationURL,
-                    userCode: userCode
-                )
-            }
-            oauthLoginAttemptIDs[kind] = attempt.attemptID
-            aiOAuthStates[kind] = .authenticating(
-                attemptID: attempt.attemptID,
-                authorizationURL: attempt.authorizationURL
-            )
-            return attempt.authorizationURL
-        } catch {
-            applyOAuthFailure(error, to: kind, generation: generation)
-            return nil
-        }
-    }
-
-    func cancelOAuthLogin(for kind: AIProviderKind) async {
-        guard let provider = Self.oauthProvider(for: kind) else { return }
-        await waitForOAuthStatus(for: kind)
-        if oauthLoginStartGenerations[kind] != nil {
-            _ = beginOAuthOperation(for: kind)
-            aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-            aiOAuthStates[kind] = .disconnected
-            return
-        }
-        guard oauthMutationGenerations[kind] == nil,
-              let attemptID = oauthLoginAttemptIDs[kind] else { return }
-        let generation = beginOAuthOperation(for: kind)
-        oauthMutationGenerations[kind] = generation
-        defer { finishOAuthMutation(for: kind, generation: generation) }
-
-        do {
-            let status = try await oauthBridgeService.cancelLogin(
-                for: provider,
-                attemptID: attemptID
-            )
-            applyOAuthStatus(status, to: kind, generation: generation)
-        } catch {
-            applyOAuthFailure(error, to: kind, generation: generation)
-        }
-    }
-
-    func verifyOAuthConnection(for kind: AIProviderKind) async {
-        guard let provider = Self.oauthProvider(for: kind) else { return }
-        await waitForOAuthStatus(for: kind)
-        guard !Task.isCancelled,
-              oauthLoginStartGenerations[kind] == nil,
-              oauthMutationGenerations[kind] == nil,
-              aiOAuthStates[kind] == .signedInUnverified else { return }
-
-        let generation = beginOAuthOperation(for: kind)
-        oauthMutationGenerations[kind] = generation
-        aiOAuthVerificationsInFlight.insert(kind)
-        defer {
-            aiOAuthVerificationsInFlight.remove(kind)
-            finishOAuthMutation(for: kind, generation: generation)
-        }
-
-        do {
-            let status = try await oauthBridgeService.verifyConnection(provider)
-            guard !Task.isCancelled else { return }
-            applyOAuthStatus(status, to: kind, generation: generation)
-        } catch {
-            guard !Task.isCancelled else { return }
-            applyOAuthFailure(error, to: kind, generation: generation)
-        }
-    }
-
-    func disconnectOAuthProvider(_ kind: AIProviderKind) async {
-        guard let provider = Self.oauthProvider(for: kind) else { return }
-        await waitForOAuthStatus(for: kind)
-        if oauthLoginStartGenerations[kind] != nil {
-            _ = beginOAuthOperation(for: kind)
-            aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-            aiOAuthStates[kind] = .disconnected
-            return
-        }
-
-        let generation: UUID
-        if aiOAuthVerificationsInFlight.contains(kind) {
-            generation = beginOAuthOperation(for: kind)
-            await waitForOAuthMutation(for: kind)
-        } else {
-            guard oauthMutationGenerations[kind] == nil else { return }
-            generation = beginOAuthOperation(for: kind)
-        }
-        guard !Task.isCancelled,
-              oauthOperationGenerations[kind] == generation,
-              oauthLoginStartGenerations[kind] == nil,
-              oauthMutationGenerations[kind] == nil else { return }
-        oauthMutationGenerations[kind] = generation
-        oauthLoginAttemptIDs.removeValue(forKey: kind)
-        aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-        defer { finishOAuthMutation(for: kind, generation: generation) }
-
-        do {
-            let status = try await oauthBridgeService.disconnect(provider)
-            applyOAuthStatus(status, to: kind, generation: generation)
-        } catch {
-            applyOAuthFailure(error, to: kind, generation: generation)
-        }
-    }
-
-    func logoutOAuthProvider(for kind: AIProviderKind) async {
-        guard let provider = Self.oauthProvider(for: kind) else { return }
-        await waitForOAuthStatus(for: kind)
-
-        let generation: UUID
-        if aiOAuthVerificationsInFlight.contains(kind) {
-            generation = beginOAuthOperation(for: kind)
-            await waitForOAuthMutation(for: kind)
-        } else {
-            guard oauthMutationGenerations[kind] == nil else { return }
-            generation = beginOAuthOperation(for: kind)
-        }
-        guard !Task.isCancelled,
-              oauthOperationGenerations[kind] == generation,
-              oauthLoginStartGenerations[kind] == nil,
-              oauthMutationGenerations[kind] == nil else { return }
-        oauthMutationGenerations[kind] = generation
-        oauthLoginAttemptIDs.removeValue(forKey: kind)
-        aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-        defer { finishOAuthMutation(for: kind, generation: generation) }
-
-        do {
-            let status = try await oauthBridgeService.logout(provider)
-            applyOAuthStatus(status, to: kind, generation: generation)
-        } catch {
-            applyOAuthFailure(error, to: kind, generation: generation)
-        }
-    }
-
     @discardableResult
     func saveAIProvider(
         _ kind: AIProviderKind,
@@ -1069,8 +780,8 @@ final class AppModel: ObservableObject {
     }
 
     func setActiveOAuthAIProvider(_ kind: AIProviderKind) {
-        guard Self.oauthProvider(for: kind) != nil,
-              aiOAuthStates[kind] == .connected else {
+        guard OAuthCoordinator.oauthProvider(for: kind) != nil,
+              oauth.states[kind] == .connected else {
             errorMessage = AIServiceError.notConfigured.localizedDescription
             return
         }
@@ -1300,8 +1011,8 @@ final class AppModel: ObservableObject {
                 return
             }
         case .oauth:
-            guard Self.oauthProvider(for: activeKind) != nil,
-                  aiOAuthStates[activeKind] == .connected else {
+            guard OAuthCoordinator.oauthProvider(for: activeKind) != nil,
+                  oauth.states[activeKind] == .connected else {
                 deactivateCurrentAIProvider(preservingPreference: true)
                 return
             }
@@ -1330,7 +1041,7 @@ final class AppModel: ObservableObject {
                 credentialStore: credentialStore
             )
         case .oauth:
-            guard oauthStateAllowsGeneration(aiOAuthStates[kind]) else {
+            guard oauthStateAllowsGeneration(oauth.states[kind]) else {
                 throw AIServiceError.notConfigured
             }
             return try AIProviderFactory.makeOAuth(
@@ -1351,7 +1062,7 @@ final class AppModel: ObservableObject {
                 throw AIServiceError.notConfigured
             }
         case .oauth:
-            guard aiOAuthStates[activeAIProviderKind] == .connected else {
+            guard oauth.states[activeAIProviderKind] == .connected else {
                 throw AIServiceError.notConfigured
             }
         }
@@ -1367,7 +1078,7 @@ final class AppModel: ObservableObject {
                         guard let self,
                               self.activeAIProviderKind == activeAIProviderKind,
                               self.activeAIAuthenticationMode == .oauth else { return }
-                        self.aiOAuthStates[activeAIProviderKind] = .connected
+                        self.oauth.markConnected(activeAIProviderKind)
                     }
                 }
             ))
@@ -1407,7 +1118,7 @@ final class AppModel: ObservableObject {
         case .apiKey:
             guard aiConnectionStates[pendingKind] == .verified else { return }
         case .oauth:
-            guard aiOAuthStates[pendingKind] == .connected else { return }
+            guard oauth.states[pendingKind] == .connected else { return }
         }
         activeAIProviderKind = pendingKind
         activeAIAuthenticationMode = pendingMode
@@ -1425,170 +1136,79 @@ final class AppModel: ObservableObject {
         deactivateCurrentAIProvider(preservingPreference: preservingPreference)
     }
 
-    private func beginOAuthOperation(for kind: AIProviderKind) -> UUID {
-        let generation = UUID()
-        oauthOperationGenerations[kind] = generation
-        return generation
-    }
+    // MARK: - OAuth forwarding
 
-    private func waitForOAuthStatus(for kind: AIProviderKind) async {
-        while oauthStatusInFlight.contains(kind) {
-            await withCheckedContinuation { continuation in
-                oauthStatusWaiters[kind, default: []].append(continuation)
-            }
-        }
-    }
-
-    private func finishOAuthStatus(for kind: AIProviderKind) {
-        oauthStatusInFlight.remove(kind)
-        let waiters = oauthStatusWaiters.removeValue(forKey: kind) ?? []
-        waiters.forEach { $0.resume() }
-    }
-
-    private func waitForOAuthMutation(for kind: AIProviderKind) async {
-        while oauthMutationGenerations[kind] != nil {
-            await withCheckedContinuation { continuation in
-                oauthMutationWaiters[kind, default: []].append(continuation)
-            }
-        }
-    }
-
-    private func finishOAuthMutation(for kind: AIProviderKind, generation: UUID) {
-        guard oauthMutationGenerations[kind] == generation else { return }
-        oauthMutationGenerations.removeValue(forKey: kind)
-        let waiters = oauthMutationWaiters.removeValue(forKey: kind) ?? []
-        waiters.forEach { $0.resume() }
-    }
-
-    private func applyOAuthStatus(
-        _ status: OAuthBridgeAuthStatus,
-        to kind: AIProviderKind,
-        generation: UUID
-    ) {
-        guard oauthOperationGenerations[kind] == generation,
-              let expectedProvider = Self.oauthProvider(for: kind) else { return }
-        guard status.provider == expectedProvider else {
-            applyOAuthFailure(
-                OAuthStateError.providerMismatch,
-                to: kind,
-                generation: generation
+    /// Connects the OAuth coordinator to the AI layer and re-emits its
+    /// `objectWillChange` so views observing `AppModel` refresh on OAuth
+    /// changes exactly as they did before the extraction.
+    private func wireOAuthCoordinator() {
+        oauth.onProviderUnavailable = { [weak self] kind, preservingPreference in
+            self?.clearActiveOAuthProviderIfNeeded(
+                kind,
+                preservingPreference: preservingPreference
             )
-            return
         }
-
-        guard status.cliStatus == .available else {
-            oauthLoginAttemptIDs.removeValue(forKey: kind)
-            aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-            aiOAuthStates[kind] = .unavailable(status.cliStatus)
-            clearActiveOAuthProviderIfNeeded(kind)
-            return
+        oauth.onProviderConnected = { [weak self] in
+            self?.restorePendingActiveAIProviderIfEligible()
         }
-        if let attemptID = status.loginAttemptID {
-            clearActiveOAuthProviderIfNeeded(kind)
-            let authorizationURL: URL?
-            if case let .authenticating(currentAttemptID, currentURL) = aiOAuthStates[kind],
-               currentAttemptID == attemptID {
-                authorizationURL = currentURL
-            } else {
-                authorizationURL = nil
-            }
-            if aiOAuthDeviceCodePresentations[kind]?.attemptID != attemptID {
-                aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-            }
-            oauthLoginAttemptIDs[kind] = attemptID
-            aiOAuthStates[kind] = .authenticating(
-                attemptID: attemptID,
-                authorizationURL: authorizationURL
-            )
-            return
+        oauth.onFailure = { [weak self] message in
+            self?.errorMessage = message
         }
-
-        oauthLoginAttemptIDs.removeValue(forKey: kind)
-        aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-        switch status.credentialState {
-        case .unknown:
-            aiOAuthStates[kind] = .statusUnknown
-            clearActiveOAuthProviderIfNeeded(kind)
-        case .signedOut:
-            aiOAuthStates[kind] = .disconnected
-            clearActiveOAuthProviderIfNeeded(kind, preservingPreference: false)
-        case .signedIn:
-            switch status.connectionState {
-            case .disconnected:
-                aiOAuthStates[kind] = .signedInDisconnected
-                clearActiveOAuthProviderIfNeeded(kind)
-            case .authorizing:
-                aiOAuthStates[kind] = .statusUnknown
-                clearActiveOAuthProviderIfNeeded(kind)
-            case .authenticated:
-                aiOAuthStates[kind] = .signedInUnverified
-                clearActiveOAuthProviderIfNeeded(kind)
-            case .connected:
-                aiOAuthStates[kind] = .connected
-                restorePendingActiveAIProviderIfEligible()
-            }
+        oauthObservation = oauth.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
         }
     }
 
-    private func applyOAuthFailure(
-        _ error: Error,
-        to kind: AIProviderKind,
-        generation: UUID,
+    // Compatibility surface: keep the pre-extraction names working so views
+    // don't have to be touched.
+
+    var aiOAuthStates: [AIProviderKind: AIOAuthState] { oauth.states }
+    var aiOAuthDeviceCodePresentations: [AIProviderKind: AIOAuthDeviceCodePresentation] {
+        oauth.deviceCodePresentations
+    }
+    var aiOAuthVerificationsInFlight: Set<AIProviderKind> { oauth.verificationsInFlight }
+
+    func refreshOAuthStatus(
+        for kind: AIProviderKind,
         presentsFailure: Bool = true
-    ) {
-        guard oauthOperationGenerations[kind] == generation else { return }
-        oauthLoginAttemptIDs.removeValue(forKey: kind)
-        aiOAuthDeviceCodePresentations.removeValue(forKey: kind)
-        let message = Self.message(for: error)
-        aiOAuthStates[kind] = .failed(message)
-        clearActiveOAuthProviderIfNeeded(kind)
-        if presentsFailure {
-            errorMessage = message
-        }
+    ) async {
+        await oauth.refreshStatus(for: kind, presentsFailure: presentsFailure)
     }
 
-    private static func oauthProvider(for kind: AIProviderKind) -> OAuthBridgeProvider? {
-        switch kind {
-        case .codex: .codex
-        case .grok: .grok
-        case .deepSeek, .qwen: nil
-        }
+    @discardableResult
+    func beginOAuthLogin(for kind: AIProviderKind) async -> URL? {
+        await oauth.beginLogin(for: kind)
     }
 
-    private enum OAuthStateError: LocalizedError {
-        case providerMismatch
-        case invalidLoginPresentation
-
-        var errorDescription: String? {
-            switch self {
-            case .providerMismatch:
-                "OAuth 伴随服务返回了不匹配的 AI 提供商。"
-            case .invalidLoginPresentation:
-                "OAuth 伴随服务返回了无效的登录信息。"
-            }
-        }
+    @discardableResult
+    func beginOAuthDeviceCodeLogin(
+        for kind: AIProviderKind
+    ) async -> AIOAuthDeviceCodePresentation? {
+        await oauth.beginDeviceCodeLogin(for: kind)
     }
 
-    private static func validDeviceUserCode(_ userCode: String) -> Bool {
-        (4...64).contains(userCode.utf8.count)
-            && userCode.unicodeScalars.allSatisfy {
-                ($0.value >= 0x30 && $0.value <= 0x39)
-                    || ($0.value >= 0x41 && $0.value <= 0x5A)
-                    || $0.value == 0x2D
-            }
+    func cancelOAuthLogin(for kind: AIProviderKind) async {
+        await oauth.cancelLogin(for: kind)
     }
 
-    private static func validOAuthAuthorizationURL(_ url: URL) -> Bool {
-        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        return url.absoluteString.utf8.count <= 2_048
-            && components?.scheme?.lowercased() == "https"
-            && ["auth.openai.com", "chatgpt.com"].contains(
-                components?.host?.lowercased() ?? ""
-            )
-            && (components?.port == nil || components?.port == 443)
-            && components?.user == nil
-            && components?.password == nil
-            && components?.fragment == nil
+    func verifyOAuthConnection(for kind: AIProviderKind) async {
+        await oauth.verifyConnection(for: kind)
+    }
+
+    func disconnectOAuthProvider(_ kind: AIProviderKind) async {
+        await oauth.disconnect(kind)
+    }
+
+    func logoutOAuthProvider(for kind: AIProviderKind) async {
+        await oauth.logout(for: kind)
+    }
+
+    func applicationBecameActive() {
+        oauth.applicationBecameActive()
+    }
+
+    func applicationResignedActive() {
+        oauth.applicationResignedActive()
     }
 
     private func addSource(_ url: URL) async {
