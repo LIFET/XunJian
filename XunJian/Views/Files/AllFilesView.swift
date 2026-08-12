@@ -97,6 +97,9 @@ struct AllFilesView: View {
     @ViewBuilder
     private func fileHeader(filesSnapshot: [IndexedFile]) -> some View {
         header(resultCount: filesSnapshot.count)
+        if appModel.selectedFileIDs.count > 1 {
+            batchActionBar
+        }
         if let plan = appModel.aiSearchPlan {
             HStack(spacing: 8) {
                 Label(aiSearchModeDescription(for: plan), systemImage: "sparkles")
@@ -119,6 +122,65 @@ struct AllFilesView: View {
             .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
             .padding(.bottom, 10)
         }
+    }
+
+    /// Batch operations bar, shown while multiple files are selected (F05).
+    private var batchActionBar: some View {
+        HStack(spacing: 8) {
+            Label(
+                AppLanguage.localized(
+                    "已选择 \(appModel.selectedFileIDs.count) 项",
+                    english: "\(appModel.selectedFileIDs.count) selected"
+                ),
+                systemImage: "checkmark.circle.fill"
+            )
+            Spacer(minLength: 8)
+            Menu {
+                if appModel.categories.isEmpty {
+                    Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
+                } else {
+                    ForEach(appModel.categories) { category in
+                        Button {
+                            appModel.assignSelectedFiles(to: category)
+                        } label: {
+                            Label(category.localizedDisplayName, systemImage: category.symbolName)
+                        }
+                    }
+                }
+            } label: {
+                Label(
+                    AppLanguage.localized("批量加分类", english: "Add to Category"),
+                    systemImage: "folder.badge.plus"
+                )
+            }
+            .fixedSize()
+            Button(role: .destructive) {
+                appModel.requestBatchTrash()
+            } label: {
+                Label(
+                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                    systemImage: "trash"
+                )
+            }
+            Button {
+                appModel.selectedFileIDs = []
+            } label: {
+                Label(
+                    AppLanguage.localized("取消选择", english: "Clear Selection"),
+                    systemImage: "xmark"
+                )
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            XunJianUI.Fill.selectedSoft,
+            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.chip, style: .continuous)
+        )
+        .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
+        .padding(.bottom, 10)
+        .xunjianAnimation(value: appModel.selectedFileIDs.count > 1)
     }
 
     private func header(resultCount: Int) -> some View {
@@ -800,7 +862,7 @@ struct AllFilesView: View {
     private func fileTable(files: [IndexedFile]) -> some View {
         Table(
             files,
-            selection: $appModel.selectedFileID,
+            selection: $appModel.selectedFileIDs,
             columnCustomization: $tableColumnCustomization
         ) {
             TableColumn("名称") { file in
@@ -1764,6 +1826,13 @@ struct FileContextMenu: View {
     @EnvironmentObject private var appModel: AppModel
     let file: IndexedFile
 
+    /// When the clicked row is part of a multi-selection, category and trash
+    /// actions apply to the whole selection instead of just this file.
+    private var actsOnSelection: Bool {
+        appModel.selectedFileIDs.count > 1
+            && appModel.selectedFileIDs.contains(file.id)
+    }
+
     var body: some View {
         Button("打开") { appModel.open(file) }
         Button("快速查看") { appModel.quickLook(file) }
@@ -1771,44 +1840,74 @@ struct FileContextMenu: View {
 
         Divider()
 
-        Menu("添加到分类") {
-            if appModel.categories.isEmpty {
-                Text(
-                    AppLanguage.localized(
-                        "还没有分类",
-                        english: "No categories yet"
+        if actsOnSelection {
+            Menu(AppLanguage.localized("批量添加到分类", english: "Add Selection to Category")) {
+                if appModel.categories.isEmpty {
+                    Text(
+                        AppLanguage.localized(
+                            "还没有分类",
+                            english: "No categories yet"
+                        )
                     )
-                )
-                Button {
-                    NotificationCenter.default.post(
-                        name: .xunJianRequestNewCategory,
-                        object: nil
-                    )
-                } label: {
-                    Label(
-                        AppLanguage.localized("新建分类…", english: "New Category…"),
-                        systemImage: "plus"
-                    )
-                }
-            } else {
-                ForEach(appModel.categories) { category in
-                    Button {
-                        appModel.toggleCategory(category, for: file)
-                    } label: {
-                        if appModel.isCategory(category, assignedTo: file) {
-                            Label(category.localizedDisplayName, systemImage: "checkmark")
-                        } else {
+                } else {
+                    ForEach(appModel.categories) { category in
+                        Button {
+                            appModel.assignSelectedFiles(to: category)
+                        } label: {
                             Label(category.localizedDisplayName, systemImage: category.symbolName)
                         }
                     }
                 }
             }
+            Button(
+                AppLanguage.localized(
+                    "移到废纸篓（\(appModel.selectedFileIDs.count) 项）",
+                    english: "Move \(appModel.selectedFileIDs.count) Items to Trash"
+                ),
+                role: .destructive
+            ) {
+                appModel.requestBatchTrash()
+            }
+        } else {
+            Menu("添加到分类") {
+                if appModel.categories.isEmpty {
+                    Text(
+                        AppLanguage.localized(
+                            "还没有分类",
+                            english: "No categories yet"
+                        )
+                    )
+                    Button {
+                        NotificationCenter.default.post(
+                            name: .xunJianRequestNewCategory,
+                            object: nil
+                        )
+                    } label: {
+                        Label(
+                            AppLanguage.localized("新建分类…", english: "New Category…"),
+                            systemImage: "plus"
+                        )
+                    }
+                } else {
+                    ForEach(appModel.categories) { category in
+                        Button {
+                            appModel.toggleCategory(category, for: file)
+                        } label: {
+                            if appModel.isCategory(category, assignedTo: file) {
+                                Label(category.localizedDisplayName, systemImage: "checkmark")
+                            } else {
+                                Label(category.localizedDisplayName, systemImage: category.symbolName)
+                            }
+                        }
+                    }
+                }
+            }
+
+            Divider()
+
+            Button("重命名…") { appModel.requestRename(file) }
+            Button("移动到…") { appModel.chooseMoveDestination(for: file) }
+            Button("移到废纸篓", role: .destructive) { appModel.requestTrash(file) }
         }
-
-        Divider()
-
-        Button("重命名…") { appModel.requestRename(file) }
-        Button("移动到…") { appModel.chooseMoveDestination(for: file) }
-        Button("移到废纸篓", role: .destructive) { appModel.requestTrash(file) }
     }
 }

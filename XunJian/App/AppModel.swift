@@ -49,7 +49,19 @@ final class AppModel: ObservableObject {
     @Published private(set) var aiSearchResults: [IndexedFile]?
     @Published private(set) var aiSearchPlan: AISearchPlan?
     @Published private(set) var aiSearchQuery: String?
-    @Published var selectedFileID: String?
+    /// Multi-selection in the file table/grid (F05). `selectedFileID` remains
+    /// as the single-selection compatibility surface on top of this set.
+    @Published var selectedFileIDs: Set<String> = []
+    var selectedFileID: String? {
+        get { selectedFileIDs.first }
+        set {
+            if let newValue {
+                selectedFileIDs = [newValue]
+            } else {
+                selectedFileIDs = []
+            }
+        }
+    }
     @Published var selectedKind: FileKind? = nil {
         didSet {
             guard !isRunningTests else { return }
@@ -66,6 +78,8 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var renameRequest: IndexedFile?
     @Published var trashRequest: IndexedFile?
+    /// Batch trash confirmation (F05 multi-select).
+    @Published var batchTrashRequest: [IndexedFile]?
     @Published var searchText = "" {
         didSet { index.scheduleSearch(query: searchText) }
     }
@@ -457,6 +471,34 @@ final class AppModel: ObservableObject {
         guard let file = trashRequest else { return }
         trashRequest = nil
         index.confirmTrash(file)
+    }
+
+    // MARK: - Batch operations (F05)
+
+    var selectedFiles: [IndexedFile] {
+        index.files.filter { selectedFileIDs.contains($0.id) }
+    }
+
+    func requestBatchTrash() {
+        guard !selectedFiles.isEmpty else { return }
+        batchTrashRequest = selectedFiles
+    }
+
+    func confirmBatchTrash() {
+        guard let files = batchTrashRequest else { return }
+        batchTrashRequest = nil
+        selectedFileIDs = []
+        index.confirmBatchTrash(files)
+    }
+
+    func cancelBatchTrash() {
+        batchTrashRequest = nil
+    }
+
+    /// Adds every selected file to a category (files already in it are
+    /// skipped), reusing the same debounced write path as single-file menus.
+    func assignSelectedFiles(to category: FileCategory) {
+        index.addCategory(category, toFiles: selectedFiles)
     }
 
     func createCategory(name: String, symbolName: String) async throws {

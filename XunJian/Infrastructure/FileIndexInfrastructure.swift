@@ -343,6 +343,8 @@ actor FileScanner {
             do {
                 values = try resourceValuesLoader(fileURL, Set(Self.resourceKeys))
             } catch {
+                // Fail closed by design (see FileScannerTests): metadata
+                // failure aborts the scan so the previous index is preserved.
                 throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
             }
 
@@ -631,23 +633,23 @@ actor FileIndexDatabase {
         }
     }
 
-    func replaceFiles(for sourceID: UUID, with files: [IndexedFile]) throws {
+    /// Replaces a source's file rows with a fresh full-scan result.
+    ///
+    /// When `deletesUnscanned` is false (a scan that skipped unreadable
+    /// folders), rows that were not seen this time are kept instead of being
+    /// deleted — otherwise files in skipped folders would silently vanish
+    /// from the index along with their text and category links. The index may
+    /// then hold stale entries until a clean scan runs, which is safer than
+    /// losing data.
+    func replaceFiles(
+        for sourceID: UUID,
+        with files: [IndexedFile],
+        deletesUnscanned: Bool = true
+    ) throws {
         let database = connection.pointer
         try Self.execute("BEGIN IMMEDIATE TRANSACTION;", on: database)
 
         do {
-            let deleteSearchStatement = try prepare(
-                """
-                DELETE FROM file_search
-                WHERE file_id IN (SELECT id FROM files WHERE source_id = ?);
-                """
-            )
-            do {
-                defer { sqlite3_finalize(deleteSearchStatement) }
-                try bind(sourceID.uuidString, at: 1, to: deleteSearchStatement)
-                try stepDone(deleteSearchStatement)
-            }
-
             try Self.execute(
                 """
                 CREATE TEMP TABLE IF NOT EXISTS scanned_file_ids (
@@ -705,17 +707,32 @@ actor FileIndexDatabase {
                 try stepDone(scannedIDStatement)
             }
 
-            let deleteStatement = try prepare(
+            // Rebuild FTS rows for exactly the files we just wrote, whether
+            // or not unscanned rows survive below.
+            let deleteSearchStatement = try prepare(
                 """
-                DELETE FROM files
-                WHERE source_id = ?
-                  AND id NOT IN (SELECT id FROM scanned_file_ids);
+                DELETE FROM file_search
+                WHERE file_id IN (SELECT id FROM scanned_file_ids);
                 """
             )
             do {
-                defer { sqlite3_finalize(deleteStatement) }
-                try bind(sourceID.uuidString, at: 1, to: deleteStatement)
-                try stepDone(deleteStatement)
+                defer { sqlite3_finalize(deleteSearchStatement) }
+                try stepDone(deleteSearchStatement)
+            }
+
+            if deletesUnscanned {
+                let deleteStatement = try prepare(
+                    """
+                    DELETE FROM files
+                    WHERE source_id = ?
+                      AND id NOT IN (SELECT id FROM scanned_file_ids);
+                    """
+                )
+                do {
+                    defer { sqlite3_finalize(deleteStatement) }
+                    try bind(sourceID.uuidString, at: 1, to: deleteStatement)
+                    try stepDone(deleteStatement)
+                }
             }
 
             let categoryTextByFileID = try categorySearchText(for: sourceID)

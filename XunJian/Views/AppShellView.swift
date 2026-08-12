@@ -172,6 +172,30 @@ struct AppShellView: View {
                     )
                 )
             }
+            .alert(
+                AppLanguage.localized("批量移到废纸篓？", english: "Move to Trash?"),
+                isPresented: Binding(
+                    get: { appModel.batchTrashRequest != nil },
+                    set: { if !$0 { appModel.cancelBatchTrash() } }
+                )
+            ) {
+                Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
+                    appModel.cancelBatchTrash()
+                }
+                Button(
+                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                    role: .destructive
+                ) {
+                    appModel.confirmBatchTrash()
+                }
+            } message: {
+                Text(
+                    AppLanguage.localized(
+                        "\(appModel.batchTrashRequest?.count ?? 0) 个文件将被移到系统废纸篓，可以从废纸篓恢复。",
+                        english: "\(appModel.batchTrashRequest?.count ?? 0) files will be moved to the system Trash and can be restored from there."
+                    )
+                )
+            }
     }
 
     private func handleColumnVisibilityChange(

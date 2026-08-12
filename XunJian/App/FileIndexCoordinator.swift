@@ -565,22 +565,75 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func toggleCategory(_ category: FileCategory, for file: IndexedFile) {
-        guard let database else { return reportDatabaseUnavailable() }
         let key = FileCategoryAssignmentKey(fileID: file.id, categoryID: category.id)
         let existing = pendingCategoryAssignments[key]
         let shouldAssign = Self.categoryAssignmentAfterToggle(
             persistedAssignment: isCategory(category, assignedTo: file),
             pendingAssignment: existing?.desiredAssignment
         )
+        setCategory(category, assigned: shouldAssign, for: file)
+    }
+
+    /// Explicit (non-toggling) assignment, used by single-file menus and
+    /// multi-select batch operations alike.
+    func setCategory(_ category: FileCategory, assigned: Bool, for file: IndexedFile) {
+        guard let database else { return reportDatabaseUnavailable() }
+        let key = FileCategoryAssignmentKey(fileID: file.id, categoryID: category.id)
+        let existing = pendingCategoryAssignments[key]
+        guard assigned != isCategory(category, assignedTo: file) || existing != nil else {
+            return
+        }
         pendingCategoryAssignments[key] = PendingCategoryAssignment(
-            desiredAssignment: shouldAssign,
+            desiredAssignment: assigned,
             revision: (existing?.revision ?? 0) &+ 1
         )
-        applyCategoryAssignment(shouldAssign, for: key)
+        applyCategoryAssignment(assigned, for: key)
 
         guard categoryMutationTasks[key] == nil else { return }
         categoryMutationTasks[key] = Task { [weak self] in
             await self?.drainCategoryAssignments(for: key, database: database)
+        }
+    }
+
+    /// Batch: add every file to a category. Files already in it are skipped.
+    func addCategory(_ category: FileCategory, toFiles files: [IndexedFile]) {
+        for file in files {
+            setCategory(category, assigned: true, for: file)
+        }
+    }
+
+    /// Batch: remove every file from a category.
+    func removeCategory(_ category: FileCategory, fromFiles files: [IndexedFile]) {
+        for file in files {
+            setCategory(category, assigned: false, for: file)
+        }
+    }
+
+    /// Batch: move all files to the Trash. Used by multi-select.
+    func confirmBatchTrash(_ files: [IndexedFile]) {
+        guard isDatabaseAvailable else {
+            onError?(FileIndexError.database("database unavailable").localizedDescription)
+            return
+        }
+        Task { [weak self] in
+            guard let self else { return }
+            var failed = 0
+            for file in files {
+                do {
+                    _ = try await fileOperations.moveToTrash(fileAt: file.url)
+                } catch {
+                    failed += 1
+                }
+            }
+            if failed > 0 {
+                onError?(AppLanguage.localized(
+                    "有 \(failed) 个文件未能移到废纸篓。",
+                    english: "\(failed) file(s) couldn’t be moved to the Trash."
+                ))
+            }
+            let paths = files.map(\.url)
+            onFilesChanged?()
+            await reconcileKnownFileChanges(paths)
         }
     }
 
@@ -836,9 +889,17 @@ final class FileIndexCoordinator: ObservableObject {
             try Task.checkCancellation()
             guard scanGeneration == generation,
                   scanningSourceIDs.contains(source.id) else { return }
-            try await database.replaceFiles(for: source.id, with: scannedFiles)
+            let skipped = await scanner.lastScanSkippedPaths
+            // Fail-closed: when folders were skipped, merge instead of
+            // replacing, so files in unreadable folders are not deleted
+            // from the index (and their category links survive).
+            try await database.replaceFiles(
+                for: source.id,
+                with: scannedFiles,
+                deletesUnscanned: skipped.isEmpty
+            )
             guard scanGeneration == generation else { return }
-            skippedScanPaths.append(contentsOf: await scanner.lastScanSkippedPaths)
+            skippedScanPaths.append(contentsOf: skipped)
             await reloadIndex()
         } catch is CancellationError {
             // 用户取消扫描时保留上一次完整索引。
