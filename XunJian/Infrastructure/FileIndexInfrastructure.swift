@@ -160,6 +160,11 @@ actor FileScanner {
     private let excludedDirectoryNames: Set<String>
     private let textExtractor: TextExtractionService
     private let resourceValuesLoader: ResourceValuesLoader
+
+    /// Paths that could not be read during the most recent scan. A single
+    /// permission-denied subfolder must not fail the whole scan, but the user
+    /// still needs to know the index is incomplete.
+    private(set) var lastScanSkippedPaths: [String] = []
     private static let resourceKeys: [URLResourceKey] = [
         .nameKey,
         .isDirectoryKey,
@@ -195,7 +200,8 @@ actor FileScanner {
         includesHiddenFiles: Bool = false,
         progress: ProgressHandler? = nil
     ) async throws -> [IndexedFile] {
-        try enumerate(
+        lastScanSkippedPaths = []
+        return try enumerate(
             sourceID: sourceID,
             rootURL: rootURL,
             includesHiddenFiles: includesHiddenFiles,
@@ -209,6 +215,7 @@ actor FileScanner {
         events: [FileSystemChangeEvent],
         includesHiddenFiles: Bool = false
     ) async throws -> IncrementalScanSnapshot {
+        lastScanSkippedPaths = []
         let canonicalRootPath = canonicalPath(rootURL.path)
         var scopes: Set<FileIndexScope> = []
 
@@ -308,14 +315,19 @@ actor FileScanner {
             throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
         }
 
-        var enumerationError: Error?
+        // Collected synchronously by the enumerator's error handler, which runs
+        // inline on this thread for each unreadable item.
+        var skippedPaths: [String] = []
         guard let enumerator = fileManager.enumerator(
             at: rootURL,
             includingPropertiesForKeys: Self.resourceKeys,
             options: [.skipsPackageDescendants],
-            errorHandler: { _, error in
-                enumerationError = error
-                return false
+            errorHandler: { url, _ in
+                // Returning false would abort the entire scan, so one
+                // permission-denied subfolder would discard every other file.
+                // Skip the item and continue; the caller reports the summary.
+                skippedPaths.append(url.path)
+                return true
             }
         ) else {
             throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
@@ -362,9 +374,7 @@ actor FileScanner {
             }
         }
 
-        if enumerationError != nil {
-            throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
-        }
+        lastScanSkippedPaths.append(contentsOf: skippedPaths)
 
         progress?(
             ScanProgress(discoveredCount: files.count, currentPath: rootURL.path)

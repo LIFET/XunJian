@@ -8,6 +8,11 @@ struct HomeView: View {
     @State private var hoveredFileKind: FileKind?
     @State private var hoveredRecentFileID: String?
 
+    // Fixed sizes that still need to grow with the user's text size setting.
+    @ScaledMetric(relativeTo: .body) private var kindIconSize: CGFloat = 15
+    @ScaledMetric(relativeTo: .body) private var kindIconContainer: CGFloat = 28
+    @ScaledMetric(relativeTo: .body) private var sourceIconSize: CGFloat = 14
+
     @MainActor private static var finderDateFormatters: [String: DateFormatter] = [:]
 
     @MainActor private static func cachedFinderDateFormatter(for locale: Locale) -> DateFormatter {
@@ -30,7 +35,7 @@ struct HomeView: View {
     }
 
     private let columns = [
-        GridItem(.adaptive(minimum: 148), spacing: 12)
+        GridItem(.adaptive(minimum: XunJianUI.Breakpoint.homeCardMin), spacing: 12)
     ]
 
     var body: some View {
@@ -68,7 +73,11 @@ struct HomeView: View {
                     }
                     .buttonStyle(.borderedProminent)
                 }
-                .frame(maxWidth: .infinity, minHeight: 168, alignment: .center)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: XunJianUI.Breakpoint.homeEmptyStateHeight,
+                    alignment: .center
+                )
                 .background(
                     XunJianUI.Fill.quiet,
                     in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
@@ -99,6 +108,11 @@ struct HomeView: View {
                             }
                             .buttonStyle(.plain)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .accessibilityElement(children: .combine)
+                            .accessibilityHint(AppLanguage.localized(
+                                "在所有文件中显示这个文件",
+                                english: "Reveal this file in All Files"
+                            ))
                             .onHover { isHovering in
                                 hoveredRecentFileID = isHovering ? file.id : nil
                             }
@@ -126,8 +140,8 @@ struct HomeView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: kind.symbolName)
-                                .font(.system(size: 15, weight: .medium))
-                                .frame(width: 28, height: 28)
+                                .font(.system(size: kindIconSize, weight: .medium))
+                                .frame(width: kindIconContainer, height: kindIconContainer)
                                 .foregroundStyle(.tint)
                                 .background(
                                     Color.accentColor.opacity(0.10),
@@ -192,13 +206,11 @@ struct HomeView: View {
                                 Image(systemName: source.accessState == .available
                                       ? "folder.fill"
                                       : "folder.badge.exclamationmark")
-                                    .font(.system(size: 14, weight: .medium))
+                                    .font(.system(size: sourceIconSize, weight: .medium))
                                     .foregroundStyle(
-                                        Color(
-                                            nsColor: source.accessState == .available
-                                                ? .secondaryLabelColor
-                                                : .systemOrange
-                                        )
+                                        source.accessState == .available
+                                            ? Color(nsColor: .secondaryLabelColor)
+                                            : XunJianUI.Semantic.warning
                                     )
                                     .frame(width: 22)
                                 VStack(alignment: .leading, spacing: 2) {

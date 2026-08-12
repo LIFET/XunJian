@@ -13,8 +13,11 @@ struct CategoriesView: View {
     @State private var hoveredCategoryID: UUID?
     @State private var hoveredFileID: String?
 
+    @ScaledMetric(relativeTo: .body) private var categoryIconSize: CGFloat = 16
+    @ScaledMetric(relativeTo: .body) private var categoryIconContainer: CGFloat = 32
+
     private let columns = [
-        GridItem(.adaptive(minimum: 176), spacing: 12)
+        GridItem(.adaptive(minimum: XunJianUI.Breakpoint.categoryCardMin), spacing: 12)
     ]
 
     init(
@@ -167,7 +170,10 @@ struct CategoriesView: View {
                 systemImage: "folder.badge.plus",
                 description: Text("创建分类后，可以从文件右键菜单或详情栏添加。")
             )
-            .frame(maxWidth: .infinity, minHeight: 280)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
+            )
             .background(
                 XunJianUI.Fill.quiet,
                 in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
@@ -180,9 +186,9 @@ struct CategoriesView: View {
                     } label: {
                         HStack(spacing: 12) {
                             Image(systemName: category.symbolName)
-                                .font(.system(size: 16, weight: .medium))
+                                .font(.system(size: categoryIconSize, weight: .medium))
                                 .foregroundStyle(.tint)
-                                .frame(width: 32, height: 32)
+                                .frame(width: categoryIconContainer, height: categoryIconContainer)
                                 .background(
                                     Color.accentColor.opacity(0.10),
                                     in: RoundedRectangle(
@@ -239,7 +245,10 @@ struct CategoriesView: View {
                 systemImage: category.symbolName,
                 description: Text("从文件右键菜单或详情栏为文件添加分类。")
             )
-            .frame(maxWidth: .infinity, minHeight: 280)
+            .frame(
+                maxWidth: .infinity,
+                minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
+            )
             .background(
                 XunJianUI.Fill.quiet,
                 in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
@@ -343,6 +352,9 @@ struct CategoryEditorSheet: View {
     @State private var failure: String?
     @FocusState private var isNameFocused: Bool
 
+    @ScaledMetric(relativeTo: .body) private var symbolPickerIconSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var symbolPickerItemSide: CGFloat = 36
+
     private let symbols = [
         "folder", "briefcase", "doc.text", "paintbrush", "books.vertical",
         "banknote", "person", "archivebox", "building.2", "star"
@@ -373,7 +385,7 @@ struct CategoryEditorSheet: View {
             if let failure {
                 Text(AppLanguage.localizedRuntimeMessage(failure))
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(XunJianUI.Semantic.danger)
             }
 
             if allowsSymbolEditing {
@@ -386,8 +398,8 @@ struct CategoryEditorSheet: View {
                             symbolName = symbol
                         } label: {
                             Image(systemName: symbol)
-                                .font(.system(size: 14, weight: .medium))
-                                .frame(width: 36, height: 36)
+                                .font(.system(size: symbolPickerIconSize, weight: .medium))
+                                .frame(width: symbolPickerItemSide, height: symbolPickerItemSide)
                                 .foregroundStyle(symbolName == symbol ? Color.accentColor : .primary)
                                 .background {
                                     RoundedRectangle(

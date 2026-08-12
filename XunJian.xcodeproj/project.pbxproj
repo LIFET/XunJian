@@ -10,15 +10,16 @@
 		021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		03EB7BAB7AF7E37CB4A48044 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		184566558FB095A703D5586B /* NavigationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43201D1654A730877ECBF75B /* NavigationModelTests.swift */; };
-		1943AF9DF3EBA13A456D0A13 /* PhaseFiveMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C5A2C94C6C3E111CCD9ECB3 /* PhaseFiveMonitoring.swift */; };
 		19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 96B78063D48252AA329210EC /* Localizable.xcstrings */; };
 		2EF552A035D80815291AA5BA /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
 		3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFD5F7C7584F04173E53789 /* SidebarView.swift */; };
 		3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B18C3237ECC61CD2CD82C /* FileKind.swift */; };
-		47E84ECAF895A8042199A242 /* PhaseThreeServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8E4C6F88B2D2212D01214839 /* PhaseThreeServices.swift */; };
 		4E63E44E4F62D5954A25E6D6 /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA348B0B0255D42446072A13 /* AIServices.swift */; };
+		58AED1013622198E23D4277F /* TextExtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F0A94816760C43F4DD25EC /* TextExtraction.swift */; };
 		6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */; };
+		6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */; };
 		7323293492E005D8D79D6727 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2517C73D7AE3DB0297377AD /* AppShellView.swift */; };
 		7756F1F1ECF5C61FC1858CA5 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
 		792F5D29C8BED402315A3910 /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
@@ -31,7 +32,6 @@
 		8A807105F69189CF70AB62DC /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		8BB0DAF2A11BE40E5F3F7A38 /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
 		8C72C77B1541CE2111201966 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628A1CBBBA38BBDDFB782D69 /* AppModel.swift */; };
-		90CCE2151E1A5BCF46A3F89B /* PhaseFourSearch.swift in Sources */ = {isa = PBXBuildFile; fileRef = ABB2223AD987E34F6E29D22D /* PhaseFourSearch.swift */; };
 		9A71EA08EEF5A50302CD022B /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		A9ED913BE4459E41F70FDAA9 /* NavigationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC26C3607C36523F2A235CF2 /* NavigationDestination.swift */; };
 		AC06C23ACF76B36631C58C29 /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
@@ -41,6 +41,7 @@
 		B13DCBAB43B4DB756D910325 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */; };
 		B288C41B54D14A72162975D6 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */; };
+		BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = C54468C80E1522D1A0C77957 /* FileOperations.swift */; };
 		C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F231F3122DD79257F7992DC /* SettingsView.swift */; };
 		C7482C648B7A04231D00D4BE /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
 		C8A56C9BB0CCAA7E8C0C54B9 /* GrokRuntime in Resources */ = {isa = PBXBuildFile; fileRef = EC52269BC8BB801B1B84E170 /* GrokRuntime */; };
@@ -52,7 +53,6 @@
 		E08E6B0F9333A1D0E48AC76A /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		E1159BEEC47C0B9D05EB3293 /* OAuthProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */; };
 		EB24E7CAAAD7B9C1B82029D1 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
-		EB685C2C135A0362AD587347 /* PhaseSixAI.swift in Sources */ = {isa = PBXBuildFile; fileRef = 367A3CF942748EBE0C4EBF04 /* PhaseSixAI.swift */; };
 		F00045592B3AB2B2298D20E0 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92B314F97E88A0CC522217B1 /* CategoriesView.swift */; };
 		F84BE89AFC79E41CB630C2C2 /* OAuthProtocolClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */; };
@@ -134,9 +134,7 @@
 		07683A9FCD41A8E130B68004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupervisedLineProcess.swift; sourceTree = "<group>"; };
 		0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProcessTests.swift; sourceTree = "<group>"; };
-		1C5A2C94C6C3E111CCD9ECB3 /* PhaseFiveMonitoring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseFiveMonitoring.swift; sourceTree = "<group>"; };
 		32BA6CDAA07D84F751BCB92A /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
-		367A3CF942748EBE0C4EBF04 /* PhaseSixAI.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseSixAI.swift; sourceTree = "<group>"; };
 		3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianUnauthorizedClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexInfrastructure.swift; sourceTree = "<group>"; };
 		3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
@@ -145,25 +143,26 @@
 		4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeTests.swift; sourceTree = "<group>"; };
 		518EAC055AAB2A35A145333E /* AllFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllFilesView.swift; sourceTree = "<group>"; };
 		52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		5368817005F77D5C8DE5DBA7 /* 寻简.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "寻简.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5368817005F77D5C8DE5DBA7 /* XunJian.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJian.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		58F0A94816760C43F4DD25EC /* TextExtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextExtraction.swift; sourceTree = "<group>"; };
 		628A1CBBBA38BBDDFB782D69 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		797B5458753137204582954B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianFakeJSONLServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeProtocol.swift; sourceTree = "<group>"; };
 		887A0DAB00610B8EA25FC3BD /* FileCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileCategory.swift; sourceTree = "<group>"; };
-		8E4C6F88B2D2212D01214839 /* PhaseThreeServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseThreeServices.swift; sourceTree = "<group>"; };
 		9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeClient.swift; sourceTree = "<group>"; };
 		92B314F97E88A0CC522217B1 /* CategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoriesView.swift; sourceTree = "<group>"; };
 		96B78063D48252AA329210EC /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
 		9F231F3122DD79257F7992DC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OAuthRuntimeNOTICE.txt; sourceTree = "<group>"; };
 		AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONLineRPC.swift; sourceTree = "<group>"; };
-		ABB2223AD987E34F6E29D22D /* PhaseFourSearch.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhaseFourSearch.swift; sourceTree = "<group>"; };
 		B2517C73D7AE3DB0297377AD /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE43A33E45E0575433513A26 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
 		C10B18C3237ECC61CD2CD82C /* FileKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileKind.swift; sourceTree = "<group>"; };
 		C3DD241E98D39A705F43263E /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		C54468C80E1522D1A0C77957 /* FileOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileOperations.swift; sourceTree = "<group>"; };
+		C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystemMonitoring.swift; sourceTree = "<group>"; };
 		CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianApp.swift; sourceTree = "<group>"; };
 		CD6732F8837352F32453893E /* XunJianUntrustedOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianUntrustedOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProtocolClientTests.swift; sourceTree = "<group>"; };
@@ -173,6 +172,7 @@
 		EC52269BC8BB801B1B84E170 /* GrokRuntime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = GrokRuntime; path = XunJianOAuthBridge/Resources/GrokRuntime; sourceTree = SOURCE_ROOT; };
 		EEFD5F7C7584F04173E53789 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
 		F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianOAuthProcessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA348B0B0255D42446072A13 /* AIServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIServices.swift; sourceTree = "<group>"; };
 		FE0D9EBF00FF7A650608C6F6 /* CodexAppServer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CodexAppServer; path = XunJianOAuthBridge/Resources/CodexAppServer; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
@@ -250,7 +250,7 @@
 		A2E8AD2C9A171802BDB7B256 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				5368817005F77D5C8DE5DBA7 /* 寻简.app */,
+				5368817005F77D5C8DE5DBA7 /* XunJian.app */,
 				7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */,
 				BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */,
 				F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */,
@@ -274,13 +274,13 @@
 		B95608992BF274A2512DF915 /* Infrastructure */ = {
 			isa = PBXGroup;
 			children = (
+				FA348B0B0255D42446072A13 /* AIServices.swift */,
 				3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */,
+				C54468C80E1522D1A0C77957 /* FileOperations.swift */,
+				C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */,
 				9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */,
 				83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */,
-				1C5A2C94C6C3E111CCD9ECB3 /* PhaseFiveMonitoring.swift */,
-				ABB2223AD987E34F6E29D22D /* PhaseFourSearch.swift */,
-				367A3CF942748EBE0C4EBF04 /* PhaseSixAI.swift */,
-				8E4C6F88B2D2212D01214839 /* PhaseThreeServices.swift */,
+				58F0A94816760C43F4DD25EC /* TextExtraction.swift */,
 			);
 			path = Infrastructure;
 			sourceTree = "<group>";
@@ -366,7 +366,7 @@
 			packageProductDependencies = (
 			);
 			productName = XunJian;
-			productReference = 5368817005F77D5C8DE5DBA7 /* 寻简.app */;
+			productReference = 5368817005F77D5C8DE5DBA7 /* XunJian.app */;
 			productType = "com.apple.product-type.application";
 		};
 		472D90853C4BDB16093B56D0 /* XunJianUnauthorizedClient */ = {
@@ -485,7 +485,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2660;
+				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					0DC24C3952ED54BC312DD31C = {
 						DevelopmentTeam = "";
@@ -630,6 +630,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */,
 				AE84157F73CC62210F744673 /* AllFilesView.swift in Sources */,
 				8C72C77B1541CE2111201966 /* AppModel.swift in Sources */,
 				7323293492E005D8D79D6727 /* AppShellView.swift in Sources */,
@@ -638,17 +639,16 @@
 				FDBA47E30EAE388F63E23AF1 /* FileIndexInfrastructure.swift in Sources */,
 				87FA06B46B89AF69D4E738AA /* FileInspectorEmptyView.swift in Sources */,
 				3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */,
+				BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */,
+				6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */,
 				8814C8D4EC92666AF6EFD69D /* HomeView.swift in Sources */,
 				A9ED913BE4459E41F70FDAA9 /* NavigationDestination.swift in Sources */,
 				6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */,
 				021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */,
-				1943AF9DF3EBA13A456D0A13 /* PhaseFiveMonitoring.swift in Sources */,
-				90CCE2151E1A5BCF46A3F89B /* PhaseFourSearch.swift in Sources */,
-				EB685C2C135A0362AD587347 /* PhaseSixAI.swift in Sources */,
-				47E84ECAF895A8042199A242 /* PhaseThreeServices.swift in Sources */,
 				CE49BD91715B9A6C2BC715B3 /* SearchField.swift in Sources */,
 				C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */,
 				3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */,
+				58AED1013622198E23D4277F /* TextExtraction.swift in Sources */,
 				BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -701,8 +701,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -735,13 +733,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -768,7 +764,6 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -781,7 +776,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -801,7 +795,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -820,7 +813,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
@@ -841,8 +833,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -875,13 +865,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -901,7 +889,6 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -914,7 +901,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -932,7 +918,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -952,7 +937,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -971,7 +955,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
@@ -993,7 +976,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1012,7 +994,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1029,7 +1010,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1046,7 +1026,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1067,7 +1046,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1084,7 +1062,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1101,7 +1078,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

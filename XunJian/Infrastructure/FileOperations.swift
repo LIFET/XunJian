@@ -133,11 +133,34 @@ final class QuickLookPresenter: NSObject, @preconcurrency QLPreviewPanelDataSour
     }
 }
 
+struct ThumbnailFailure: Sendable {
+    let fileID: String
+    let error: any Error
+}
+
 @MainActor
 final class ThumbnailService {
     static let shared = ThumbnailService()
 
-    private let cache = NSCache<NSString, NSImage>()
+    /// Most recent generation failure, for diagnostics. Thumbnails degrade
+    /// gracefully to a symbol, so this is deliberately not surfaced as an alert.
+    private(set) var lastFailure: ThumbnailFailure?
+
+    private let cache: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        // Without limits the cache grows unbounded while browsing large folders.
+        cache.countLimit = 600
+        cache.totalCostLimit = 96 * 1_024 * 1_024
+        return cache
+    }()
+
+    /// Approximate backing-store cost in bytes, used to bound the cache by memory
+    /// rather than by entry count alone (a 512pt @2x thumbnail costs ~4MB).
+    private func cost(of image: NSImage, scale: CGFloat) -> Int {
+        let pixelWidth = image.size.width * scale
+        let pixelHeight = image.size.height * scale
+        return Int(pixelWidth * pixelHeight * 4)
+    }
 
     func thumbnail(for file: IndexedFile, size: CGSize, scale: CGFloat) async -> NSImage? {
         let cacheKey = "\(file.id)-\(Int(size.width))-\(Int(size.height))" as NSString
@@ -156,9 +179,13 @@ final class ThumbnailService {
             let representation = try await QLThumbnailGenerator.shared
                 .generateBestRepresentation(for: request)
             let image = NSImage(cgImage: representation.cgImage, size: size)
-            cache.setObject(image, forKey: cacheKey)
+            cache.setObject(image, forKey: cacheKey, cost: cost(of: image, scale: scale))
             return image
         } catch {
+            // Thumbnail generation legitimately fails for unsupported or
+            // unreadable files. Callers fall back to the file-kind symbol, but
+            // record the reason so the failure is diagnosable instead of silent.
+            lastFailure = ThumbnailFailure(fileID: file.id, error: error)
             return nil
         }
     }

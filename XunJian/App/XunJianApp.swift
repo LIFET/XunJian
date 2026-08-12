@@ -426,13 +426,13 @@ extension AIOAuthState {
     var statusColor: Color {
         switch self {
         case .connected:
-            .green
+            XunJianUI.Semantic.success
         case .starting, .authenticating, .signedInDisconnected, .signedInUnverified:
-            .orange
+            XunJianUI.Semantic.warning
         case .unavailable, .failed:
-            .red
+            XunJianUI.Semantic.danger
         case .statusUnknown, .disconnected:
-            .secondary
+            XunJianUI.Semantic.neutral
         }
     }
 

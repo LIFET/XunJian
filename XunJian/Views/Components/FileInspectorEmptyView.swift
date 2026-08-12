@@ -63,8 +63,8 @@ struct FileInspectorView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.bordered)
-                            .help("预览")
-                            .accessibilityLabel("预览")
+                            .help(AppLanguage.localized("预览", english: "Preview"))
+                            .accessibilityLabel(AppLanguage.localized("预览", english: "Preview"))
                             Button {
                                 appModel.showInFinder(file)
                             } label: {
@@ -73,8 +73,8 @@ struct FileInspectorView: View {
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.bordered)
-                            .help("在 Finder 中显示")
-                            .accessibilityLabel("在 Finder 中显示")
+                            .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
+                            .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
                         }
                         .frame(maxWidth: .infinity)
 

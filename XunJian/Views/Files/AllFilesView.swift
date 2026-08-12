@@ -89,6 +89,9 @@ struct AllFilesView: View {
             }
         }
         .environment(\.locale, locale)
+        // Gives the AI sheets a sense of layering above the content behind
+        // them. If this reads as too translucent on macOS, drop this line.
+        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -145,7 +148,7 @@ struct AllFilesView: View {
         if appModel.isSearching {
             ProgressView()
                 .controlSize(.small)
-                .accessibilityLabel("正在搜索")
+                .accessibilityLabel(AppLanguage.localized("正在搜索", english: "Searching"))
         } else if appModel.hasMoreSearchResults {
             Button {
                 appModel.loadMoreSearchResults()
@@ -217,7 +220,9 @@ struct AllFilesView: View {
         .accessibilityLabel("AI")
     }
 
-    private var usesCompactHeader: Bool { contentWidth < 520 }
+    private var usesCompactHeader: Bool {
+        contentWidth < XunJianUI.Breakpoint.compactPage
+    }
 
     private var responsiveFileToolbar: some View {
         ViewThatFits(in: .horizontal) {
@@ -337,7 +342,7 @@ struct AllFilesView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .accessibilityLabel("文件类型")
+        .accessibilityLabel(AppLanguage.localized("文件类型", english: "File Type"))
     }
 
     private var sortMenu: some View {
@@ -363,7 +368,7 @@ struct AllFilesView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
-        .accessibilityLabel("排序")
+        .accessibilityLabel(AppLanguage.localized("排序", english: "Sort"))
     }
 
     private var viewModeControl: some View {
@@ -499,8 +504,8 @@ struct AllFilesView: View {
             width: FileToolbarMetrics.iconButtonSide,
             height: FileToolbarMetrics.iconButtonSide
         )
-        .help("更多工具")
-        .accessibilityLabel("更多工具")
+        .help(AppLanguage.localized("更多工具", english: "More Tools"))
+        .accessibilityLabel(AppLanguage.localized("更多工具", english: "More Tools"))
         .menuIndicator(.hidden)
     }
 
@@ -559,6 +564,9 @@ struct AllFilesView: View {
                 }
             }
         }
+        .xunjianAnimation(value: viewMode)
+        .xunjianAnimation(value: hasPreparedDisplayedFilesSnapshot)
+        .xunjianAnimation(value: appModel.isSearching)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -799,9 +807,15 @@ struct AllFilesView: View {
                 selectableTableCell(file: file) {
                     HStack(spacing: 8) {
                         FileThumbnail(file: file, size: 24)
+                            .accessibilityHidden(true)
                         Text(file.name)
                             .lineLimit(1)
                     }
+                    // The name cell carries a summary of the whole row, so
+                    // VoiceOver users hear what the file is without having to
+                    // step through all six columns.
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(verbatim: rowAccessibilityLabel(for: file)))
                 }
             }
             .width(min: 150, ideal: nameColumnWidth, max: nameColumnWidth)
@@ -864,9 +878,7 @@ struct AllFilesView: View {
             .customizationID("location")
         }
         .scrollPosition(id: listScrollPositionBinding)
-        .frame(width: max(contentWidth, 640), alignment: .leading)
-        .frame(width: max(contentWidth, 0), alignment: .leading)
-        .clipped()
+        .frame(minWidth: Self.tableMinimumWidth, alignment: .leading)
         .onKeyPress(.return) {
             guard let file = appModel.selectedFile else { return .ignored }
             appModel.open(file)
@@ -910,8 +922,31 @@ struct AllFilesView: View {
             }
     }
 
+    /// Sum of every column's minimum width. The table must never be squeezed
+    /// below this, otherwise trailing columns get clipped instead of scrolled.
+    static let tableMinimumWidth: CGFloat = 565
+
+    /// Spoken summary of a table row: name, kind, size, and modification date.
+    private func rowAccessibilityLabel(for file: IndexedFile) -> String {
+        var parts = [
+            file.name,
+            file.kind.localizedTitle,
+            ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
+        ]
+        if let modifiedAt = file.modifiedAt {
+            parts.append(finderDateFormatter.string(from: modifiedAt))
+        }
+        let categoryNames = appModel.categories(for: file).map(\.localizedDisplayName)
+        if !categoryNames.isEmpty {
+            parts.append(categoryNames.joined(separator: AppLanguage.selected.usesEnglish ? ", " : "、"))
+        }
+        return parts.joined(separator: AppLanguage.selected.usesEnglish ? ", " : "，")
+    }
+
     private var tableColumnCompression: CGFloat {
-        min(max((contentWidth - 640) / (1_020 - 640), 0), 1)
+        let start = XunJianUI.Breakpoint.tableCompressionStart
+        let end = XunJianUI.Breakpoint.tableCompressionEnd
+        return min(max((contentWidth - start) / (end - start), 0), 1)
     }
 
     private func compressedColumnWidth(minimum: CGFloat, ideal: CGFloat) -> CGFloat {
@@ -1158,7 +1193,7 @@ private struct AISearchSheet: View {
             if let failure {
                 Text(AppLanguage.localizedRuntimeMessage(failure))
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(XunJianUI.Semantic.danger)
             }
 
             HStack {
@@ -1292,7 +1327,7 @@ private struct AIQuestionSheet: View {
                     ProgressView("正在阅读当前文件…")
                 } else if let failure {
                     Text(AppLanguage.localizedRuntimeMessage(failure))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
                 } else if !output.isEmpty {
                     ScrollView {
                         Text(output)
@@ -1382,7 +1417,7 @@ private struct AITextResultSheet: View {
                     ProgressView("正在读取必要文本…")
                 } else if let failure {
                     Text(AppLanguage.localizedRuntimeMessage(failure))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
                 } else if showsStart {
                     ContentUnavailableView(
                         AppLanguage.localized("准备分析当前文件", english: "Ready to Analyze This File"),
@@ -1477,7 +1512,7 @@ private struct AIClassificationSheet: View {
             if let failure {
                 Text(AppLanguage.localizedRuntimeMessage(failure))
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(XunJianUI.Semantic.danger)
             }
 
             classificationFooter

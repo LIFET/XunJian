@@ -105,6 +105,14 @@ final class AppModel: ObservableObject {
     private var scanningSourceIDs = Set<UUID>()
     private var currentScanningSourceID: UUID?
     private var failedScanningSourceIDs = Set<UUID>()
+    /// Folders skipped during the current scan because they were unreadable.
+    /// Summarised once the scan finishes so the user knows the index is partial.
+    private var skippedScanPaths: [String] = []
+
+    /// Debounce windows. Kept together so the responsiveness of the app can be
+    /// tuned in one place instead of hunting for literals.
+    private static let searchDebounce: Duration = .milliseconds(120)
+    private static let fileChangeDebounce: Duration = .milliseconds(350)
     private var searchTask: Task<Void, Never>?
     private var fileChangeTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingFileChanges: [UUID: Set<FileSystemChangeEvent>] = [:]
@@ -276,7 +284,7 @@ final class AppModel: ObservableObject {
         let includesHiddenFiles = includesHiddenFiles
         searchTask = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(120))
+                try await Task.sleep(for: Self.searchDebounce)
                 let page = try await database.searchFilesPage(
                     matching: query,
                     limit: Self.searchResultBatchSize,
@@ -607,7 +615,7 @@ final class AppModel: ObservableObject {
     }
 
     func deleteCategory(_ category: FileCategory) {
-        guard let database else { return }
+        guard let database else { return reportDatabaseUnavailable() }
         Task { [weak self] in
             do {
                 try await database.deleteCategory(category.id)
@@ -619,7 +627,7 @@ final class AppModel: ObservableObject {
     }
 
     func toggleCategory(_ category: FileCategory, for file: IndexedFile) {
-        guard let database else { return }
+        guard let database else { return reportDatabaseUnavailable() }
         let key = FileCategoryAssignmentKey(fileID: file.id, categoryID: category.id)
         let existing = pendingCategoryAssignments[key]
         let shouldAssign = Self.categoryAssignmentAfterToggle(
@@ -1147,7 +1155,9 @@ final class AppModel: ObservableObject {
     }
 
     func performAISearch(_ query: String) async throws {
-        guard let database else { return }
+        guard let database else {
+            throw FileIndexError.database("database unavailable")
+        }
         let service = try currentAIService()
         let plan = try await service.searchPlan(for: query)
         try Task.checkCancellation()
@@ -1226,7 +1236,9 @@ final class AppModel: ObservableObject {
     }
 
     func undoAIClassification(_ changes: [AIClassificationChange]) async throws {
-        guard let database else { return }
+        guard let database else {
+            throw FileIndexError.database("database unavailable")
+        }
         try await database.setCategories(changes, assigned: false)
         await reloadIndex()
     }
@@ -1580,7 +1592,7 @@ final class AppModel: ObservableObject {
     }
 
     private func addSource(_ url: URL) async {
-        guard let database else { return }
+        guard let database else { return reportDatabaseUnavailable() }
 
         do {
             try Self.validateSourceCandidate(url, against: sources)
@@ -1626,7 +1638,7 @@ final class AppModel: ObservableObject {
     }
 
     private func restoreAuthorization(for source: FileSource, using url: URL) async {
-        guard let database else { return }
+        guard let database else { return reportDatabaseUnavailable() }
 
         do {
             try Self.validateSourceCandidate(
@@ -1733,7 +1745,7 @@ final class AppModel: ObservableObject {
         keepsScanningState: Bool = false,
         generation: UUID
     ) async {
-        guard let database else { return }
+        guard let database else { return reportDatabaseUnavailable() }
         isScanning = true
         scanProgress = ScanProgress(discoveredCount: 0, currentPath: source.path)
 
@@ -1770,6 +1782,7 @@ final class AppModel: ObservableObject {
                   scanningSourceIDs.contains(source.id) else { return }
             try await database.replaceFiles(for: source.id, with: scannedFiles)
             guard scanGeneration == generation else { return }
+            skippedScanPaths.append(contentsOf: await scanner.lastScanSkippedPaths)
             await reloadIndex()
         } catch is CancellationError {
             // 用户取消扫描时保留上一次完整索引。
@@ -1802,7 +1815,20 @@ final class AppModel: ObservableObject {
                 "扫描未完成：无法读取\(failedNames)。旧索引已保留，请检查权限后重试。",
                 english: "Scan incomplete: couldn’t read \(failedNames). The previous index was preserved; check permissions and retry."
             )
+        } else if !skippedScanPaths.isEmpty {
+            // The scan itself succeeded, but some folders were unreadable and
+            // their contents are missing from the index. Say so rather than
+            // letting the user assume the index is complete.
+            let count = skippedScanPaths.count
+            let sample = skippedScanPaths.prefix(3)
+                .map { URL(fileURLWithPath: $0).lastPathComponent }
+                .joined(separator: AppLanguage.localized("、", english: ", "))
+            errorMessage = AppLanguage.localized(
+                "扫描完成，但有 \(count) 个位置无法读取，已跳过（例如 \(sample)）。这些位置的文件不在索引中。",
+                english: "Scan finished, but \(count) location(s) couldn’t be read and were skipped (for example \(sample)). Files there are not in the index."
+            )
         }
+        skippedScanPaths.removeAll()
         failedScanningSourceIDs.removeAll()
         scanningSourceIDs.removeAll()
         currentScanningSourceID = nil
@@ -1929,7 +1955,7 @@ final class AppModel: ObservableObject {
         fileChangeTasks[sourceID]?.cancel()
         fileChangeTasks[sourceID] = Task { [weak self] in
             do {
-                try await Task.sleep(for: .milliseconds(350))
+                try await Task.sleep(for: Self.fileChangeDebounce)
             } catch {
                 return
             }
@@ -2118,6 +2144,16 @@ final class AppModel: ObservableObject {
 
     static func shouldQueueFullRescan(isScanning: Bool) -> Bool {
         isScanning
+    }
+
+    /// Surfaces the "database is unavailable" state instead of returning
+    /// silently. Actions that hit this path would otherwise appear to do
+    /// nothing at all when the index cannot be opened.
+    private func reportDatabaseUnavailable() {
+        errorMessage = AppLanguage.localized(
+            "文件索引当前不可用，请在设置中重试后再操作。",
+            english: "The file index is currently unavailable. Retry from Settings and try again."
+        )
     }
 
     private static func message(for error: Error) -> String {

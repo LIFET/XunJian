@@ -2,13 +2,19 @@
   "sourceLanguage" : "zh-Hans",
   "strings" : {
     "" : {
-
+      "shouldTranslate" : false
     },
     "—" : {
       "shouldTranslate" : false
     },
     "%@，%@" : {
       "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$@, %2$@"
+          }
+        },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "new",
@@ -18,7 +24,7 @@
       }
     },
     "AI" : {
-
+      "shouldTranslate" : false
     },
     "AI 分类" : {
       "localizations" : {
@@ -258,7 +264,14 @@
       }
     },
     "信息" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Info"
+          }
+        }
+      }
     },
     "修改分类名称" : {
       "localizations" : {
@@ -535,7 +548,14 @@
       }
     },
     "完成" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Done"
+          }
+        }
+      }
     },
     "寻简" : {
       "localizations" : {
@@ -793,7 +813,14 @@
       }
     },
     "新建分类…" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "New Category…"
+          }
+        }
+      }
     },
     "显示以点号开头的隐藏文件" : {
       "extractionState" : "stale",
@@ -828,7 +855,14 @@
       }
     },
     "更多" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More"
+          }
+        }
+      }
     },
     "更多工具" : {
       "localizations" : {
@@ -841,7 +875,14 @@
       }
     },
     "更多操作" : {
-
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "More Actions"
+          }
+        }
+      }
     },
     "未选择文件" : {
       "localizations" : {

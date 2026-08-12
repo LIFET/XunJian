@@ -3,6 +3,7 @@ import SwiftUI
 struct AppShellView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selection: NavigationDestination? = .home
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var showsInspector = false
@@ -45,6 +46,7 @@ struct AppShellView: View {
                         ScanStatusView(progress: progress) {
                             appModel.cancelScan()
                         }
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
                     if !appModel.isDatabaseAvailable {
@@ -63,10 +65,11 @@ struct AppShellView: View {
                             .controlSize(.small)
                         }
                         .font(.caption)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(XunJianUI.Semantic.warning)
                         .padding(.horizontal, XunJianUI.Spacing.page)
                         .padding(.vertical, 8)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
                     Divider()
@@ -74,6 +77,9 @@ struct AppShellView: View {
 
                     selectedContent(contentWidth: detailGeometry.size.width)
                 }
+                .xunjianAnimation(value: appModel.isScanning)
+                .xunjianAnimation(value: appModel.isDatabaseAvailable)
+                .xunjianAnimation(value: selection)
                 .background(Color(nsColor: .windowBackgroundColor))
             }
         }
@@ -83,12 +89,17 @@ struct AppShellView: View {
                     .inspectorColumnWidth(min: 260, ideal: 300, max: 360)
                     .environment(\.locale, locale)
                     .disabled(!appModel.isDatabaseAvailable)
+                    // Separates the inspector from the content area with depth
+                    // rather than relying on a hairline divider alone.
+                    .background(.regularMaterial)
             }
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    showsInspector.toggle()
+                    withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) {
+                        showsInspector.toggle()
+                    }
                     inspectorWasAutoCollapsed = false
                 } label: {
                     Label("文件详情", systemImage: "sidebar.right")
@@ -167,14 +178,14 @@ struct AppShellView: View {
         _ oldValue: NavigationSplitViewVisibility,
         _ newValue: NavigationSplitViewVisibility
     ) {
-        let isAutomaticCollapse = windowWidth < 960
+        let isAutomaticCollapse = windowWidth < XunJianUI.Breakpoint.sidebarAutoCollapse
             && newValue == .detailOnly
             && sidebarWasAutoCollapsed
         if !isAutomaticCollapse { sidebarWasAutoCollapsed = false }
     }
 
     private func handleInspectorVisibilityChange(_ oldValue: Bool, _ isPresented: Bool) {
-        let isAutomaticCollapse = windowWidth < 1_080
+        let isAutomaticCollapse = windowWidth < XunJianUI.Breakpoint.inspectorAutoCollapse
             && !isPresented
             && inspectorWasAutoCollapsed
         if !isAutomaticCollapse { inspectorWasAutoCollapsed = false }
@@ -226,19 +237,29 @@ struct AppShellView: View {
         let previousWidth = windowWidth
         windowWidth = newWidth
 
-        if previousWidth >= 1_080, newWidth < 1_080, showsInspector {
-            showsInspector = false
+        let animation = XunJianUI.motion(reduceMotion: reduceMotion)
+
+        if previousWidth >= XunJianUI.Breakpoint.inspectorAutoCollapse,
+           newWidth < XunJianUI.Breakpoint.inspectorAutoCollapse,
+           showsInspector {
+            withAnimation(animation) { showsInspector = false }
             inspectorWasAutoCollapsed = true
-        } else if previousWidth <= 1_140, newWidth > 1_140, inspectorWasAutoCollapsed {
-            showsInspector = true
+        } else if previousWidth <= XunJianUI.Breakpoint.inspectorRestore,
+                  newWidth > XunJianUI.Breakpoint.inspectorRestore,
+                  inspectorWasAutoCollapsed {
+            withAnimation(animation) { showsInspector = true }
             inspectorWasAutoCollapsed = false
         }
 
-        if previousWidth >= 960, newWidth < 960, columnVisibility != .detailOnly {
-            columnVisibility = .detailOnly
+        if previousWidth >= XunJianUI.Breakpoint.sidebarAutoCollapse,
+           newWidth < XunJianUI.Breakpoint.sidebarAutoCollapse,
+           columnVisibility != .detailOnly {
+            withAnimation(animation) { columnVisibility = .detailOnly }
             sidebarWasAutoCollapsed = true
-        } else if previousWidth <= 1_020, newWidth > 1_020, sidebarWasAutoCollapsed {
-            columnVisibility = .all
+        } else if previousWidth <= XunJianUI.Breakpoint.sidebarRestore,
+                  newWidth > XunJianUI.Breakpoint.sidebarRestore,
+                  sidebarWasAutoCollapsed {
+            withAnimation(animation) { columnVisibility = .all }
             sidebarWasAutoCollapsed = false
         }
     }
@@ -311,7 +332,7 @@ private struct RenameFileSheet: View {
             if let failure {
                 Text(AppLanguage.localizedRuntimeMessage(failure))
                     .font(.caption)
-                    .foregroundStyle(.red)
+                    .foregroundStyle(XunJianUI.Semantic.danger)
             }
             HStack {
                 Spacer()
@@ -373,6 +394,7 @@ private struct ScanStatusView: View {
         HStack(spacing: 10) {
             ProgressView()
                 .controlSize(.small)
+                .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
                 Text(
                     AppLanguage.localized(
@@ -389,6 +411,8 @@ private struct ScanStatusView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 
     private var cancelButton: some View {

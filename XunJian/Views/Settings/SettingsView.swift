@@ -283,7 +283,7 @@ private struct AIProviderSettingsRow: View {
                         systemImage: "exclamationmark.circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(XunJianUI.Semantic.warning)
                 }
 
                 responsiveField("API Key") {
@@ -311,7 +311,7 @@ private struct AIProviderSettingsRow: View {
                 if case let .failed(message) = connectionState {
                     Text(verbatim: AppLanguage.localizedRuntimeMessage(message))
                         .font(.caption)
-                        .foregroundStyle(.red)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
                 }
                 if showsSavedConfirmation {
                     Label(
@@ -319,7 +319,7 @@ private struct AIProviderSettingsRow: View {
                         systemImage: "checkmark.circle.fill"
                     )
                     .font(.caption)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(XunJianUI.Semantic.success)
                     .transition(.opacity)
                 }
             }
@@ -974,10 +974,10 @@ struct AIProviderCollapsedStatusPresentation: Equatable {
 
         var color: Color {
             switch self {
-            case .secondary: .secondary
-            case .green: .green
-            case .orange: .orange
-            case .red: .red
+            case .secondary: XunJianUI.Semantic.neutral
+            case .green: XunJianUI.Semantic.success
+            case .orange: XunJianUI.Semantic.warning
+            case .red: XunJianUI.Semantic.danger
             }
         }
     }
