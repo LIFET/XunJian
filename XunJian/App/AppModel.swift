@@ -459,6 +459,10 @@ final class AppModel: ObservableObject {
         index.quickLook(file)
     }
 
+    func copyPath(_ file: IndexedFile) {
+        index.copyPath(file)
+    }
+
     func rename(_ file: IndexedFile, to newName: String) async throws {
         try await index.rename(file, to: newName)
         renameRequest = nil

@@ -934,6 +934,13 @@ struct AllFilesView: View {
             appModel.quickLook(file)
             return .handled
         }
+        .onKeyPress(phases: .down) { press in
+            guard press.characters.lowercased() == "c",
+                  press.modifiers.contains(.command) else { return .ignored }
+            guard let file = appModel.selectedFile else { return .ignored }
+            appModel.copyPath(file)
+            return .handled
+        }
         .onKeyPress(.deleteForward) {
             guard let file = appModel.selectedFile else { return .ignored }
             appModel.requestTrash(file)
@@ -1083,6 +1090,13 @@ struct AllFilesView: View {
         .onKeyPress(.space) {
             guard let file = appModel.selectedFile else { return .ignored }
             appModel.quickLook(file)
+            return .handled
+        }
+        .onKeyPress(phases: .down) { press in
+            guard press.characters.lowercased() == "c",
+                  press.modifiers.contains(.command) else { return .ignored }
+            guard let file = appModel.selectedFile else { return .ignored }
+            appModel.copyPath(file)
             return .handled
         }
         .onKeyPress(.deleteForward) {
@@ -1820,6 +1834,9 @@ struct FileContextMenu: View {
         Button("打开") { appModel.open(file) }
         Button("快速查看") { appModel.quickLook(file) }
         Button("在 Finder 中显示") { appModel.showInFinder(file) }
+        Button(AppLanguage.localized("复制路径", english: "Copy Path")) {
+            appModel.copyPath(file)
+        }
 
         Divider()
 

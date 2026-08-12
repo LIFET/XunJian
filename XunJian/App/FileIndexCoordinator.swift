@@ -507,6 +507,14 @@ final class FileIndexCoordinator: ObservableObject {
         QuickLookPresenter.shared.present(file.url)
     }
 
+    /// Copies the file's POSIX path to the pasteboard (N01). The most common
+    /// next step after finding a file used to require the context menu only.
+    func copyPath(_ file: IndexedFile) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(file.path, forType: .string)
+    }
+
     func rename(_ file: IndexedFile, to newName: String) async throws {
         guard isDatabaseAvailable else {
             throw FileIndexError.database("database unavailable")
