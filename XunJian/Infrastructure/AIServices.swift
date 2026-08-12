@@ -478,22 +478,65 @@ private struct OpenAICompatibleProvider: Sendable {
             ChatCompletionRequest(model: model, messages: messages, stream: false)
         )
 
-        let (data, response) = try await transport.data(for: request)
-        guard (200..<300).contains(response.statusCode) else {
-            let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
-            let message = envelope?.error.message ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
-            throw AIServiceError.requestFailed(message)
-        }
+        // F23: transient failures get one retry with exponential backoff.
+        // Non-transient errors (bad key, bad model, 4xx) surface immediately.
+        var attempt = 0
+        while true {
+            do {
+                let (data, response) = try await transport.data(for: request)
+                try Task.checkCancellation()
+                guard (200..<300).contains(response.statusCode) else {
+                    let envelope = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
+                    let message = envelope?.error.message
+                        ?? HTTPURLResponse.localizedString(forStatusCode: response.statusCode)
+                    throw AIServiceError.requestFailed(message)
+                }
 
-        guard let content = try JSONDecoder()
-            .decode(ChatCompletionResponse.self, from: data)
-            .choices.first?.message.content?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !content.isEmpty else {
-            throw AIServiceError.invalidResponse
+                guard let content = try JSONDecoder()
+                    .decode(ChatCompletionResponse.self, from: data)
+                    .choices.first?.message.content?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                      !content.isEmpty else {
+                    throw AIServiceError.invalidResponse
+                }
+                return content
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as AIServiceError {
+                guard isTransient(error) else { throw error }
+                if attempt >= Self.maxRetries { throw error }
+                attempt += 1
+                try await Task.sleep(for: Self.retryDelays[attempt - 1])
+            } catch {
+                // Cancellation must never be retried.
+                if Task.isCancelled { throw CancellationError() }
+                // Network-level errors (timeouts, dropped connections).
+                if attempt >= Self.maxRetries { throw error }
+                attempt += 1
+                try await Task.sleep(for: Self.retryDelays[attempt - 1])
+            }
         }
-        return content
     }
+
+    /// Errors worth retrying: rate limits and server faults. 4xx client
+    /// errors (bad key, bad model, bad request) fail fast instead.
+    private func isTransient(_ error: AIServiceError) -> Bool {
+        guard case let .requestFailed(message) = error else { return false }
+        let lowercased = message.lowercased()
+        return lowercased.contains("429")
+            || lowercased.contains("too many")
+            || lowercased.contains("rate limit")
+            || lowercased.contains("server error")
+            || lowercased.contains("500")
+            || lowercased.contains("502")
+            || lowercased.contains("503")
+            || lowercased.contains("504")
+            || lowercased.contains("overloaded")
+            || lowercased.contains("internal error")
+    }
+
+    private static let maxRetries = 2
+    private static let retryDelays: [Duration] = [.seconds(1), .seconds(2)]
 }
 
 private struct ChatCompletionRequest: Encodable {

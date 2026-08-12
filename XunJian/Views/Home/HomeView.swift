@@ -13,25 +13,8 @@ struct HomeView: View {
     @ScaledMetric(relativeTo: .body) private var kindIconContainer: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var sourceIconSize: CGFloat = 14
 
-    @MainActor private static var finderDateFormatters: [String: DateFormatter] = [:]
-
-    @MainActor private static func cachedFinderDateFormatter(for locale: Locale) -> DateFormatter {
-        if let formatter = finderDateFormatters[locale.identifier] {
-            return formatter
-        }
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = .autoupdatingCurrent
-        formatter.timeZone = .autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        formatter.doesRelativeDateFormatting = true
-        finderDateFormatters[locale.identifier] = formatter
-        return formatter
-    }
-
     private var finderDateFormatter: DateFormatter {
-        Self.cachedFinderDateFormatter(for: locale)
+        FinderDateFormatting.formatter(for: locale)
     }
 
     private let columns = [

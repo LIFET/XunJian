@@ -18,6 +18,7 @@
 		3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B18C3237ECC61CD2CD82C /* FileKind.swift */; };
 		49E9F7AE170B03D5EF343ABD /* OAuthCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */; };
 		4E63E44E4F62D5954A25E6D6 /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		52544038226A3498EB8D9C1D /* FileBrowsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */; };
 		584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA348B0B0255D42446072A13 /* AIServices.swift */; };
 		58AED1013622198E23D4277F /* TextExtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F0A94816760C43F4DD25EC /* TextExtraction.swift */; };
 		65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */; };
@@ -56,6 +57,7 @@
 		D7EF2E9A2E2CF71AECA915F5 /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
 		E08E6B0F9333A1D0E48AC76A /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		E1159BEEC47C0B9D05EB3293 /* OAuthProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */; };
+		E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */; };
 		EB24E7CAAAD7B9C1B82029D1 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
 		F00045592B3AB2B2298D20E0 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92B314F97E88A0CC522217B1 /* CategoriesView.swift */; };
@@ -138,6 +140,7 @@
 		07683A9FCD41A8E130B68004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupervisedLineProcess.swift; sourceTree = "<group>"; };
 		0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProcessTests.swift; sourceTree = "<group>"; };
+		1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowsing.swift; sourceTree = "<group>"; };
 		32BA6CDAA07D84F751BCB92A /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
 		3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthCoordinator.swift; sourceTree = "<group>"; };
 		3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianUnauthorizedClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -171,6 +174,7 @@
 		C3DD241E98D39A705F43263E /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		C54468C80E1522D1A0C77957 /* FileOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileOperations.swift; sourceTree = "<group>"; };
 		C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystemMonitoring.swift; sourceTree = "<group>"; };
+		C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderDateFormatting.swift; sourceTree = "<group>"; };
 		CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianApp.swift; sourceTree = "<group>"; };
 		CD6732F8837352F32453893E /* XunJianUntrustedOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianUntrustedOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProtocolClientTests.swift; sourceTree = "<group>"; };
@@ -332,7 +336,9 @@
 		F763909B60DCA2CA69BC1B03 /* Components */ = {
 			isa = PBXGroup;
 			children = (
+				1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */,
 				E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */,
+				C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */,
 				32BA6CDAA07D84F751BCB92A /* SearchField.swift */,
 			);
 			path = Components;
@@ -648,6 +654,7 @@
 				8C72C77B1541CE2111201966 /* AppModel.swift in Sources */,
 				7323293492E005D8D79D6727 /* AppShellView.swift in Sources */,
 				F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */,
+				52544038226A3498EB8D9C1D /* FileBrowsing.swift in Sources */,
 				D31131EFD9936B501A29E50B /* FileCategory.swift in Sources */,
 				2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */,
 				FDBA47E30EAE388F63E23AF1 /* FileIndexInfrastructure.swift in Sources */,
@@ -655,6 +662,7 @@
 				3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */,
 				BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */,
 				6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */,
+				E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */,
 				8814C8D4EC92666AF6EFD69D /* HomeView.swift in Sources */,
 				A9ED913BE4459E41F70FDAA9 /* NavigationDestination.swift in Sources */,
 				6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */,

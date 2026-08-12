@@ -13,6 +13,13 @@ struct CategoriesView: View {
     @State private var hoveredCategoryID: UUID?
     @State private var hoveredFileID: String?
 
+    // Browsing preferences for the category detail page (N05). Persisted so
+    // they survive page switches and relaunches, matching "All Files".
+    @AppStorage("category.viewMode") private var viewMode = FileBrowseViewMode.list
+    @AppStorage("category.sortOrder") private var sortOrder = FileSortOrder.modifiedAt
+    @AppStorage("category.sortAscending") private var sortAscending = false
+    @State private var selectedKind: FileKind?
+
     @ScaledMetric(relativeTo: .body) private var categoryIconSize: CGFloat = 16
     @ScaledMetric(relativeTo: .body) private var categoryIconContainer: CGFloat = 32
 
@@ -238,8 +245,10 @@ struct CategoriesView: View {
 
     @ViewBuilder
     private func categoryFiles(_ category: FileCategory) -> some View {
-        let files = appModel.files(in: category)
-        if files.isEmpty {
+        let allFiles = appModel.files(in: category)
+        let files = displayedFiles(in: category)
+
+        if allFiles.isEmpty {
             ContentUnavailableView(
                 "这个分类里还没有文件",
                 systemImage: category.symbolName,
@@ -254,73 +263,152 @@ struct CategoriesView: View {
                 in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
             )
         } else {
-            GroupedSurface(padding: 4) {
-                LazyVStack(spacing: 0) {
-                    ForEach(files) { file in
-                        Button {
-                            appModel.selectedFileID = file.id
-                        } label: {
-                            HStack(spacing: 12) {
-                                FileThumbnail(file: file, size: 34)
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(verbatim: file.name)
-                                        .lineLimit(1)
-                                    Text(verbatim: file.parentPath)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
-                                }
-                                Spacer(minLength: 0)
-                                Text(
-                                    verbatim: ByteCountFormatter.string(
-                                        fromByteCount: file.size,
-                                        countStyle: .file
-                                    )
-                                )
+            VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+                FileBrowseToolbar(
+                    selectedKind: $selectedKind,
+                    sortOrder: $sortOrder,
+                    sortAscending: $sortAscending,
+                    viewMode: $viewMode
+                )
+
+                if files.isEmpty {
+                    kindFilterEmptyState
+                } else if viewMode == .grid {
+                    categoryFileGrid(files)
+                } else {
+                    categoryFileList(files)
+                }
+            }
+            .xunjianAnimation(value: viewMode)
+            .xunjianAnimation(value: files.map(\.id))
+        }
+    }
+
+    /// Only reachable when the category has files but the type filter hides
+    /// them all, so the recovery action is clearing the filter.
+    private var kindFilterEmptyState: some View {
+        ContentUnavailableView {
+            Label(
+                AppLanguage.localized("没有匹配的文件", english: "No Matching Files"),
+                systemImage: "line.3.horizontal.decrease.circle"
+            )
+        } description: {
+            Text(verbatim: AppLanguage.localized(
+                "这个分类里没有该类型的文件。",
+                english: "This category has no files of that type."
+            ))
+        } actions: {
+            Button(AppLanguage.localized("显示所有类型", english: "Show All Types")) {
+                selectedKind = nil
+            }
+        }
+        .frame(
+            maxWidth: .infinity,
+            minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
+        )
+        .background(
+            XunJianUI.Fill.quiet,
+            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+        )
+    }
+
+    private func categoryFileGrid(_ files: [IndexedFile]) -> some View {
+        LazyVGrid(columns: FileGridCard.gridColumns, spacing: 14) {
+            ForEach(files) { file in
+                FileGridCard(
+                    file: file,
+                    isSelected: appModel.selectedFileID == file.id,
+                    isHovered: hoveredFileID == file.id,
+                    onSelect: { appModel.selectedFileID = file.id },
+                    onOpen: {
+                        appModel.selectedFileID = file.id
+                        appModel.open(file)
+                    },
+                    onHover: { isHovering in
+                        hoveredFileID = isHovering ? file.id : nil
+                    }
+                )
+                .contextMenu {
+                    FileContextMenu(file: file)
+                }
+            }
+        }
+    }
+
+    private func categoryFileList(_ files: [IndexedFile]) -> some View {
+        GroupedSurface(padding: 4) {
+            LazyVStack(spacing: 0) {
+                ForEach(files) { file in
+                    Button {
+                        appModel.selectedFileID = file.id
+                    } label: {
+                        HStack(spacing: 12) {
+                            FileThumbnail(file: file, size: 34)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(verbatim: file.name)
+                                    .lineLimit(1)
+                                Text(verbatim: file.parentPath)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                            }
+                            Spacer(minLength: 0)
+                            Text(verbatim: FileGridCard.sizeText(file))
                                 .font(.caption)
                                 .foregroundStyle(.tertiary)
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(
-                                categoryFileBackground(for: file),
-                                in: RoundedRectangle(
-                                    cornerRadius: XunJianUI.Radius.row,
-                                    style: .continuous
-                                )
-                            )
-                            .contentShape(Rectangle())
                         }
-                        .buttonStyle(.plain)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .simultaneousGesture(
-                            TapGesture(count: 2).onEnded {
-                                appModel.selectedFileID = file.id
-                                appModel.open(file)
-                            }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 9)
+                        .background(
+                            categoryFileBackground(for: file),
+                            in: RoundedRectangle(
+                                cornerRadius: XunJianUI.Radius.row,
+                                style: .continuous
+                            )
                         )
-                        .onHover { isHovering in
-                            hoveredFileID = isHovering ? file.id : nil
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .simultaneousGesture(
+                        TapGesture(count: 2).onEnded {
+                            appModel.selectedFileID = file.id
+                            appModel.open(file)
                         }
-                        .contextMenu {
-                            FileContextMenu(file: file)
-                        }
+                    )
+                    .onHover { isHovering in
+                        hoveredFileID = isHovering ? file.id : nil
+                    }
+                    .contextMenu {
+                        FileContextMenu(file: file)
+                    }
 
-                        if file.id != files.last?.id {
-                            Divider()
-                                .padding(.leading, 56)
-                        }
+                    if file.id != files.last?.id {
+                        Divider()
+                            .padding(.leading, 56)
                     }
                 }
             }
         }
     }
 
+    /// Applies the page's type filter and sort order. Kept separate from the
+    /// view body so the selection-cleanup path can use the same result.
+    private func displayedFiles(in category: FileCategory) -> [IndexedFile] {
+        let files = appModel.files(in: category)
+        let filtered = selectedKind.map { kind in
+            files.filter { $0.kind == kind }
+        } ?? files
+        return sortOrder.sorted(filtered, ascending: sortAscending)
+    }
+
+    /// Drives selection cleanup. Uses the filtered list so a file hidden by
+    /// the type filter cannot stay selected in the inspector.
     private var selectedCategoryFileIDs: [String] {
         guard let selectedCategory else { return appModel.files.map(\.id) }
-        return appModel.files(in: selectedCategory).map(\.id)
+        return displayedFiles(in: selectedCategory).map(\.id)
     }
 
     private var deleteMessage: String {

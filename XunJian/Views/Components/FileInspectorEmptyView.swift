@@ -5,21 +5,8 @@ struct FileInspectorView: View {
     @Environment(\.locale) private var locale
     let file: IndexedFile?
 
-    @MainActor private static var finderDateFormatters: [String: DateFormatter] = [:]
-
-    @MainActor private static func cachedFinderDateFormatter(for locale: Locale) -> DateFormatter {
-        if let formatter = finderDateFormatters[locale.identifier] {
-            return formatter
-        }
-        let formatter = DateFormatter()
-        formatter.locale = locale
-        formatter.calendar = .autoupdatingCurrent
-        formatter.timeZone = .autoupdatingCurrent
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        formatter.doesRelativeDateFormatting = true
-        finderDateFormatters[locale.identifier] = formatter
-        return formatter
+    private var finderDateFormatter: DateFormatter {
+        FinderDateFormatting.formatter(for: locale)
     }
 
     var body: some View {
@@ -212,7 +199,7 @@ struct FileInspectorView: View {
 
     private func formatted(_ date: Date?) -> String {
         guard let date else { return "—" }
-        return Self.cachedFinderDateFormatter(for: locale).string(from: date)
+        return FinderDateFormatting.formatter(for: locale).string(from: date)
     }
 
     private func categorySummary(for file: IndexedFile) -> String {
