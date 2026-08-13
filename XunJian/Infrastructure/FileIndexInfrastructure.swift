@@ -14,6 +14,8 @@ struct IndexedFile: Identifiable, Hashable, Sendable {
     let modifiedAt: Date?
     let indexedAt: Date
     let textContent: String?
+    /// Read-only Finder tags captured at scan time (N11).
+    let tagNames: [String]
 
     init(
         id: String,
@@ -26,7 +28,8 @@ struct IndexedFile: Identifiable, Hashable, Sendable {
         createdAt: Date?,
         modifiedAt: Date?,
         indexedAt: Date,
-        textContent: String? = nil
+        textContent: String? = nil,
+        tagNames: [String] = []
     ) {
         self.id = id
         self.sourceID = sourceID
@@ -39,6 +42,7 @@ struct IndexedFile: Identifiable, Hashable, Sendable {
         self.modifiedAt = modifiedAt
         self.indexedAt = indexedAt
         self.textContent = textContent
+        self.tagNames = tagNames
     }
 
     var url: URL { URL(fileURLWithPath: path) }

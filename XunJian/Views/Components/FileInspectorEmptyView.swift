@@ -9,6 +9,8 @@ struct FileInspectorView: View {
     @State private var previewText: String?
     @State private var previewLimit = 2_000
     @State private var isLoadingPreview = false
+    // Read-only Finder tags, fetched live rather than indexed (N11).
+    @State private var finderTags: [String] = []
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
@@ -180,6 +182,16 @@ struct FileInspectorView: View {
                             )
                             detail("创建时间", value: formatted(file.createdAt))
                             detail("修改时间", value: formatted(file.modifiedAt))
+
+                            // N11: read-only Finder tags, fetched live.
+                            if !finderTags.isEmpty {
+                                detail(
+                                    "Finder 标签",
+                                    value: finderTags.joined(
+                                        separator: AppLanguage.selected.usesEnglish ? ", " : "、"
+                                    )
+                                )
+                            }
                         }
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -259,7 +271,15 @@ struct FileInspectorView: View {
             // N08: load text content on demand for the inline preview.
             previewText = nil
             previewLimit = 2_000
+            finderTags = []
             guard let file else { return }
+
+            // N11: live Finder tags.
+            if let values = try? file.url.resourceValues(forKeys: [.tagNamesKey]),
+               let tags = values.tagNames {
+                finderTags = tags
+            }
+
             guard file.kind.supportsTextExtraction else { return }
             isLoadingPreview = true
             defer { isLoadingPreview = false }
