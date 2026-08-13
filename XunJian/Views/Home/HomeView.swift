@@ -102,6 +102,7 @@ struct HomeView: View {
                             .contextMenu {
                                 FileContextMenu(file: file)
                             }
+                            .draggable(file.url)
 
                             if file.id != appModel.recentFiles.last?.id {
                                 Divider()

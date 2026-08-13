@@ -591,7 +591,7 @@ struct XunJianApp: App {
         .commands {
             SidebarCommands()
             CommandGroup(replacing: .newItem) {}
-            XunJianCommands()
+            XunJianCommands(appModel: appModel)
         }
     }
 

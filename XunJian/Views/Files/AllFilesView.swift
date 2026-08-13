@@ -1,13 +1,8 @@
 import SwiftUI
 
 struct AllFilesView: View {
-    enum ViewMode: String, CaseIterable, Identifiable {
-        case list
-        case grid
-
-        var id: String { rawValue }
-        var symbolName: String { self == .list ? "list.bullet" : "square.grid.2x2" }
-    }
+    /// Shared with the category page so both honour the same stored default.
+    typealias ViewMode = FileBrowseViewMode
 
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
@@ -16,6 +11,8 @@ struct AllFilesView: View {
     let contentWidth: CGFloat
 
     @AppStorage("allFiles.viewMode") private var viewMode = ViewMode.list
+    @AppStorage(FileActivationBehavior.storageKey)
+    private var doubleClickBehavior = FileActivationBehavior.open
     @AppStorage("allFiles.sortOrder") private var browseSortOrder = FileSortOrder.modifiedAt
     @AppStorage("allFiles.sortAscending") private var browseSortAscending = false
     @AppStorage("allFiles.searchSortOrder") private var searchSortOrder = FileSortOrder.relevance
@@ -1091,12 +1088,15 @@ struct AllFilesView: View {
             .simultaneousGesture(
                 TapGesture(count: 2).onEnded {
                     appModel.selectedFileID = file.id
-                    appModel.open(file)
+                    doubleClickBehavior.perform(on: file, using: appModel)
                 }
             )
             .contextMenu {
                 FileContextMenu(file: file)
             }
+            // Drag out to Finder or another app (F06): the URL item provider
+            // lets macOS move/copy the real file on drop.
+            .draggable(file.url)
     }
 
     /// Sum of every column's minimum width. The table must never be squeezed
@@ -1189,7 +1189,7 @@ struct AllFilesView: View {
                     .simultaneousGesture(
                         TapGesture(count: 2).onEnded {
                             appModel.selectedFileID = file.id
-                            appModel.open(file)
+                            doubleClickBehavior.perform(on: file, using: appModel)
                         }
                     )
                     .onHover { isHovering in
@@ -1201,6 +1201,8 @@ struct AllFilesView: View {
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
+                    // Drag out to Finder or another app (F06).
+                    .draggable(file.url)
                 }
             }
             .scrollTargetLayout()

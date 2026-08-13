@@ -132,6 +132,32 @@ final class AppModel: ObservableObject {
     let index: FileIndexCoordinator
     private var indexObservation: AnyCancellable?
 
+    /// General undo stack for reversible actions (N16).
+    let undo = UndoCoordinator()
+    private var undoObservation: AnyCancellable?
+
+    var canUndo: Bool { undo.canUndo }
+
+    /// Menu title for the next undo, e.g. "撤销重命名".
+    var undoTitle: String {
+        undo.nextTitle ?? AppLanguage.localized("撤销", english: "Undo")
+    }
+
+    func rebuildSearchIndex() async {
+        await index.rebuildSearchIndex()
+    }
+
+    func performUndo() {
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await undo.undoLast()
+            } catch {
+                errorMessage = Self.message(for: error)
+            }
+        }
+    }
+
     private static let selectedKindPreferenceKey = "allFiles.selectedKind"
 
     init(
@@ -375,6 +401,10 @@ final class AppModel: ObservableObject {
     }
 
     private func wireIndexCoordinator() {
+        index.undoCoordinator = undo
+        undoObservation = undo.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+        }
         index.onError = { [weak self] message in
             self?.errorMessage = message
         }

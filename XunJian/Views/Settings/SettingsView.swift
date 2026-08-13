@@ -14,6 +14,10 @@ struct SettingsView: View {
     @AppStorage("allFiles.viewMode") private var defaultViewMode = FileBrowseViewMode.list
     @AppStorage(FileActivationBehavior.storageKey)
     private var doubleClickBehavior = FileActivationBehavior.open
+    @State private var indexStatistics = IndexStatistics.unknown
+    @State private var customExclusions = ScanExclusions.current()
+    @State private var newExclusion = ""
+    @State private var isRebuildingSearchIndex = false
     @State private var sourcePendingRemoval: FileSource?
     /// Highlighted while a folder is dragged over the authorisation area (F06).
     @State private var droppedFolderTargeted = false
@@ -251,6 +255,95 @@ struct SettingsView: View {
                 )
             }
 
+            Section(AppLanguage.localized("扫描排除", english: "Scan Exclusions")) {
+                Text(verbatim: AppLanguage.localized(
+                    "扫描会始终跳过 .git、node_modules、DerivedData、Caches 等构建与缓存目录。可以在这里补充自己的目录名，改动会立即重新扫描。",
+                    english: "Scans always skip build and cache folders such as .git, node_modules, DerivedData, and Caches. Add your own folder names here; changes trigger a rescan."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+                ForEach(customExclusions, id: \.self) { name in
+                    HStack {
+                        Text(verbatim: name)
+                        Spacer(minLength: 8)
+                        Button {
+                            updateExclusions(customExclusions.filter { $0 != name })
+                        } label: {
+                            Image(systemName: "minus.circle")
+                        }
+                        .buttonStyle(.borderless)
+                        .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                            "移除排除项“\(name)”",
+                            english: "Remove exclusion “\(name)”"
+                        )))
+                    }
+                }
+
+                HStack {
+                    TextField(
+                        AppLanguage.localized("目录名，例如 vendor", english: "Folder name, e.g. vendor"),
+                        text: $newExclusion
+                    )
+                    .onSubmit(addExclusion)
+                    Button(AppLanguage.localized("添加", english: "Add"), action: addExclusion)
+                        .disabled(
+                            newExclusion.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        )
+                }
+            }
+
+            Section(AppLanguage.localized("索引状态", english: "Index Status")) {
+                LabeledContent(
+                    AppLanguage.localized("已索引文件", english: "Indexed Files")
+                ) {
+                    Text(verbatim: AppLanguage.fileCount(appModel.files.count))
+                }
+                LabeledContent(
+                    AppLanguage.localized("数据库体积", english: "Database Size")
+                ) {
+                    Text(verbatim: indexStatistics.databaseSizeText)
+                }
+                LabeledContent(
+                    AppLanguage.localized("最近索引", english: "Last Indexed")
+                ) {
+                    Text(verbatim: indexStatistics.lastIndexedText)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        Task {
+                            isRebuildingSearchIndex = true
+                            await appModel.rebuildSearchIndex()
+                            indexStatistics = await IndexStatistics.make(files: appModel.files)
+                            isRebuildingSearchIndex = false
+                        }
+                    } label: {
+                        if isRebuildingSearchIndex {
+                            ProgressView().controlSize(.small)
+                        } else {
+                            Text(verbatim: AppLanguage.localized(
+                                "重建搜索索引",
+                                english: "Rebuild Search Index"
+                            ))
+                        }
+                    }
+                    .disabled(isRebuildingSearchIndex || !appModel.isDatabaseAvailable)
+
+                    Text(verbatim: AppLanguage.localized(
+                        "搜索结果不准确时使用。只重新生成搜索数据并压缩数据库，不会删除文件、授权目录或你的分类。",
+                        english: "Use this when search results look wrong. It only regenerates search data and compacts the database — no files, locations, or categories are removed."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .task(id: appModel.files.count) {
+                indexStatistics = await IndexStatistics.make(files: appModel.files)
+            }
+
             Section("关于") {
                 LabeledContent(
                     "应用",
@@ -289,6 +382,23 @@ struct SettingsView: View {
     }
 
     @ViewBuilder
+    private func addExclusion() {
+        let candidate = newExclusion.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !candidate.isEmpty else { return }
+        newExclusion = ""
+        updateExclusions(customExclusions + [candidate])
+    }
+
+    /// Persists and rescans, so the visible file list matches the new rules
+    /// immediately rather than only after the next manual scan.
+    private func updateExclusions(_ names: [String]) {
+        let normalized = ScanExclusions.normalized(names)
+        guard normalized != customExclusions else { return }
+        customExclusions = normalized
+        ScanExclusions.save(normalized)
+        appModel.refreshAllSources()
+    }
+
     private func sourceIdentity(_ source: FileSource) -> some View {
         HStack(spacing: 12) {
             Image(systemName: source.accessState == .available ? "folder" : "folder.badge.exclamationmark")

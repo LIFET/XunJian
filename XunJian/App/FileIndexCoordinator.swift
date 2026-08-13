@@ -38,6 +38,10 @@ final class FileIndexCoordinator: ObservableObject {
     var onFilesChanged: (() -> Void)?
     var onFileResolved: ((URL) -> Void)?
 
+    /// Reversible actions are pushed here so the app can offer a general Undo
+    /// (N16). Set by `AppModel`; nil in contexts that do not surface undo.
+    var undoCoordinator: UndoCoordinator?
+
     /// One-hop undo for move-to-Trash (N10).
     struct TrashUndo: Equatable, Sendable {
         let trashURL: URL
@@ -109,6 +113,19 @@ final class FileIndexCoordinator: ObservableObject {
         } catch {
             database = nil
             isDatabaseAvailable = false
+            onError?(Self.message(for: error))
+        }
+    }
+
+    /// Regenerates the search index and compacts the database. Files, sources
+    /// and categories are untouched, so this is safe to offer as a recovery
+    /// action when search results look wrong.
+    func rebuildSearchIndex() async {
+        guard let database else { return reportDatabaseUnavailable() }
+        do {
+            try await database.rebuildSearchIndex()
+            await reloadIndex()
+        } catch {
             onError?(Self.message(for: error))
         }
     }
@@ -597,6 +614,17 @@ final class FileIndexCoordinator: ObservableObject {
         let renamedURL = try await fileOperations.rename(fileAt: file.url, to: newName)
         await reconcileKnownFileChanges([file.url, renamedURL])
         onFileResolved?(renamedURL)
+
+        let originalName = file.name
+        undoCoordinator?.record(title: UndoCoordinator.renameTitle) { [weak self] in
+            guard let self else { return }
+            let restoredURL = try await fileOperations.rename(
+                fileAt: renamedURL,
+                to: originalName
+            )
+            await reconcileKnownFileChanges([renamedURL, restoredURL])
+            onFileResolved?(restoredURL)
+        }
     }
 
     func chooseMoveDestination(for file: IndexedFile) {
@@ -636,12 +664,14 @@ final class FileIndexCoordinator: ObservableObject {
             guard let self else { return }
             do {
                 if let trashURL = try await fileOperations.moveToTrash(fileAt: file.url) {
-                    // N10: keep one undo hop so an accidental delete can be
-                    // reversed without digging through the Trash.
+                    // Keep one undo hop so an accidental delete can be
+                    // reversed without digging through the Trash. Also pushed
+                    // onto the general stack so ⌘Z covers it (N16).
                     lastTrashUndo = TrashUndo(
                         trashURL: trashURL,
                         originalURL: file.url
                     )
+                    recordTrashUndo(trashURL: trashURL, originalURL: file.url)
                 }
                 onFilesChanged?()
                 await reconcileKnownFileChanges([file.url])
@@ -658,18 +688,68 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await fileOperations.move(
-                    fileAt: undo.trashURL,
-                    to: undo.originalURL.deletingLastPathComponent()
+                try await restoreFromTrash(
+                    trashURL: undo.trashURL,
+                    originalURL: undo.originalURL
                 )
-                await reconcileKnownFileChanges(
-                    [undo.trashURL, undo.originalURL]
-                )
-                onFilesChanged?()
             } catch {
                 onError?(Self.message(for: error))
             }
         }
+    }
+
+    private func recordTrashUndo(trashURL: URL, originalURL: URL) {
+        undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
+            guard let self else { return }
+            // Clears the one-hop banner so it cannot restore the same item a
+            // second time after ⌘Z already did.
+            if lastTrashUndo?.trashURL == trashURL {
+                lastTrashUndo = nil
+            }
+            try await restoreFromTrash(trashURL: trashURL, originalURL: originalURL)
+        }
+    }
+
+    /// One stack entry for the whole batch. Individual failures are surfaced
+    /// rather than aborting, so a partially restorable batch still recovers
+    /// everything it can.
+    private func recordBatchTrashUndo(_ trashed: [(trashURL: URL, originalURL: URL)]) {
+        guard !trashed.isEmpty else { return }
+        undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
+            guard let self else { return }
+            var failed = 0
+            for item in trashed {
+                do {
+                    try await restoreFromTrash(
+                        trashURL: item.trashURL,
+                        originalURL: item.originalURL
+                    )
+                } catch {
+                    failed += 1
+                }
+            }
+            if failed > 0 {
+                throw FileIndexError.database(AppLanguage.localized(
+                    "有 \(failed) 个文件未能从废纸篓恢复。",
+                    english: "\(failed) file(s) couldn’t be restored from the Trash."
+                ))
+            }
+        }
+    }
+
+    private func restoreFromTrash(trashURL: URL, originalURL: URL) async throws {
+        guard FileManager.default.fileExists(atPath: trashURL.path) else {
+            throw FileIndexError.database(AppLanguage.localized(
+                "无法从废纸篓恢复：项目已不在废纸篓中。",
+                english: "Cannot restore from the Trash: the item is no longer there."
+            ))
+        }
+        _ = try await fileOperations.move(
+            fileAt: trashURL,
+            to: originalURL.deletingLastPathComponent()
+        )
+        await reconcileKnownFileChanges([trashURL, originalURL])
+        onFilesChanged?()
     }
 
     // MARK: - Categories
@@ -710,7 +790,15 @@ final class FileIndexCoordinator: ObservableObject {
 
     /// Explicit (non-toggling) assignment, used by single-file menus and
     /// multi-select batch operations alike.
-    func setCategory(_ category: FileCategory, assigned: Bool, for file: IndexedFile) {
+    ///
+    /// `recordsUndo` is false for the individual writes inside a batch, which
+    /// registers one combined entry instead of one per file.
+    func setCategory(
+        _ category: FileCategory,
+        assigned: Bool,
+        for file: IndexedFile,
+        recordsUndo: Bool = true
+    ) {
         guard let database else { return reportDatabaseUnavailable() }
         let key = FileCategoryAssignmentKey(fileID: file.id, categoryID: category.id)
         let existing = pendingCategoryAssignments[key]
@@ -723,6 +811,14 @@ final class FileIndexCoordinator: ObservableObject {
         )
         applyCategoryAssignment(assigned, for: key)
 
+        if recordsUndo {
+            undoCoordinator?.record(
+                title: UndoCoordinator.categoryTitle(assigned: assigned)
+            ) { [weak self] in
+                self?.setCategory(category, assigned: !assigned, for: file, recordsUndo: false)
+            }
+        }
+
         guard categoryMutationTasks[key] == nil else { return }
         categoryMutationTasks[key] = Task { [weak self] in
             await self?.drainCategoryAssignments(for: key, database: database)
@@ -731,15 +827,33 @@ final class FileIndexCoordinator: ObservableObject {
 
     /// Batch: add every file to a category. Files already in it are skipped.
     func addCategory(_ category: FileCategory, toFiles files: [IndexedFile]) {
-        for file in files {
-            setCategory(category, assigned: true, for: file)
-        }
+        applyBatchCategory(category, assigned: true, to: files)
     }
 
     /// Batch: remove every file from a category.
     func removeCategory(_ category: FileCategory, fromFiles files: [IndexedFile]) {
-        for file in files {
-            setCategory(category, assigned: false, for: file)
+        applyBatchCategory(category, assigned: false, to: files)
+    }
+
+    /// Undo only reverses the files this call actually changed, so files that
+    /// were already in the category are left untouched when reverting.
+    private func applyBatchCategory(
+        _ category: FileCategory,
+        assigned: Bool,
+        to files: [IndexedFile]
+    ) {
+        let changed = files.filter { isCategory(category, assignedTo: $0) != assigned }
+        guard !changed.isEmpty else { return }
+
+        for file in changed {
+            setCategory(category, assigned: assigned, for: file, recordsUndo: false)
+        }
+
+        undoCoordinator?.record(title: UndoCoordinator.batchCategoryTitle) { [weak self] in
+            guard let self else { return }
+            for file in changed {
+                setCategory(category, assigned: !assigned, for: file, recordsUndo: false)
+            }
         }
     }
 
@@ -752,13 +866,17 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             var failed = 0
+            var trashed: [(trashURL: URL, originalURL: URL)] = []
             for file in files {
                 do {
-                    _ = try await fileOperations.moveToTrash(fileAt: file.url)
+                    if let trashURL = try await fileOperations.moveToTrash(fileAt: file.url) {
+                        trashed.append((trashURL, file.url))
+                    }
                 } catch {
                     failed += 1
                 }
             }
+            recordBatchTrashUndo(trashed)
             if failed > 0 {
                 onError?(AppLanguage.localized(
                     "有 \(failed) 个文件未能移到废纸篓。",
@@ -923,6 +1041,7 @@ final class FileIndexCoordinator: ObservableObject {
             physicallyMovedURL = movedURL
 
             if let destinationSource = indexedSource(containing: movedURL) {
+                await syncScanExclusions()
                 let snapshot = try await scanner.scanChanges(
                     sourceID: destinationSource.id,
                     rootURL: destinationSource.url,
@@ -956,6 +1075,7 @@ final class FileIndexCoordinator: ObservableObject {
                 await reconcileKnownFileChanges([file.url, movedURL])
             }
             onFileResolved?(movedURL)
+            recordMoveUndo(movedURL: movedURL, originalURL: file.url)
         } catch {
             if let physicallyMovedURL {
                 onError?(AppLanguage.localized(
@@ -966,6 +1086,35 @@ final class FileIndexCoordinator: ObservableObject {
                 onError?(Self.message(for: error))
             }
         }
+    }
+
+    /// Registers the inverse move. The original folder is inside an authorized
+    /// source, so its security scope is already held; the destination scope
+    /// came from a one-off panel grant and is not needed to move back out.
+    private func recordMoveUndo(movedURL: URL, originalURL: URL) {
+        let originalDirectory = originalURL.deletingLastPathComponent()
+        undoCoordinator?.record(title: UndoCoordinator.moveTitle) { [weak self] in
+            guard let self else { return }
+            guard FileManager.default.fileExists(atPath: movedURL.path) else {
+                throw FileIndexError.database(AppLanguage.localized(
+                    "无法撤销移动：文件已不在“\(movedURL.lastPathComponent)”。",
+                    english: "Cannot undo the move: the file is no longer at “\(movedURL.lastPathComponent)”."
+                ))
+            }
+            let restoredURL = try await fileOperations.move(
+                fileAt: movedURL,
+                to: originalDirectory
+            )
+            await reconcileKnownFileChanges([movedURL, restoredURL])
+            await reloadIndex()
+            onFileResolved?(restoredURL)
+        }
+    }
+
+    /// Applied before every scan so a preference change takes effect on the
+    /// next scan without needing to rebuild the scanner.
+    private func syncScanExclusions() async {
+        await scanner.setAdditionalExcludedNames(Set(ScanExclusions.current()))
     }
 
     private func indexedSource(containing url: URL) -> FileSource? {
@@ -1011,6 +1160,7 @@ final class FileIndexCoordinator: ObservableObject {
                 }
             }
 
+            await syncScanExclusions()
             let scannedFiles = try await scanner.scan(
                 sourceID: source.id,
                 rootURL: restored.url,
@@ -1193,6 +1343,7 @@ final class FileIndexCoordinator: ObservableObject {
                 }
             }
 
+            await syncScanExclusions()
             let snapshot = try await scanner.scanChanges(
                 sourceID: source.id,
                 rootURL: restored.url,

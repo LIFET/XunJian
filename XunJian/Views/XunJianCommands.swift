@@ -5,7 +5,19 @@ import SwiftUI
 /// Kept out of `XunJianApp.body` because inlining them pushed the scene
 /// builder past what the type checker could resolve.
 struct XunJianCommands: Commands {
+    @ObservedObject var appModel: AppModel
+
     var body: some Commands {
+        // Replaces the system Undo item, which targets the responder chain and
+        // would otherwise sit disabled while our own stack has entries.
+        CommandGroup(replacing: .undoRedo) {
+            Button(appModel.undoTitle) {
+                appModel.performUndo()
+            }
+            .keyboardShortcut("z", modifiers: .command)
+            .disabled(!appModel.canUndo)
+        }
+
         CommandGroup(after: .toolbar) {
             Button(AppLanguage.localized("命令面板…", english: "Command Palette…")) {
                 NotificationCenter.default.post(name: .xunJianShowCommandPalette, object: nil)

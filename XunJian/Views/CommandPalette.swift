@@ -48,9 +48,11 @@ struct CommandPaletteView: View {
 
     var body: some View {
         ZStack(alignment: .top) {
-            // Click-away layer. `ContentShape` keeps the whole area hittable
-            // even though the fill is nearly transparent.
-            Color.black.opacity(0.18)
+            // Click-away scrim. A subtle darkening reads as "focus mode"
+            // without the muddy grey that a heavier black overlay produces
+            // on top of a material panel. `ContentShape` keeps the whole
+            // area hittable even though the fill is nearly transparent.
+            Color.black.opacity(0.08)
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture { dismiss() }
@@ -89,6 +91,9 @@ struct CommandPaletteView: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
         }
+        // Lifts the panel off the page. Without this the material blends into
+        // whatever is behind it and the palette reads as a flat grey box.
+        .shadow(radius: 28, y: 10)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text(verbatim: AppLanguage.localized(
             "命令面板",

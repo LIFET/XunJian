@@ -173,6 +173,8 @@ actor FileScanner {
 
     private let fileManager: FileManager
     private let excludedDirectoryNames: Set<String>
+    /// User-added folder names, refreshed before each scan.
+    private var additionalExcludedNames: Set<String> = []
     private let textExtractor: TextExtractionService
     private let resourceValuesLoader: ResourceValuesLoader
 
@@ -203,10 +205,11 @@ actor FileScanner {
         self.fileManager = fileManager
         self.textExtractor = textExtractor
         self.resourceValuesLoader = resourceValuesLoader
-        self.excludedDirectoryNames = [
-            ".git", "node_modules", "deriveddata", "caches", ".cache",
-            ".trash", "tmp", "temp"
-        ]
+        self.excludedDirectoryNames = ScanExclusions.builtIn
+    }
+
+    func setAdditionalExcludedNames(_ names: Set<String>) {
+        additionalExcludedNames = names
     }
 
     func scan(
@@ -403,7 +406,9 @@ actor FileScanner {
     }
 
     private func shouldExcludeDirectory(_ name: String) -> Bool {
-        excludedDirectoryNames.contains(name.lowercased())
+        let lowercased = name.lowercased()
+        return excludedDirectoryNames.contains(lowercased)
+            || additionalExcludedNames.contains(lowercased)
     }
 
     private func isDotPrefixedPath(_ path: String) -> Bool {
@@ -1401,6 +1406,88 @@ actor FileIndexDatabase {
             links[fileID, default: []].insert(categoryID)
         }
         return links
+    }
+
+    /// Rebuilds the full-text table from the `files` rows and compacts the
+    /// database.
+    ///
+    /// Non-destructive on purpose: `file_categories` cascades on `files`, so
+    /// clearing `files` would silently discard the user's manual
+    /// categorisation. Only the derived search rows are regenerated, which is
+    /// what actually goes wrong when search returns stale or missing hits.
+    ///
+    /// Returns the number of rows reindexed.
+    @discardableResult
+    func rebuildSearchIndex() throws -> Int {
+        var reindexed = 0
+        try transaction {
+            try Self.execute("DELETE FROM file_search;", on: connection.pointer)
+
+            let categoryText = try allCategorySearchText()
+            let selectStatement = try prepare(
+                "SELECT id, name, path, text_content FROM files;"
+            )
+            defer { sqlite3_finalize(selectStatement) }
+
+            let insertStatement = try prepare(
+                """
+                INSERT INTO file_search (file_id, name, path, categories, text_content)
+                VALUES (?, ?, ?, ?, ?);
+                """
+            )
+            defer { sqlite3_finalize(insertStatement) }
+
+            while sqlite3_step(selectStatement) == SQLITE_ROW {
+                let fileID = text(selectStatement, column: 0)
+                sqlite3_reset(insertStatement)
+                sqlite3_clear_bindings(insertStatement)
+                try bind(fileID, at: 1, to: insertStatement)
+                try bind(
+                    SearchIndexText.normalized(text(selectStatement, column: 1)),
+                    at: 2,
+                    to: insertStatement
+                )
+                try bind(
+                    SearchIndexText.normalized(text(selectStatement, column: 2)),
+                    at: 3,
+                    to: insertStatement
+                )
+                try bind(
+                    SearchIndexText.normalized(categoryText[fileID] ?? ""),
+                    at: 4,
+                    to: insertStatement
+                )
+                try bind(
+                    SearchIndexText.normalized(text(selectStatement, column: 3)),
+                    at: 5,
+                    to: insertStatement
+                )
+                try stepDone(insertStatement)
+                reindexed += 1
+            }
+        }
+
+        // Outside the transaction: SQLite refuses to VACUUM inside one.
+        try Self.execute("VACUUM;", on: connection.pointer)
+        return reindexed
+    }
+
+    private func allCategorySearchText() throws -> [String: String] {
+        let statement = try prepare(
+            """
+            SELECT fc.file_id, GROUP_CONCAT(c.name, ' ')
+            FROM file_categories AS fc
+            JOIN categories AS c ON c.id = fc.category_id
+            GROUP BY fc.file_id;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var result: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result[text(statement, column: 0)] = text(statement, column: 1)
+        }
+        return result
     }
 
     private func categorySearchText(for sourceID: UUID) throws -> [String: String] {

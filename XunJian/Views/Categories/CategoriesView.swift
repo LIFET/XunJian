@@ -19,6 +19,8 @@ struct CategoriesView: View {
     @AppStorage("category.sortOrder") private var sortOrder = FileSortOrder.modifiedAt
     @AppStorage("category.sortAscending") private var sortAscending = false
     @State private var selectedKind: FileKind?
+    @AppStorage(FileActivationBehavior.storageKey)
+    private var doubleClickBehavior = FileActivationBehavior.open
 
     @ScaledMetric(relativeTo: .body) private var categoryIconSize: CGFloat = 16
     @ScaledMetric(relativeTo: .body) private var categoryIconContainer: CGFloat = 32
@@ -322,7 +324,7 @@ struct CategoriesView: View {
                     onSelect: { appModel.selectedFileID = file.id },
                     onOpen: {
                         appModel.selectedFileID = file.id
-                        appModel.open(file)
+                        doubleClickBehavior.perform(on: file, using: appModel)
                     },
                     onHover: { isHovering in
                         hoveredFileID = isHovering ? file.id : nil
@@ -331,6 +333,7 @@ struct CategoriesView: View {
                 .contextMenu {
                     FileContextMenu(file: file)
                 }
+                .draggable(file.url)
             }
         }
     }
@@ -375,7 +378,7 @@ struct CategoriesView: View {
                     .simultaneousGesture(
                         TapGesture(count: 2).onEnded {
                             appModel.selectedFileID = file.id
-                            appModel.open(file)
+                            doubleClickBehavior.perform(on: file, using: appModel)
                         }
                     )
                     .onHover { isHovering in
@@ -384,6 +387,7 @@ struct CategoriesView: View {
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
+                    .draggable(file.url)
 
                     if file.id != files.last?.id {
                         Divider()
