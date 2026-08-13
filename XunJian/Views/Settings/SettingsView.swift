@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 
 struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
@@ -25,6 +26,31 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
+
+                Toggle(
+                    AppLanguage.localized(
+                        "扫描完成后发送通知",
+                        english: "Notify when a scan finishes"
+                    ),
+                    isOn: Binding(
+                        get: {
+                            UserDefaults.standard.bool(
+                                forKey: "notifications.scanComplete"
+                            )
+                        },
+                        set: { enabled in
+                            UserDefaults.standard.set(
+                                enabled,
+                                forKey: "notifications.scanComplete"
+                            )
+                            if enabled {
+                                UNUserNotificationCenter.current()
+                                    .requestAuthorization(options: [.alert, .sound]) { _, _ in }
+                            }
+                        }
+                    )
+                )
+                .toggleStyle(.switch)
             }
 
             Section("文件位置") {

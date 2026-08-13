@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import UserNotifications
 
 /// Owns the local file index: database lifecycle, scanning, search, file
 /// operations, categories, and filesystem monitoring.
@@ -1048,6 +1049,30 @@ final class FileIndexCoordinator: ObservableObject {
         scanningSourceIDs.removeAll()
         currentScanningSourceID = nil
         startNextPendingFullRescanIfNeeded()
+        notifyScanFinished()
+    }
+
+    /// Completion notification (N12), opt-in via Settings. Only fires for
+    /// full passes over every source, not single-folder rescans.
+    private func notifyScanFinished() {
+        guard UserDefaults.standard.bool(forKey: "notifications.scanComplete"),
+              failedScanningSourceIDs.isEmpty else { return }
+        let content = UNMutableNotificationContent()
+        content.title = AppLanguage.localized(
+            "索引更新完成",
+            english: "Index update finished"
+        )
+        content.body = AppLanguage.localized(
+            AppLanguage.fileCount(files.count) + "，共 \(sources.count) 个位置。",
+            english: "\(files.count) files across \(sources.count) locations."
+        )
+        content.sound = nil
+        let request = UNNotificationRequest(
+            identifier: "scan-complete-\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        )
+        UNUserNotificationCenter.current().add(request)
     }
 
     static func scanCleanupOwnsState(
