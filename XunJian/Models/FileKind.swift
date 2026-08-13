@@ -23,6 +23,19 @@ enum FileKind: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Whether this kind can plausibly hold indexed text, used to decide if a
+    /// text-preview affordance is worth offering.
+    ///
+    /// Approximate by design: extraction is driven by file extension, so some
+    /// documents (Office formats) still yield no text. Callers must handle an
+    /// empty result rather than treating this as a guarantee.
+    var supportsTextExtraction: Bool {
+        switch self {
+        case .document, .code: true
+        case .image, .video, .audio, .archive, .other: false
+        }
+    }
+
     var symbolName: String {
         switch self {
         case .document: "doc.text"

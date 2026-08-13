@@ -12,6 +12,11 @@ struct XunJianCommands: Commands {
             }
             .keyboardShortcut("k", modifiers: .command)
 
+            Button(AppLanguage.localized("预览正文", english: "Preview Text")) {
+                NotificationCenter.default.post(name: .xunJianShowTextPreview, object: nil)
+            }
+            .keyboardShortcut("p", modifiers: [.command, .shift])
+
             Button(AppLanguage.localized("存储洞察…", english: "Storage Insights…")) {
                 NotificationCenter.default.post(name: .xunJianShowStorageInsights, object: nil)
             }

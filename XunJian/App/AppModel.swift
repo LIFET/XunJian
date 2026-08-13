@@ -500,6 +500,11 @@ final class AppModel: ObservableObject {
         index.copyPath(file)
     }
 
+    /// On-demand text content for the inspector's inline preview (N08).
+    func fetchTextContent(forFileID fileID: String) async throws -> String? {
+        try await index.textContent(forFileID: fileID)
+    }
+
     func rename(_ file: IndexedFile, to newName: String) async throws {
         try await index.rename(file, to: newName)
         renameRequest = nil

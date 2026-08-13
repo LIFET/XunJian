@@ -265,7 +265,23 @@ struct CommandPaletteView: View {
     }
 
     private var actionCommands: [PaletteCommand] {
-        [
+        var items: [PaletteCommand] = []
+        // Only offered when it has a target, so the palette never lists an
+        // action that would silently do nothing.
+        if let selected = appModel.selectedFile {
+            items.append(
+                PaletteCommand(
+                    id: "action-preview-text",
+                    title: AppLanguage.localized("预览正文", english: "Preview Text"),
+                    subtitle: selected.name,
+                    symbolName: "doc.text.magnifyingglass",
+                    group: .action
+                ) {
+                    NotificationCenter.default.post(name: .xunJianShowTextPreview, object: nil)
+                }
+            )
+        }
+        return items + [
             PaletteCommand(
                 id: "action-add-folder",
                 title: AppLanguage.localized("添加文件夹…", english: "Add Folder…"),

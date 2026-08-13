@@ -5,6 +5,11 @@ struct FileInspectorView: View {
     @Environment(\.locale) private var locale
     let file: IndexedFile?
 
+    // Inline text preview (N08).
+    @State private var previewText: String?
+    @State private var previewLimit = 2_000
+    @State private var isLoadingPreview = false
+
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
     }
@@ -185,6 +190,59 @@ struct FileInspectorView: View {
                                 style: .continuous
                             )
                         )
+
+                        // N08: inline text preview with search-term
+                        // highlighting, so the user can confirm a match
+                        // without leaving the app.
+                        if previewText != nil || isLoadingPreview {
+                            Divider()
+                            VStack(alignment: .leading, spacing: 10) {
+                                Text(
+                                    AppLanguage.localized(
+                                        "内容预览",
+                                        english: "Content Preview"
+                                    )
+                                )
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.secondary)
+
+                                if let previewText {
+                                    Text(highlightedPreview(previewText))
+                                        .font(.caption)
+                                        .lineSpacing(3)
+                                        .textSelection(.enabled)
+                                        .frame(
+                                            maxWidth: .infinity,
+                                            alignment: .leading
+                                        )
+
+                                    if previewText.count >= previewLimit {
+                                        Button(
+                                            AppLanguage.localized(
+                                                "显示更多",
+                                                english: "Show More"
+                                            )
+                                        ) {
+                                            previewLimit += 2_000
+                                        }
+                                        .buttonStyle(.link)
+                                        .controlSize(.small)
+                                    }
+                                } else {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                }
+                            }
+                            .padding(14)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(
+                                XunJianUI.Fill.quiet,
+                                in: RoundedRectangle(
+                                    cornerRadius: XunJianUI.Radius.card,
+                                    style: .continuous
+                                )
+                            )
+                        }
                     }
                     .padding(20)
                 }
@@ -197,6 +255,41 @@ struct FileInspectorView: View {
             }
         }
         .navigationTitle("文件详情")
+        .task(id: file?.id) {
+            // N08: load text content on demand for the inline preview.
+            previewText = nil
+            previewLimit = 2_000
+            guard let file else { return }
+            guard file.kind.supportsTextExtraction else { return }
+            isLoadingPreview = true
+            defer { isLoadingPreview = false }
+            guard let text = try? await appModel.fetchTextContent(
+                forFileID: file.id
+            ), !(text ?? "").isEmpty else { return }
+            previewText = text
+        }
+    }
+
+    /// Renders the preview with every occurrence of the current search query
+    /// highlighted (N08). Case-insensitive; plain text otherwise.
+    private func highlightedPreview(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return attributed }
+
+        let lowercasedText = text.lowercased()
+        let lowercasedQuery = query.lowercased()
+        var searchStart = lowercasedText.startIndex
+        while let range = lowercasedText.range(
+            of: lowercasedQuery,
+            range: searchStart..<lowercasedText.endIndex
+        ) {
+            guard let attributedRange = Range(range, in: attributed) else { break }
+            attributed[attributedRange].backgroundColor = XunJianUI.Fill.accentWash
+            attributed[attributedRange].foregroundColor = .accentColor
+            searchStart = range.upperBound
+        }
+        return attributed
     }
 
     private func detail(

@@ -1011,6 +1011,32 @@ struct AllFilesView: View {
             .width(min: 90, ideal: modifiedColumnWidth, max: modifiedColumnWidth)
             .customizationID("modified")
 
+            // Optional columns (N18). Hidden by default so the six-column
+            // layout and its compression thresholds stay unchanged; users opt
+            // in from the table header's context menu.
+            TableColumn("创建时间") { file in
+                selectableTableCell(file: file) {
+                    if let createdAt = file.createdAt {
+                        Text(finderDateFormatter.string(from: createdAt))
+                    } else {
+                        Text("—")
+                    }
+                }
+            }
+            .width(min: 90, ideal: modifiedColumnWidth, max: modifiedColumnWidth)
+            .customizationID("created")
+            .defaultVisibility(.hidden)
+
+            // Read-only Finder metadata (N17): shown here, never written back.
+            TableColumn("标签") { file in
+                selectableTableCell(file: file) {
+                    FinderTagsLabel(file: file)
+                }
+            }
+            .width(min: 60, ideal: categoryColumnWidth, max: categoryColumnWidth)
+            .customizationID("finderTags")
+            .defaultVisibility(.hidden)
+
             TableColumn("位置") { file in
                 selectableTableCell(file: file) {
                     Text(file.parentPath)
