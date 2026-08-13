@@ -29,6 +29,7 @@
 		65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */; };
 		6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */; };
 		6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */; };
+		7146506008FC467A1A68E133 /* DuplicateFileFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */; };
 		7323293492E005D8D79D6727 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2517C73D7AE3DB0297377AD /* AppShellView.swift */; };
 		7756F1F1ECF5C61FC1858CA5 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
 		792F5D29C8BED402315A3910 /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
@@ -68,6 +69,7 @@
 		E08E6B0F9333A1D0E48AC76A /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		E1159BEEC47C0B9D05EB3293 /* OAuthProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */; };
 		E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */; };
+		E8E24FA2D3DAEE867FBC9956 /* FinderTagsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F11AA67CF13761D5FEA7FB1A /* FinderTagsSection.swift */; };
 		EB24E7CAAAD7B9C1B82029D1 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
 		F00045592B3AB2B2298D20E0 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92B314F97E88A0CC522217B1 /* CategoriesView.swift */; };
@@ -198,10 +200,12 @@
 		D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProtocolClientTests.swift; sourceTree = "<group>"; };
 		DC26C3607C36523F2A235CF2 /* NavigationDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationDestination.swift; sourceTree = "<group>"; };
 		DF821E7CE830C20286C8DA85 /* TextPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextPreviewView.swift; sourceTree = "<group>"; };
+		E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateFileFinder.swift; sourceTree = "<group>"; };
 		E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokACPClient.swift; sourceTree = "<group>"; };
 		E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorEmptyView.swift; sourceTree = "<group>"; };
 		EC52269BC8BB801B1B84E170 /* GrokRuntime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = GrokRuntime; path = XunJianOAuthBridge/Resources/GrokRuntime; sourceTree = SOURCE_ROOT; };
 		EEFD5F7C7584F04173E53789 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		F11AA67CF13761D5FEA7FB1A /* FinderTagsSection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderTagsSection.swift; sourceTree = "<group>"; };
 		F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianOAuthProcessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		FA348B0B0255D42446072A13 /* AIServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIServices.swift; sourceTree = "<group>"; };
 		FE0D9EBF00FF7A650608C6F6 /* CodexAppServer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CodexAppServer; path = XunJianOAuthBridge/Resources/CodexAppServer; sourceTree = SOURCE_ROOT; };
@@ -326,6 +330,7 @@
 			isa = PBXGroup;
 			children = (
 				FA348B0B0255D42446072A13 /* AIServices.swift */,
+				E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */,
 				3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */,
 				C54468C80E1522D1A0C77957 /* FileOperations.swift */,
 				C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */,
@@ -377,6 +382,7 @@
 				E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */,
 				602050CB93CEC44748C253AF /* FileToolbar.swift */,
 				C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */,
+				F11AA67CF13761D5FEA7FB1A /* FinderTagsSection.swift */,
 				32BA6CDAA07D84F751BCB92A /* SearchField.swift */,
 			);
 			path = Components;
@@ -694,6 +700,7 @@
 				7323293492E005D8D79D6727 /* AppShellView.swift in Sources */,
 				F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */,
 				7ECDB13F25574E8381854C71 /* CommandPalette.swift in Sources */,
+				7146506008FC467A1A68E133 /* DuplicateFileFinder.swift in Sources */,
 				52544038226A3498EB8D9C1D /* FileBrowsing.swift in Sources */,
 				D31131EFD9936B501A29E50B /* FileCategory.swift in Sources */,
 				2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */,
@@ -706,6 +713,7 @@
 				58BD9C1146DAC6CB708FF79A /* FileToolbar.swift in Sources */,
 				E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */,
 				A43029B3B16C6CB6F5CFEEA6 /* FinderTags.swift in Sources */,
+				E8E24FA2D3DAEE867FBC9956 /* FinderTagsSection.swift in Sources */,
 				5B1C4F4504E6F6FECB1A8BD3 /* GlobalPresentations.swift in Sources */,
 				8814C8D4EC92666AF6EFD69D /* HomeView.swift in Sources */,
 				443F35855CCF7702D7C8F6E7 /* MenuBarSearchView.swift in Sources */,

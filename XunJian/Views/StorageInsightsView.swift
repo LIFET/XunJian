@@ -116,6 +116,10 @@ struct StorageInsightsView: View {
 
     @State private var snapshot = StorageInsightsSnapshot.empty
     @State private var hasComputed = false
+    // Duplicate detection (N13), on demand because it reads file contents.
+    @State private var duplicateGroups: [DuplicateGroup] = []
+    @State private var isFindingDuplicates = false
+    @State private var duplicateProgress = (hashed: 0, total: 0)
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -136,6 +140,7 @@ struct StorageInsightsView: View {
                         if !snapshot.oldestFiles.isEmpty {
                             oldestSection
                         }
+                        duplicateSection
                     }
                     .padding(XunJianUI.Spacing.page)
                 }
@@ -314,6 +319,91 @@ struct StorageInsightsView: View {
             fileList(snapshot.oldestFiles) { file in
                 file.modifiedAt.map(FinderDateFormatting.string(for:)) ?? "—"
             }
+        }
+    }
+
+    /// Content-hash duplicate detection (N13). Runs on demand because it
+    /// reads file contents; files above 128MB are skipped.
+    private var duplicateSection: some View {
+        VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+            HStack {
+                SectionHeader(title: "重复文件")
+                Spacer()
+                Button(
+                    AppLanguage.localized("查找重复文件", english: "Find Duplicates")
+                ) {
+                    findDuplicates()
+                }
+                .disabled(isFindingDuplicates)
+            }
+
+            if isFindingDuplicates {
+                ProgressView(
+                    AppLanguage.localized(
+                        duplicateProgress.total > 0
+                            ? "正在计算内容指纹 \(duplicateProgress.hashed)/\(duplicateProgress.total)…"
+                            : "正在分组文件…",
+                        english: duplicateProgress.total > 0
+                            ? "Hashing \(duplicateProgress.hashed)/\(duplicateProgress.total)…"
+                            : "Grouping files…"
+                    )
+                )
+                .controlSize(.small)
+            } else if hasComputed && !duplicateGroups.isEmpty {
+                ForEach(duplicateGroups) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(
+                            AppLanguage.localized(
+                                "\(group.files.count) 个文件 · \(Self.sizeText(group.size))",
+                                english: "\(group.files.count) files · \(Self.sizeText(group.size))"
+                            )
+                        )
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        ForEach(group.files) { file in
+                            HStack(spacing: 8) {
+                                FileThumbnail(file: file, size: 16)
+                                Text(verbatim: file.name)
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                Spacer()
+                                Button {
+                                    appModel.quickLook(file)
+                                } label: {
+                                    Image(systemName: "eye")
+                                }
+                                .buttonStyle(.plain)
+                                .help(AppLanguage.localized("快速查看", english: "Quick Look"))
+                            }
+                            .font(.caption)
+                        }
+                    }
+                    .padding(10)
+                    .background(
+                        XunJianUI.Fill.quiet,
+                        in: RoundedRectangle(
+                            cornerRadius: XunJianUI.Radius.row,
+                            style: .continuous
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private func findDuplicates() {
+        guard !isFindingDuplicates else { return }
+        isFindingDuplicates = true
+        duplicateProgress = (0, 0)
+        let files = appModel.files
+        Task {
+            let groups = await DuplicateFileFinder.find(in: files) { hashed, total in
+                Task { @MainActor in
+                    duplicateProgress = (hashed, total)
+                }
+            }
+            duplicateGroups = groups
+            isFindingDuplicates = false
         }
     }
 
