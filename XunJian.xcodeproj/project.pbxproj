@@ -51,6 +51,7 @@
 		AE84157F73CC62210F744673 /* AllFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 518EAC055AAB2A35A145333E /* AllFilesView.swift */; };
 		B04D26217B80AB7F8F316521 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
 		B13DCBAB43B4DB756D910325 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */; };
+		B22C04F47508A32EC410208C /* XunJianAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */; };
 		B288C41B54D14A72162975D6 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
 		BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */; };
 		BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = C54468C80E1522D1A0C77957 /* FileOperations.swift */; };
@@ -149,10 +150,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		0470136E7C3B47D86571CCE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		07683A9FCD41A8E130B68004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupervisedLineProcess.swift; sourceTree = "<group>"; };
 		0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProcessTests.swift; sourceTree = "<group>"; };
 		1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowsing.swift; sourceTree = "<group>"; };
+		1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianAppDelegate.swift; sourceTree = "<group>"; };
 		32BA6CDAA07D84F751BCB92A /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
 		3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthCoordinator.swift; sourceTree = "<group>"; };
 		3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianUnauthorizedClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -279,6 +282,7 @@
 				483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */,
 				3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */,
 				CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */,
+				1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -354,6 +358,7 @@
 		D0081E9DFDAB429AE37C8A75 /* XunJian */ = {
 			isa = PBXGroup;
 			children = (
+				0470136E7C3B47D86571CCE7 /* Info.plist */,
 				5C7276D0C6539B67760793FB /* App */,
 				B95608992BF274A2512DF915 /* Infrastructure */,
 				B9538AB57CEB50D148BA2D34 /* Models */,
@@ -729,6 +734,7 @@
 				58AED1013622198E23D4277F /* TextExtraction.swift in Sources */,
 				C096C42C0B1988B0BEBC644F /* TextPreviewView.swift in Sources */,
 				BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */,
+				B22C04F47508A32EC410208C /* XunJianAppDelegate.swift in Sources */,
 				D31ADA7641699B13EB7F24F9 /* XunJianCommands.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1076,6 +1082,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJian/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -1128,6 +1136,8 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJian/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

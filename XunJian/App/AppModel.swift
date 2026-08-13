@@ -565,6 +565,25 @@ final class AppModel: ObservableObject {
         index.addCategory(category, toFiles: [file])
     }
 
+    /// A path received from another app via the Services menu (N14).
+    /// Selects the file when it is indexed; reveals it in Finder otherwise.
+    func handleExternalPath(_ path: String) {
+        let standardized = URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+        if let file = index.files.first(where: {
+            $0.url.standardizedFileURL.path == standardized
+        }) {
+            selectedFileIDs = [file.id]
+            errorMessage = nil
+        } else {
+            NSWorkspace.shared.activateFileViewerSelecting([
+                URL(fileURLWithPath: path)
+            ])
+        }
+    }
+
     func createCategory(name: String, symbolName: String) async throws {
         try await index.createCategory(name: name, symbolName: symbolName)
     }

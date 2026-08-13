@@ -34,6 +34,16 @@ targets:
         PRODUCT_NAME: 寻简
         PRODUCT_MODULE_NAME: XunJian
         CODE_SIGN_ENTITLEMENTS: XunJian/XunJian.entitlements
+        GENERATE_INFOPLIST_FILE: NO
+    info:
+      path: XunJian/Info.plist
+      properties:
+        NSServices:
+          - NSMenuItem:
+              default: 用寻简打开
+            NSMessage: openPathsService
+            NSSendTypes:
+              - NSFilenamesPboardType
     entitlements:
       path: XunJian/XunJian.entitlements
       properties:

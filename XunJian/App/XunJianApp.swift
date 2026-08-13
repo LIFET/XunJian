@@ -540,6 +540,8 @@ enum AppAppearance: String, CaseIterable, Identifiable {
 @main
 @MainActor
 struct XunJianApp: App {
+    @NSApplicationDelegateAdaptor(XunJianAppDelegate.self)
+    private var appDelegate
     @StateObject private var appModel = AppModel()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue

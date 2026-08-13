@@ -126,6 +126,11 @@ struct AppShellView: View {
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRequestNewCategory)) { _ in
                 showsGlobalNewCategory = true
             }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianOpenExternalPath)) { notification in
+                guard let path = notification.object as? String else { return }
+                selection = .allFiles
+                appModel.handleExternalPath(path)
+            }
             .modifier(GlobalPresentations(selection: $selection))
             .alert(
                 "操作未完成",
