@@ -12,6 +12,33 @@ struct SidebarView: View {
                 navigationRow(Text("所有文件"), symbol: "tray.full", destination: .allFiles)
             }
 
+            if !appModel.savedSearches.isEmpty {
+                Section("保存的搜索") {
+                    ForEach(appModel.savedSearches) { search in
+                        Button {
+                            appModel.applySavedSearch(search)
+                            selection = .allFiles
+                        } label: {
+                            Label {
+                                Text(verbatim: search.name)
+                            } icon: {
+                                Image(systemName: "clock.arrow.circlepath")
+                                    .symbolRenderingMode(.hierarchical)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button(
+                                AppLanguage.localized("删除保存的搜索", english: "Delete Saved Search"),
+                                role: .destructive
+                            ) {
+                                appModel.deleteSearch(id: search.id)
+                            }
+                        }
+                    }
+                }
+            }
+
             Section("分类") {
                 navigationRow(Text("全部分类"), symbol: "square.grid.2x2", destination: .categories)
 

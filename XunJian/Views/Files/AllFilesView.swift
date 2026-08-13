@@ -29,10 +29,10 @@ struct AllFilesView: View {
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
 
     // Manual filters (N02): a size floor and a modified-since date, applied
-    // on top of whatever search/AI narrowing is active.
-    @AppStorage("allFiles.filterMinSizeMB") private var filterMinSizeMB: Double = 0
-    @AppStorage("allFiles.filterMinDate") private var filterMinDate: Double = 0
+    // on top of whatever search/AI narrowing is active. Values live on
+    // AppModel so saved searches can restore them.
     @State private var showsFilterPopover = false
+    @State private var savedSearchName = ""
 
     // F03: toolbar rows grow with the text size setting instead of clipping
     // at a fixed 32pt.
@@ -189,7 +189,7 @@ struct AllFilesView: View {
                         .font(.caption)
                     TextField(
                         AppLanguage.localized("例如 100", english: "e.g. 100"),
-                        value: $filterMinSizeMB,
+                        value: $appModel.filterMinSizeMB,
                         format: .number
                     )
                     .textFieldStyle(.roundedBorder)
@@ -203,7 +203,7 @@ struct AllFilesView: View {
                         "",
                         selection: Binding(
                             get: { minimumFilterDate ?? Date() },
-                            set: { filterMinDate = $0.timeIntervalSince1970 }
+                            set: { appModel.filterMinDate = $0.timeIntervalSince1970 }
                         ),
                         displayedComponents: .date
                     )
@@ -215,14 +215,43 @@ struct AllFilesView: View {
                 HStack {
                     Spacer()
                     Button(AppLanguage.localized("清除过滤", english: "Clear Filters")) {
-                        filterMinSizeMB = 0
-                        filterMinDate = 0
+                        appModel.filterMinSizeMB = 0
+                        appModel.filterMinDate = 0
                     }
                     .disabled(!hasActiveManualFilter)
                 }
+
+                Divider()
+
+                // N07: keep the current query + filters as a one-click
+                // sidebar entry.
+                HStack(spacing: 8) {
+                    TextField(
+                        AppLanguage.localized("搜索名称", english: "Search name"),
+                        text: $savedSearchName
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+
+                    Button(AppLanguage.localized("保存搜索", english: "Save Search")) {
+                        appModel.saveSearch(
+                            name: savedSearchName,
+                            query: appModel.searchText,
+                            minSizeBytes: minimumSizeBytes,
+                            minDate: minimumFilterDate
+                        )
+                        savedSearchName = ""
+                        showsFilterPopover = false
+                    }
+                    .disabled(
+                        savedSearchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                            || (appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                                && !hasActiveManualFilter)
+                    )
+                }
             }
             .padding(16)
-            .frame(width: 260)
+            .frame(width: 280)
         }
     }
 
@@ -877,11 +906,11 @@ struct AllFilesView: View {
 
     /// Manual-filter parameters, resolved from persisted UI values (N02).
     private var minimumSizeBytes: Int64 {
-        Int64(filterMinSizeMB * 1_024 * 1_024)
+        Int64(appModel.filterMinSizeMB * 1_024 * 1_024)
     }
 
     private var minimumFilterDate: Date? {
-        filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil
+        appModel.filterMinDate > 0 ? Date(timeIntervalSince1970: appModel.filterMinDate) : nil
     }
 
     private var hasActiveManualFilter: Bool {

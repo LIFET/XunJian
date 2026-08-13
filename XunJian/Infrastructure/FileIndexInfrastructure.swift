@@ -82,6 +82,17 @@ struct ScanProgress: Equatable, Sendable {
     let currentPath: String
 }
 
+/// A persisted search (N07): query text plus the manual filter values, so a
+/// frequently used narrowing becomes a one-click sidebar entry.
+struct SavedSearch: Identifiable, Hashable, Sendable {
+    let id: UUID
+    var name: String
+    var query: String
+    var minSizeBytes: Int64
+    var minDate: Date?
+    let createdAt: Date
+}
+
 struct ResolvedBookmark: Sendable {
     let url: URL
     let isStale: Bool
@@ -1089,6 +1100,64 @@ actor FileIndexDatabase {
         )
     }
 
+    // MARK: - Saved searches (N07)
+
+    func fetchSavedSearches() throws -> [SavedSearch] {
+        let statement = try prepare(
+            """
+            SELECT id, name, query, min_size, min_date, created_at
+            FROM saved_searches
+            ORDER BY created_at ASC;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+
+        var searches: [SavedSearch] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = UUID(uuidString: text(statement, column: 0)) else { continue }
+            searches.append(
+                SavedSearch(
+                    id: id,
+                    name: text(statement, column: 1),
+                    query: text(statement, column: 2),
+                    minSizeBytes: sqlite3_column_int64(statement, 3),
+                    minDate: optionalDate(statement, column: 4),
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+                )
+            )
+        }
+        return searches
+    }
+
+    func upsertSavedSearch(_ search: SavedSearch) throws {
+        let statement = try prepare(
+            """
+            INSERT INTO saved_searches (id, name, query, min_size, min_date, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                name = excluded.name,
+                query = excluded.query,
+                min_size = excluded.min_size,
+                min_date = excluded.min_date;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(search.id.uuidString, at: 1, to: statement)
+        try bind(search.name, at: 2, to: statement)
+        try bind(search.query, at: 3, to: statement)
+        try bind(search.minSizeBytes, at: 4, to: statement)
+        try bind(search.minDate?.timeIntervalSince1970, at: 5, to: statement)
+        try bind(search.createdAt.timeIntervalSince1970, at: 6, to: statement)
+        try stepDone(statement)
+    }
+
+    func deleteSavedSearch(id: UUID) throws {
+        let statement = try prepare("DELETE FROM saved_searches WHERE id = ?;")
+        defer { sqlite3_finalize(statement) }
+        try bind(id.uuidString, at: 1, to: statement)
+        try stepDone(statement)
+    }
+
     func fetchCategories() throws -> [FileCategory] {
         let statement = try prepare(
             """
@@ -1555,6 +1624,23 @@ actor FileIndexDatabase {
 
                 PRAGMA user_version = 3;
                 COMMIT;
+                """,
+                on: database
+            )
+        }
+
+        if try userVersion(database) < 4 {
+            try execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_searches (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    query TEXT NOT NULL,
+                    min_size INTEGER NOT NULL DEFAULT 0,
+                    min_date REAL,
+                    created_at REAL NOT NULL
+                );
+                PRAGMA user_version = 4;
                 """,
                 on: database
             )

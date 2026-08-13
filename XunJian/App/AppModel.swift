@@ -87,6 +87,30 @@ final class AppModel: ObservableObject {
         didSet { index.scheduleSearch(query: searchText) }
     }
 
+    // Manual filter values (N02), persisted so saved searches can restore
+    // them. MB is the UI unit; bytes are derived by the view.
+    @Published var filterMinSizeMB: Double {
+        didSet {
+            UserDefaults.standard.set(
+                filterMinSizeMB,
+                forKey: "allFiles.filterMinSizeMB"
+            )
+        }
+    }
+    @Published var filterMinDate: Double {
+        didSet {
+            UserDefaults.standard.set(
+                filterMinDate,
+                forKey: "allFiles.filterMinDate"
+            )
+        }
+    }
+
+    func applyManualFilter(minSizeBytes: Int64, minDate: Date?) {
+        filterMinSizeMB = Double(minSizeBytes) / (1_024 * 1_024)
+        filterMinDate = minDate?.timeIntervalSince1970 ?? 0
+    }
+
     private let isRunningTests: Bool
     private let credentialStore: LocalCredentialStore
     private let aiConfigurationStore: AIConfigurationStore
@@ -132,6 +156,12 @@ final class AppModel: ObservableObject {
             isRunningTests: isRunningTests
         )
         self.index = FileIndexCoordinator(isRunningTests: isRunningTests)
+        self.filterMinSizeMB = UserDefaults.standard.double(
+            forKey: "allFiles.filterMinSizeMB"
+        )
+        self.filterMinDate = UserDefaults.standard.double(
+            forKey: "allFiles.filterMinDate"
+        )
         wireOAuthCoordinator()
         wireAISessionCoordinator()
         wireIndexCoordinator()
@@ -640,6 +670,32 @@ final class AppModel: ObservableObject {
         oauth.deviceCodePresentations
     }
     var aiOAuthVerificationsInFlight: Set<AIProviderKind> { oauth.verificationsInFlight }
+
+    var savedSearches: [SavedSearch] { index.savedSearches }
+
+    func saveSearch(
+        name: String,
+        query: String,
+        minSizeBytes: Int64,
+        minDate: Date?
+    ) {
+        index.saveSearch(
+            name: name,
+            query: query,
+            minSizeBytes: minSizeBytes,
+            minDate: minDate
+        )
+    }
+
+    func deleteSearch(id: UUID) {
+        index.deleteSearch(id: id)
+    }
+
+    /// Applies a saved search: restores the query plus manual filters (N07).
+    func applySavedSearch(_ search: SavedSearch) {
+        searchText = search.query
+        applyManualFilter(minSizeBytes: search.minSizeBytes, minDate: search.minDate)
+    }
 
     func refreshOAuthStatus(
         for kind: AIProviderKind,

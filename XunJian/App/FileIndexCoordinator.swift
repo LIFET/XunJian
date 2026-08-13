@@ -22,6 +22,7 @@ final class FileIndexCoordinator: ObservableObject {
         didSet { rebuildDerivedIndexes() }
     }
     @Published private(set) var fileCategoryLinks: [String: Set<UUID>] = [:]
+    @Published private(set) var savedSearches: [SavedSearch] = []
     @Published private(set) var searchResults: [IndexedFile]? = nil
     @Published private(set) var searchResultTotalCount: Int? = nil
     @Published private(set) var isSearching = false
@@ -168,6 +169,7 @@ final class FileIndexCoordinator: ObservableObject {
                 : indexedFiles.filter { !Self.isDotPrefixedFile($0) }
             categories = try await database.fetchCategories()
             fileCategoryLinks = try await database.fetchFileCategoryLinks()
+            savedSearches = try await database.fetchSavedSearches()
             activateSecurityScopes()
             configureFileSystemMonitoring()
             onFilesChanged?()
@@ -205,6 +207,48 @@ final class FileIndexCoordinator: ObservableObject {
     func textContent(forFileID fileID: String) async throws -> String? {
         guard let database else { throw FileIndexError.database("database unavailable") }
         return try await database.fetchTextContent(forFileID: fileID)
+    }
+
+    // MARK: - Saved searches (N07)
+
+    func saveSearch(
+        name: String,
+        query: String,
+        minSizeBytes: Int64,
+        minDate: Date?,
+        id: UUID = UUID()
+    ) {
+        guard let database else { return reportDatabaseUnavailable() }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedName.isEmpty else { return }
+        let search = SavedSearch(
+            id: id,
+            name: trimmedName,
+            query: query.trimmingCharacters(in: .whitespacesAndNewlines),
+            minSizeBytes: minSizeBytes,
+            minDate: minDate,
+            createdAt: Date()
+        )
+        Task { [weak self] in
+            do {
+                try await database.upsertSavedSearch(search)
+                self?.savedSearches = try await database.fetchSavedSearches()
+            } catch {
+                self?.onError?(Self.message(for: error))
+            }
+        }
+    }
+
+    func deleteSearch(id: UUID) {
+        guard let database else { return reportDatabaseUnavailable() }
+        Task { [weak self] in
+            do {
+                try await database.deleteSavedSearch(id: id)
+                self?.savedSearches = try await database.fetchSavedSearches()
+            } catch {
+                self?.onError?(Self.message(for: error))
+            }
+        }
     }
 
     // MARK: - Queries
