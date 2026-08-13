@@ -158,6 +158,24 @@ struct AppShellView: View {
                 }
                 .environment(\.locale, locale)
             }
+            // AI sheets live at the shell level so the inspector (and any
+            // other page) can open them, not just the All Files toolbar (N04).
+            .sheet(item: $appModel.aiSheetRequest) { task in
+                Group {
+                    switch task {
+                    case .search:
+                        AISearchSheet()
+                    case let .explain(file):
+                        AIExplainSheet(file: file)
+                    case let .ask(file):
+                        AIQuestionSheet(file: file)
+                    case .classify:
+                        AIClassificationSheet(initialFileID: appModel.selectedFileID)
+                    }
+                }
+                .environment(\.locale, locale)
+                .background(.ultraThinMaterial)
+            }
             .sheet(isPresented: $showsGlobalNewCategory) {
                 CategoryEditorSheet(title: "新建分类") { name, symbolName in
                     try await appModel.createCategory(name: name, symbolName: symbolName)

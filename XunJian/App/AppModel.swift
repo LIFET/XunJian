@@ -80,6 +80,9 @@ final class AppModel: ObservableObject {
     @Published var trashRequest: IndexedFile?
     /// Batch trash confirmation (F05 multi-select).
     @Published var batchTrashRequest: [IndexedFile]?
+    /// AI sheet request, owned here so both the file list and the inspector
+    /// can open the same sheets (N04).
+    @Published var aiSheetRequest: AITaskSheet?
     @Published var searchText = "" {
         didSet { index.scheduleSearch(query: searchText) }
     }
@@ -425,6 +428,10 @@ final class AppModel: ObservableObject {
 
     func removeSource(_ source: FileSource) {
         index.removeSource(source)
+    }
+
+    func setSourceEnabled(_ source: FileSource, enabled: Bool) {
+        index.setSourceEnabled(source, enabled: enabled)
     }
 
     func scanSource(_ source: FileSource) {

@@ -22,7 +22,6 @@ struct AllFilesView: View {
     @AppStorage("allFiles.searchSortAscending") private var searchSortAscending = false
     @AppStorage("allFiles.tableColumnCustomization")
     private var tableColumnCustomization = TableColumnCustomization<IndexedFile>()
-    @State private var aiTaskSheet: AITaskSheet?
     @State private var displayedFilesSnapshot: [IndexedFile] = []
     @State private var hasPreparedDisplayedFilesSnapshot = false
     @State private var hoveredGridFileID: String?
@@ -58,27 +57,6 @@ struct AllFilesView: View {
             .task(id: displayedFilesRefreshKey) {
                 await refreshDisplayedFilesSnapshot()
             }
-            .sheet(item: $aiTaskSheet, content: aiSheet)
-    }
-
-    @ViewBuilder
-    private func aiSheet(_ task: AITaskSheet) -> some View {
-        Group {
-            switch task {
-            case .search:
-                AISearchSheet()
-            case let .explain(file):
-                AIExplainSheet(file: file)
-            case let .ask(file):
-                AIQuestionSheet(file: file)
-            case .classify:
-                AIClassificationSheet(initialFileID: appModel.selectedFileID)
-            }
-        }
-        .environment(\.locale, locale)
-        // Gives the AI sheets a sense of layering above the content behind
-        // them. If this reads as too translucent on macOS, drop this line.
-        .background(.ultraThinMaterial)
     }
 
     @ViewBuilder
@@ -229,24 +207,24 @@ struct AllFilesView: View {
                 }
             }
             Button("AI 搜文件…") {
-                aiTaskSheet = .search
+                appModel.aiSheetRequest = .search
             }
             .disabled(!hasAIProvider)
             Divider()
             Button("AI 看文件") {
                 if let file = appModel.selectedFile {
-                    aiTaskSheet = .explain(file)
+                    appModel.aiSheetRequest = .explain(file)
                 }
             }
             .disabled(!hasAIProvider || appModel.selectedFile == nil)
             Button("AI 问文件…") {
                 if let file = appModel.selectedFile {
-                    aiTaskSheet = .ask(file)
+                    appModel.aiSheetRequest = .ask(file)
                 }
             }
             .disabled(!hasAIProvider || appModel.selectedFile == nil)
             Button("AI 分类…") {
-                aiTaskSheet = .classify
+                appModel.aiSheetRequest = .classify
             }
             .disabled(!hasAIProvider || appModel.files.isEmpty || appModel.categories.isEmpty)
         } label: {

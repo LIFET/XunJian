@@ -387,6 +387,28 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    /// Pauses or resumes indexing for one source (N06).
+    func setSourceEnabled(_ source: FileSource, enabled: Bool) {
+        guard let database else { return reportDatabaseUnavailable() }
+        Task { [weak self] in
+            do {
+                try await database.setSourceEnabled(id: source.id, enabled: enabled)
+                await self?.reloadIndex()
+                if enabled {
+                    if let refreshed = self?.sources.first(where: { $0.id == source.id }) {
+                        self?.scanSource(refreshed)
+                    }
+                } else {
+                    self?.cancelScan(startsPendingFullRescan: false)
+                    self?.fileChangeTasks.removeValue(forKey: source.id)?.cancel()
+                    self?.pendingFileChanges.removeValue(forKey: source.id)
+                }
+            } catch {
+                self?.onError?(Self.message(for: error))
+            }
+        }
+    }
+
     func removeSource(_ source: FileSource) {
         pendingFullRescanSourceIDs.remove(source.id)
         if currentScanningSourceID == source.id {

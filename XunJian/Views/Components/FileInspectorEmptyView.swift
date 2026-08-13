@@ -62,6 +62,33 @@ struct FileInspectorView: View {
                             .buttonStyle(.bordered)
                             .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
                             .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
+
+                            // AI entry points (N04): analyse the file right
+                            // from the inspector instead of going back to the
+                            // toolbar in All Files.
+                            if appModel.activeAIProviderKind != nil {
+                                Button {
+                                    appModel.aiSheetRequest = .explain(file)
+                                } label: {
+                                    Image(systemName: "doc.text.magnifyingglass")
+                                        .frame(width: 18, height: 18)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.bordered)
+                                .help(AppLanguage.localized("用 AI 解释这个文件", english: "Explain with AI"))
+                                .accessibilityLabel(AppLanguage.localized("用 AI 解释这个文件", english: "Explain with AI"))
+
+                                Button {
+                                    appModel.aiSheetRequest = .ask(file)
+                                } label: {
+                                    Image(systemName: "bubble.left.and.text.bubble.right")
+                                        .frame(width: 18, height: 18)
+                                        .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.bordered)
+                                .help(AppLanguage.localized("用 AI 提问这个文件", english: "Ask AI About File"))
+                                .accessibilityLabel(AppLanguage.localized("用 AI 提问这个文件", english: "Ask AI About File"))
+                            }
                         }
                         .frame(maxWidth: .infinity)
 

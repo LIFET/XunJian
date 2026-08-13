@@ -535,6 +535,18 @@ actor FileIndexDatabase {
             .appendingPathComponent("index.sqlite3")
     }
 
+    /// Pauses or resumes indexing for one source (N06). Disabled sources are
+    /// skipped by scanning and monitoring but keep their index rows.
+    func setSourceEnabled(id: UUID, enabled: Bool) throws {
+        let statement = try prepare(
+            "UPDATE sources SET enabled = ? WHERE id = ?;"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(enabled ? 1 : 0, at: 1, to: statement)
+        try bind(id.uuidString, at: 2, to: statement)
+        try stepDone(statement)
+    }
+
     func upsertSource(
         displayName: String,
         path: String,

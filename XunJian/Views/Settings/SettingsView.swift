@@ -94,6 +94,21 @@ struct SettingsView: View {
                             sourceIdentity(source)
                                 .frame(minWidth: 220, maxWidth: .infinity, alignment: .leading)
                             sourcePrimaryAction(source)
+                            // N06: pause a slow folder without removing its
+                            // index; enable again to rescan it.
+                            Toggle(
+                                AppLanguage.localized(
+                                    source.enabled ? "索引中" : "已暂停",
+                                    english: source.enabled ? "Indexing" : "Paused"
+                                ),
+                                isOn: Binding(
+                                    get: { source.enabled },
+                                    set: { appModel.setSourceEnabled(source, enabled: $0) }
+                                )
+                            )
+                            .toggleStyle(.switch)
+                            .controlSize(.small)
+                            .disabled(!appModel.isDatabaseAvailable)
                             Button("移除…", role: .destructive) {
                                 sourcePendingRemoval = source
                             }
