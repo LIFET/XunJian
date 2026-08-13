@@ -28,6 +28,12 @@ struct AllFilesView: View {
     @AppStorage("allFiles.listScrollPosition") private var listScrollPosition = ""
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
 
+    // Manual filters (N02): a size floor and a modified-since date, applied
+    // on top of whatever search/AI narrowing is active.
+    @AppStorage("allFiles.filterMinSizeMB") private var filterMinSizeMB: Double = 0
+    @AppStorage("allFiles.filterMinDate") private var filterMinDate: Double = 0
+    @State private var showsFilterPopover = false
+
     // F03: toolbar rows grow with the text size setting instead of clipping
     // at a fixed 32pt.
     @ScaledMetric(relativeTo: .body) private var toolbarControlHeight = FileToolbarMetrics.controlHeight
@@ -154,10 +160,70 @@ struct AllFilesView: View {
                 .layoutPriority(1)
             Spacer(minLength: 8)
             searchProgress
+            filterButton
             responsiveFileToolbar
         }
         .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
         .padding(.vertical, 14)
+    }
+
+    /// Manual size/date filter entry point (N02). Highlighted while active so
+    /// the narrowing is visible at a glance.
+    private var filterButton: some View {
+        Button {
+            showsFilterPopover.toggle()
+        } label: {
+            FileToolbarIconLabel(systemName: "line.3.horizontal.decrease.circle")
+                .foregroundStyle(hasActiveManualFilter ? Color.accentColor : .primary)
+        }
+        .buttonStyle(.plain)
+        .help(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
+        .accessibilityLabel(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
+        .popover(isPresented: $showsFilterPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(AppLanguage.localized("过滤条件", english: "Filters"))
+                    .font(.headline)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(AppLanguage.localized("最小大小（MB，0 为不限）", english: "Minimum size (MB, 0 = any)"))
+                        .font(.caption)
+                    TextField(
+                        AppLanguage.localized("例如 100", english: "e.g. 100"),
+                        value: $filterMinSizeMB,
+                        format: .number
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 140)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(AppLanguage.localized("修改时间不早于", english: "Modified no earlier than"))
+                        .font(.caption)
+                    DatePicker(
+                        "",
+                        selection: Binding(
+                            get: { minimumFilterDate ?? Date() },
+                            set: { filterMinDate = $0.timeIntervalSince1970 }
+                        ),
+                        displayedComponents: .date
+                    )
+                    .datePickerStyle(.field)
+                    .labelsHidden()
+                    .frame(width: 160)
+                }
+
+                HStack {
+                    Spacer()
+                    Button(AppLanguage.localized("清除过滤", english: "Clear Filters")) {
+                        filterMinSizeMB = 0
+                        filterMinDate = 0
+                    }
+                    .disabled(!hasActiveManualFilter)
+                }
+            }
+            .padding(16)
+            .frame(width: 260)
+        }
     }
 
     private func headerSummary(resultCount: Int) -> some View {
@@ -803,8 +869,23 @@ struct AllFilesView: View {
             sourceFiles: sourceFilesForDisplay,
             selectedKind: appModel.selectedKind,
             sortOrder: activeSortOrder,
-            sortAscending: activeSortAscending
+            sortAscending: activeSortAscending,
+            minSizeBytes: minimumSizeBytes,
+            minDate: minimumFilterDate
         )
+    }
+
+    /// Manual-filter parameters, resolved from persisted UI values (N02).
+    private var minimumSizeBytes: Int64 {
+        Int64(filterMinSizeMB * 1_024 * 1_024)
+    }
+
+    private var minimumFilterDate: Date? {
+        filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil
+    }
+
+    private var hasActiveManualFilter: Bool {
+        minimumSizeBytes > 0 || minimumFilterDate != nil
     }
 
     private func refreshDisplayedFilesSnapshot() async {
@@ -812,9 +893,16 @@ struct AllFilesView: View {
         let selectedKind = appModel.selectedKind
         let requestedSortOrder = activeSortOrder
         let requestedAscending = activeSortAscending
+        let minSize = minimumSizeBytes
+        let minDate = minimumFilterDate
         let result = await Task.detached(priority: .userInitiated) {
             let filteredFiles = sourceFiles.filter { file in
-                selectedKind.map { file.kind == $0 } ?? true
+                guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
+                if minSize > 0, file.size < minSize { return false }
+                if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
+                    return false
+                }
+                return true
             }
             return requestedSortOrder.sorted(filteredFiles, ascending: requestedAscending)
         }.value
@@ -1099,6 +1187,8 @@ private struct DisplayedFilesRefreshKey: Equatable {
     let selectedKind: FileKind?
     let sortOrder: FileSortOrder
     let sortAscending: Bool
+    let minSizeBytes: Int64
+    let minDate: Date?
 }
 
 
