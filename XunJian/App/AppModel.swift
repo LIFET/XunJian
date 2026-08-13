@@ -538,6 +538,16 @@ final class AppModel: ObservableObject {
         index.confirmBatchTrash(files)
     }
 
+    // MARK: - Undo (N10)
+
+    var lastTrashUndo: FileIndexCoordinator.TrashUndo? {
+        index.lastTrashUndo
+    }
+
+    func undoLastTrash() {
+        index.undoLastTrash()
+    }
+
     func cancelBatchTrash() {
         batchTrashRequest = nil
     }

@@ -10,6 +10,32 @@ import SwiftUI
 /// onto these types belongs to the F10 view-splitting work, which owns that
 /// file.
 
+/// What a double-click does to a file. Finder opens; some users would rather
+/// peek first, so this is a preference instead of a hard-coded behaviour.
+enum FileActivationBehavior: String, CaseIterable, Identifiable {
+    case open
+    case quickLook
+
+    static let storageKey = "files.doubleClickBehavior"
+
+    var id: String { rawValue }
+
+    var localizedTitle: String {
+        switch self {
+        case .open: AppLanguage.localized("用默认应用打开", english: "Open in Default App")
+        case .quickLook: AppLanguage.localized("快速查看", english: "Quick Look")
+        }
+    }
+
+    @MainActor
+    func perform(on file: IndexedFile, using appModel: AppModel) {
+        switch self {
+        case .open: appModel.open(file)
+        case .quickLook: appModel.quickLook(file)
+        }
+    }
+}
+
 enum FileBrowseViewMode: String, CaseIterable, Identifiable {
     case list
     case grid

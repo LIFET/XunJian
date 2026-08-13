@@ -38,6 +38,14 @@ final class FileIndexCoordinator: ObservableObject {
     var onFilesChanged: (() -> Void)?
     var onFileResolved: ((URL) -> Void)?
 
+    /// One-hop undo for move-to-Trash (N10).
+    struct TrashUndo: Equatable, Sendable {
+        let trashURL: URL
+        let originalURL: URL
+    }
+
+    @Published private(set) var lastTrashUndo: TrashUndo?
+
     // MARK: - Storage
 
     private var database: FileIndexDatabase?
@@ -627,9 +635,37 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
-                _ = try await fileOperations.moveToTrash(fileAt: file.url)
+                if let trashURL = try await fileOperations.moveToTrash(fileAt: file.url) {
+                    // N10: keep one undo hop so an accidental delete can be
+                    // reversed without digging through the Trash.
+                    lastTrashUndo = TrashUndo(
+                        trashURL: trashURL,
+                        originalURL: file.url
+                    )
+                }
                 onFilesChanged?()
                 await reconcileKnownFileChanges([file.url])
+            } catch {
+                onError?(Self.message(for: error))
+            }
+        }
+    }
+
+    /// Undo the most recent move-to-Trash by putting the item back.
+    func undoLastTrash() {
+        guard let undo = lastTrashUndo else { return }
+        lastTrashUndo = nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                _ = try await fileOperations.move(
+                    fileAt: undo.trashURL,
+                    to: undo.originalURL.deletingLastPathComponent()
+                )
+                await reconcileKnownFileChanges(
+                    [undo.trashURL, undo.originalURL]
+                )
+                onFilesChanged?()
             } catch {
                 onError?(Self.message(for: error))
             }

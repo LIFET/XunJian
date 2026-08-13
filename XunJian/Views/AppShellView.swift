@@ -49,6 +49,31 @@ struct AppShellView: View {
                         .transition(.move(edge: .top).combined(with: .opacity))
                     }
 
+                    // One-hop undo for move-to-Trash (N10).
+                    if let undo = appModel.lastTrashUndo {
+                        HStack(spacing: 8) {
+                            Label(
+                                AppLanguage.localized(
+                                    "“\(undo.originalURL.lastPathComponent)”已移到废纸篓。",
+                                    english: "“\(undo.originalURL.lastPathComponent)” was moved to the Trash."
+                                ),
+                                systemImage: "arrow.uturn.backward.circle"
+                            )
+                            Spacer(minLength: 8)
+                            Button(AppLanguage.localized("撤销", english: "Undo")) {
+                                appModel.undoLastTrash()
+                            }
+                            .controlSize(.small)
+                            .keyboardShortcut("z", modifiers: .command)
+                        }
+                        .font(.caption)
+                        .padding(.horizontal, XunJianUI.Spacing.page)
+                        .padding(.vertical, 8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(XunJianUI.Fill.accentWash)
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+
                     if !appModel.isDatabaseAvailable {
                         HStack(spacing: 8) {
                             Label(

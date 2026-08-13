@@ -6,6 +6,14 @@ struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.simplifiedChinese.rawValue
+    @AppStorage(MenuBarSearchPreference.storageKey) private var showsMenuBarSearch = true
+    // Bound to the same keys the file list writes, so changing a default here
+    // takes effect immediately rather than only for new windows.
+    @AppStorage("allFiles.sortOrder") private var defaultSortOrder = FileSortOrder.modifiedAt
+    @AppStorage("allFiles.sortAscending") private var defaultSortAscending = false
+    @AppStorage("allFiles.viewMode") private var defaultViewMode = FileBrowseViewMode.list
+    @AppStorage(FileActivationBehavior.storageKey)
+    private var doubleClickBehavior = FileActivationBehavior.open
     @State private var sourcePendingRemoval: FileSource?
     /// Highlighted while a folder is dragged over the authorisation area (F06).
     @State private var droppedFolderTargeted = false
@@ -51,6 +59,60 @@ struct SettingsView: View {
                     )
                 )
                 .toggleStyle(.switch)
+
+                Toggle(
+                    AppLanguage.localized(
+                        "在菜单栏显示快速搜索",
+                        english: "Show quick search in the menu bar"
+                    ),
+                    isOn: $showsMenuBarSearch
+                )
+                .toggleStyle(.switch)
+            }
+
+            Section("浏览") {
+                Picker(
+                    AppLanguage.localized("默认排序", english: "Default Sort"),
+                    selection: $defaultSortOrder
+                ) {
+                    ForEach(FileSortOrder.allCases.filter { $0 != .relevance }) { order in
+                        Text(verbatim: order.localizedTitle).tag(order)
+                    }
+                }
+                .pickerStyle(.menu)
+                .id(language)
+
+                Picker(
+                    AppLanguage.localized("默认顺序", english: "Default Order"),
+                    selection: $defaultSortAscending
+                ) {
+                    Text(verbatim: AppLanguage.localized("升序", english: "Ascending")).tag(true)
+                    Text(verbatim: AppLanguage.localized("降序", english: "Descending")).tag(false)
+                }
+                .pickerStyle(.menu)
+                .id(language)
+
+                Picker(
+                    AppLanguage.localized("默认显示方式", english: "Default View"),
+                    selection: $defaultViewMode
+                ) {
+                    ForEach(FileBrowseViewMode.allCases) { mode in
+                        Text(verbatim: mode.localizedTitle).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .id(language)
+
+                Picker(
+                    AppLanguage.localized("双击文件时", english: "Double-clicking a file"),
+                    selection: $doubleClickBehavior
+                ) {
+                    ForEach(FileActivationBehavior.allCases) { behavior in
+                        Text(verbatim: behavior.localizedTitle).tag(behavior)
+                    }
+                }
+                .pickerStyle(.menu)
+                .id(language)
             }
 
             Section("文件位置") {
