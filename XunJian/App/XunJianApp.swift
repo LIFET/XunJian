@@ -571,6 +571,7 @@ struct XunJianApp: App {
                 .environmentObject(appModel)
                 .environmentObject(appModel.oauth)
                 .environmentObject(appModel.ai)
+                .environmentObject(appModel.index.categoryIndexStore)
                 .preferredColorScheme(
                     AppAppearance(rawValue: appearance)?.colorScheme
                 )

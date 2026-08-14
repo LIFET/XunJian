@@ -3,6 +3,7 @@ import SwiftUI
 struct FileInspectorView: View {
     private static let maximumInlinePreviewCharacters = 20_000
     @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
     @ScaledMetric(relativeTo: .body) private var actionIconSide: CGFloat = 18
     let file: IndexedFile?
@@ -141,7 +142,7 @@ struct FileInspectorView: View {
                                     Button {
                                         appModel.toggleCategory(category, for: file)
                                     } label: {
-                                        if appModel.isCategory(category, assignedTo: file) {
+                                        if categoryIndex.isAssigned(category.id, to: file.id) {
                                             Label {
                                                 Text(verbatim: category.localizedDisplayName)
                                             } icon: {
@@ -464,7 +465,7 @@ struct FileInspectorView: View {
         if appModel.categories.isEmpty {
             return AppLanguage.localized("新建分类…", english: "New Category…")
         }
-        let names = appModel.categories(for: file).map(\.localizedDisplayName)
+        let names = categoryIndex.categories(for: file.id).map(\.localizedDisplayName)
         guard !names.isEmpty else {
             return AppLanguage.localized("添加分类", english: "Add Category")
         }

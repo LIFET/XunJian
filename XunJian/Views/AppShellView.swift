@@ -49,12 +49,12 @@ struct AppShellView: View {
                     }
 
                     FileExportProgressBanner(
-                        progress: appModel.fileExportProgress,
+                        store: appModel.fileExportProgressStore,
                         onCancel: appModel.cancelFileListExport
                     )
 
                     TrashUndoBanner(
-                        undo: appModel.lastTrashUndo,
+                        store: appModel.index.trashUndoStore,
                         onUndo: { appModel.undoLastTrash() },
                         onDismiss: { appModel.dismissTrashUndoBanner() }
                     )
@@ -442,11 +442,11 @@ struct AppShellView: View {
 }
 
 private struct FileExportProgressBanner: View {
-    let progress: FileExportProgress?
+    @ObservedObject var store: FileExportProgressStore
     let onCancel: () -> Void
 
     var body: some View {
-        if let progress {
+        if let progress = store.progress {
             HStack(spacing: 10) {
                 ProgressView(
                     value: Double(progress.completed),
@@ -567,12 +567,13 @@ private struct ScanStatusBanner: View {
 }
 
 private struct TrashUndoBanner: View {
-    let undo: FileIndexCoordinator.TrashUndo?
+    @ObservedObject var store: TrashUndoStore
     let onUndo: () -> Void
     let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
+        let undo = store.undo
         Group {
             if let undo {
                 HStack(spacing: 8) {

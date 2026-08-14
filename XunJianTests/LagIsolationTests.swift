@@ -1,0 +1,257 @@
+import Combine
+import XCTest
+@testable import XunJian
+
+@MainActor
+final class LagIsolationTests: XCTestCase {
+    func testSchedulingANonEmptyQueryKeepsPreviousSearchResults() {
+        let previous = [makeFile(name: "report.pdf", path: "/docs/report.pdf")]
+
+        XCTAssertEqual(
+            FileIndexCoordinator.retainedSearchResults(
+                forQuery: "repo",
+                previous: previous
+            )?.map(\.id),
+            previous.map(\.id)
+        )
+        XCTAssertNil(
+            FileIndexCoordinator.retainedSearchResults(
+                forQuery: "",
+                previous: previous
+            )
+        )
+        XCTAssertNil(
+            FileIndexCoordinator.retainedSearchResults(
+                forQuery: "   ",
+                previous: previous
+            )
+        )
+    }
+
+    func testDisplayedFilesRefreshKeyIgnoresTypingAndSearchingFlag() {
+        let idle = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+        let typed = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+
+        XCTAssertEqual(idle.signature, typed.signature)
+    }
+
+    func testDisplayedFilesRefreshKeyChangesWhenSearchResultsRevisionChanges() {
+        let before = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+        let after = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 9,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+
+        XCTAssertNotEqual(before.signature, after.signature)
+    }
+
+    func testCategoryIndexStoreTogglesOneFileWithoutReplacingTheLibrary() {
+        let work = FileCategory(id: UUID(), name: "Work", symbolName: "briefcase")
+        let files = (0..<50).map { index in
+            makeFile(name: "file-\(index).pdf", path: "/docs/file-\(index).pdf")
+        }
+        let store = CategoryIndexStore()
+        store.replaceAll(categories: [work], files: files, links: [:])
+
+        store.applyAssignment(assigned: true, file: files[7], category: work)
+        XCTAssertEqual(store.fileCount(in: work.id), 1)
+        XCTAssertEqual(store.files(in: work.id).map(\.id), [files[7].id])
+        XCTAssertTrue(store.isAssigned(work.id, to: files[7].id))
+
+        store.applyAssignment(assigned: false, file: files[7], category: work)
+        XCTAssertEqual(store.fileCount(in: work.id), 0)
+        XCTAssertTrue(store.files(in: work.id).isEmpty)
+        XCTAssertFalse(store.isAssigned(work.id, to: files[7].id))
+    }
+
+    func testFileExportProgressStoreDoesNotReplaceIdenticalProgress() {
+        let store = FileExportProgressStore()
+        XCTAssertNil(store.progress)
+
+        store.update(FileExportProgress(completed: 2, total: 10))
+        let first = store.progress
+        store.update(FileExportProgress(completed: 2, total: 10))
+        XCTAssertEqual(store.progress, first)
+
+        store.update(FileExportProgress(completed: 3, total: 10))
+        XCTAssertEqual(store.progress?.completed, 3)
+
+        store.update(nil)
+        XCTAssertNil(store.progress)
+    }
+
+    func testTrashUndoStoreDoesNotPublishOnTheIndexCoordinator() {
+        let coordinator = FileIndexCoordinator(isRunningTests: true)
+        var indexChanges = 0
+        let observation = coordinator.objectWillChange.sink { indexChanges += 1 }
+
+        coordinator.trashUndoStore.update(
+            FileIndexCoordinator.TrashUndo(
+                items: [
+                    FileIndexCoordinator.TrashUndo.Item(
+                        trashURL: URL(fileURLWithPath: "/tmp/Trash/a.pdf"),
+                        originalURL: URL(fileURLWithPath: "/docs/a.pdf"),
+                        identity: FileSystemObjectIdentity(
+                            device: 1,
+                            inode: 2,
+                            fileType: 0
+                        )
+                    )
+                ],
+                undoEntryID: nil
+            )
+        )
+
+        XCTAssertEqual(indexChanges, 0)
+        XCTAssertEqual(coordinator.trashUndoStore.undo?.fileCount, 1)
+        _ = observation
+    }
+
+    func testPausedOrUnavailableSourcesAreNeverEligibleForScanning() {
+        let available = makeSource(enabled: true, accessState: .available)
+        let paused = makeSource(enabled: false, accessState: .available)
+        let unavailable = makeSource(enabled: true, accessState: .needsAuthorization)
+
+        XCTAssertTrue(FileIndexCoordinator.isSourceEligibleForScanning(available))
+        XCTAssertFalse(FileIndexCoordinator.isSourceEligibleForScanning(paused))
+        XCTAssertFalse(FileIndexCoordinator.isSourceEligibleForScanning(unavailable))
+    }
+
+    func testIncrementalMergeDropsVisibleFileRenamedToDotPrefix() {
+        let sourceID = UUID()
+        let visible = makeFile(
+            id: "stable-id",
+            sourceID: sourceID,
+            name: "notes.md",
+            path: "/docs/notes.md"
+        )
+        let hidden = makeFile(
+            id: "stable-id",
+            sourceID: sourceID,
+            name: ".notes.md",
+            path: "/docs/.notes.md"
+        )
+
+        let merged = FileIndexCoordinator.mergeIncrementalFiles(
+            current: [visible],
+            fetched: [hidden],
+            removedIDs: [],
+            includesHiddenFiles: false
+        )
+
+        XCTAssertTrue(merged.isEmpty)
+    }
+
+    func testEqualRankSearchPaginationIsStableAcrossEveryPage() async throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("XunJian-StablePaging-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: container, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "分页稳定性",
+            path: container.path,
+            bookmark: Data([1])
+        )
+        let files = (0..<1_200).map { index in
+            makeFile(
+                id: "same-rank-\(index)",
+                sourceID: source.id,
+                name: "文档-\(index).txt",
+                path: container.appendingPathComponent("文档-\(index).txt").path,
+                textContent: "完全相同分页词"
+            )
+        }
+        try await database.replaceFiles(for: source.id, with: files)
+
+        var collected: [String] = []
+        for offset in stride(from: 0, to: files.count, by: 200) {
+            let page = try await database.searchFilesPage(
+                matching: "完全相同分页词",
+                limit: 200,
+                offset: offset,
+                fetchesTotalCount: false
+            )
+            collected.append(contentsOf: page.files.map(\.id))
+        }
+
+        XCTAssertEqual(collected.count, 1_200)
+        XCTAssertEqual(Set(collected).count, 1_200)
+    }
+
+    private func makeSource(
+        enabled: Bool,
+        accessState: SourceAccessState
+    ) -> FileSource {
+        FileSource(
+            id: UUID(),
+            displayName: "Documents",
+            path: "/docs",
+            bookmark: Data(),
+            enabled: enabled,
+            createdAt: Date(),
+            accessState: accessState
+        )
+    }
+
+    private func makeFile(
+        id: String? = nil,
+        sourceID: UUID = UUID(),
+        name: String,
+        path: String,
+        textContent: String? = nil
+    ) -> IndexedFile {
+        IndexedFile(
+            id: id ?? path,
+            sourceID: sourceID,
+            name: name,
+            path: path,
+            fileExtension: "pdf",
+            kind: .document,
+            size: 1,
+            createdAt: nil,
+            modifiedAt: Date(),
+            indexedAt: Date(),
+            textContent: textContent
+        )
+    }
+}

@@ -102,7 +102,8 @@ final class AppModel: ObservableObject {
     /// AI sheet request, owned here so both the file list and the inspector
     /// can open the same sheets (N04).
     @Published var aiSheetRequest: AITaskSheet?
-    @Published private(set) var fileExportProgress: FileExportProgress?
+    let fileExportProgressStore = FileExportProgressStore()
+    var fileExportProgress: FileExportProgress? { fileExportProgressStore.progress }
     private var fileExportTask: Task<Void, Never>?
     private var fileExportRevision = UUID()
     @Published var searchText = "" {
@@ -135,9 +136,9 @@ final class AppModel: ObservableObject {
         manualFilterPersistenceTask?.cancel()
         let minSize = filterMinSizeMB
         let minDate = filterMinDate
-        manualFilterPersistenceTask = Task { [weak self] in
+        manualFilterPersistenceTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
-            guard !Task.isCancelled, let self else { return }
+            guard !Task.isCancelled else { return }
             UserDefaults.standard.set(minSize, forKey: "allFiles.filterMinSizeMB")
             UserDefaults.standard.set(minDate, forKey: "allFiles.filterMinDate")
         }
@@ -174,7 +175,7 @@ final class AppModel: ObservableObject {
     /// File index domain (database, scanning, search, file operations),
     /// extracted so it can be tested without the AI machinery.
     let index: FileIndexCoordinator
-    private var indexObservation: AnyCancellable?
+    private var indexObservations = Set<AnyCancellable>()
 
     /// General undo stack for reversible actions (N16).
     let undo = UndoCoordinator()
@@ -448,16 +449,18 @@ final class AppModel: ObservableObject {
         fileExportTask?.cancel()
         let revision = UUID()
         fileExportRevision = revision
-        fileExportProgress = FileExportProgress(completed: 0, total: totalCount)
+        fileExportProgressStore.update(FileExportProgress(completed: 0, total: totalCount))
         fileExportTask = Task { [weak self] in
             guard let self else { return }
             do {
                 try await operation { [weak self] completed in
                     Task { @MainActor [weak self] in
                         guard let self, self.fileExportRevision == revision else { return }
-                        self.fileExportProgress = FileExportProgress(
-                            completed: min(completed, totalCount),
-                            total: totalCount
+                        self.fileExportProgressStore.update(
+                            FileExportProgress(
+                                completed: min(completed, totalCount),
+                                total: totalCount
+                            )
                         )
                     }
                 }
@@ -468,7 +471,7 @@ final class AppModel: ObservableObject {
                 errorMessage = error.localizedDescription
             }
             guard fileExportRevision == revision else { return }
-            fileExportProgress = nil
+            fileExportProgressStore.update(nil)
             fileExportTask = nil
         }
     }
@@ -477,7 +480,7 @@ final class AppModel: ObservableObject {
         fileExportRevision = UUID()
         fileExportTask?.cancel()
         fileExportTask = nil
-        fileExportProgress = nil
+        fileExportProgressStore.update(nil)
     }
 
     func requestRename(_ file: IndexedFile) {
@@ -711,12 +714,26 @@ final class AppModel: ObservableObject {
             next.resolveIdentity(from: self.selectedFileID, to: newID)
             self.applyFileSelection(next)
         }
-        indexObservation = index.objectWillChange.sink { [weak self] _ in
-            // Scan counting lives on `scanProgressStore` and is not
-            // `@Published` here, so this fan-out is start/stop and index
-            // changes, not every 100 files.
-            self?.objectWillChange.send()
+        // Forward only the index fields that change the shell's own state.
+        // Category links, trash-undo, and search-in-progress live on dedicated
+        // stores so toggling a category or dismissing a banner does not rebuild
+        // the All Files table, sidebar, and inspector together.
+        func forward<Value>(_ publisher: Published<Value>.Publisher) {
+            publisher
+                .dropFirst()
+                .sink { [weak self] _ in self?.objectWillChange.send() }
+                .store(in: &indexObservations)
         }
+        forward(index.$files)
+        forward(index.$categories)
+        forward(index.$savedSearches)
+        forward(index.$sources)
+        forward(index.$searchResults)
+        forward(index.$searchResultTotalCount)
+        forward(index.$isDatabaseAvailable)
+        forward(index.$includesHiddenFiles)
+        forward(index.$isScanning)
+        forward(index.$isUpdatingContentIndex)
     }
 
     // MARK: - File index forwarding
@@ -727,6 +744,7 @@ final class AppModel: ObservableObject {
     var fileCategoryLinks: [String: Set<UUID>] { index.fileCategoryLinks }
     var searchResults: [IndexedFile]? { index.searchResults }
     var searchResultTotalCount: Int? { index.searchResultTotalCount }
+    var searchResultsRevision: UInt64 { index.searchResultsRevision }
     var isSearching: Bool { index.isSearching }
     var searchProgressStore: SearchProgressStore { index.searchProgressStore }
     var scanProgressStore: ScanProgressStore { index.scanProgressStore }

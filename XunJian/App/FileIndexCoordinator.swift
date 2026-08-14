@@ -15,6 +15,27 @@ import UserNotifications
 ///   should select the new URL
 @MainActor
 final class FileIndexCoordinator: ObservableObject {
+    private struct FileDerivedIndexes: Sendable {
+        let kindCounts: [FileKind: Int]
+        let byID: [String: IndexedFile]
+        let orderByID: [String: Int]
+        let idByPath: [String: String]
+        let recentFiles: [IndexedFile]
+    }
+
+    private struct CategoryDerivedIndexes: Sendable {
+        let categoriesByFileID: [String: [FileCategory]]
+        let fileCountsByCategoryID: [UUID: Int]
+        let filesByCategoryID: [UUID: [IndexedFile]]
+    }
+
+    private struct IncrementalIndexSnapshot: Sendable {
+        let files: [IndexedFile]
+        let links: [String: Set<UUID>]
+        let fileDerived: FileDerivedIndexes
+        let categoryDerived: CategoryDerivedIndexes
+    }
+
     @Published private(set) var sources: [FileSource] = []
     @Published private(set) var files: [IndexedFile] = [] {
         didSet {
@@ -38,6 +59,7 @@ final class FileIndexCoordinator: ObservableObject {
     @Published private(set) var savedSearches: [SavedSearch] = []
     @Published private(set) var searchResults: [IndexedFile]? = nil
     @Published private(set) var searchResultTotalCount: Int? = nil
+    private(set) var searchResultsRevision: UInt64 = 0
     /// High-frequency search flag. Not `@Published` here: forwarding it
     /// through `AppModel` rebuilt the whole window on every keystroke.
     let searchProgressStore = SearchProgressStore()
@@ -45,6 +67,11 @@ final class FileIndexCoordinator: ObservableObject {
     /// High-frequency scan UI. Not `@Published` on this object: forwarding it
     /// through `AppModel` rebuilt the whole window every 100 files.
     let scanProgressStore = ScanProgressStore()
+    /// Category chips and inspector checkboxes observe this instead of the
+    /// whole coordinator, so toggling one assignment does not rebuild All Files.
+    let categoryIndexStore = CategoryIndexStore()
+    /// Trash undo banner observes this instead of `objectWillChange`.
+    let trashUndoStore = TrashUndoStore()
     @Published private(set) var isScanning = false
     var scanProgress: ScanProgress? { scanProgressStore.progress }
     @Published private(set) var includesHiddenFiles = false
@@ -77,7 +104,10 @@ final class FileIndexCoordinator: ObservableObject {
         var fileCount: Int { items.count }
     }
 
-    @Published private(set) var lastTrashUndo: TrashUndo?
+    var lastTrashUndo: TrashUndo? {
+        get { trashUndoStore.undo }
+        set { trashUndoStore.update(newValue) }
+    }
 
     // MARK: - Storage
 
@@ -95,6 +125,9 @@ final class FileIndexCoordinator: ObservableObject {
 
     private var searchTask: Task<Void, Never>?
     private var activeSearchQuery = ""
+    private var queuedFileUpserts = Set<String>()
+    private var queuedFileRemovals = Set<String>()
+    private var isRefreshingFiles = false
     private var scanTask: Task<Void, Never>?
     private var contentIndexPreferenceTask: Task<Void, Never>?
     private var contentIndexPreferenceRevision = UUID()
@@ -112,6 +145,7 @@ final class FileIndexCoordinator: ObservableObject {
     private var sourceEnabledRevisions: [UUID: UUID] = [:]
     private var activeSecurityScopes: [UUID: URL] = [:]
     private var categoryMutationTasks: [FileCategoryAssignmentKey: Task<Void, Never>] = [:]
+    private var batchCategoryMutationTask: Task<Void, Never>?
     private var pendingCategoryAssignments: [
         FileCategoryAssignmentKey: PendingCategoryAssignment
     ] = [:]
@@ -141,6 +175,7 @@ final class FileIndexCoordinator: ObservableObject {
         sourceEnabledTasks.values.forEach { $0.cancel() }
         fileChangeTasks.values.forEach { $0.cancel() }
         categoryMutationTasks.values.forEach { $0.cancel() }
+        batchCategoryMutationTask?.cancel()
     }
 
     // MARK: - Database lifecycle
@@ -194,6 +229,8 @@ final class FileIndexCoordinator: ObservableObject {
         // errors after a retry reopens the database.
         categoryMutationTasks.values.forEach { $0.cancel() }
         categoryMutationTasks.removeAll()
+        batchCategoryMutationTask?.cancel()
+        batchCategoryMutationTask = nil
         pendingCategoryAssignments.removeAll()
         fileSystemMonitor.stopAll()
         for sourceID in Array(activeSecurityScopes.keys) {
@@ -229,6 +266,18 @@ final class FileIndexCoordinator: ObservableObject {
             let storedCategories = try await database.fetchCategories()
             let storedLinks = try await database.fetchFileCategoryLinks()
             let storedSearches = try await database.fetchSavedSearches()
+            let derived = await Task.detached(priority: .userInitiated) {
+                IncrementalIndexSnapshot(
+                    files: visibleFiles,
+                    links: storedLinks,
+                    fileDerived: Self.makeFileDerivedIndexes(visibleFiles),
+                    categoryDerived: Self.makeCategoryDerivedIndexes(
+                        categories: storedCategories,
+                        files: visibleFiles,
+                        links: storedLinks
+                    )
+                )
+            }.value
 
             // Publish one coherent snapshot. Without batching, a reload rebuilt
             // the 100k-file/category indexes once for every individual field.
@@ -245,16 +294,17 @@ final class FileIndexCoordinator: ObservableObject {
                 }
                 return source
             }
-            files = visibleFiles
+            files = derived.files
             categories = storedCategories
-            fileCategoryLinks = storedLinks
+            fileCategoryLinks = derived.links
             savedSearches = storedSearches
             isBatchingIndexReload = false
-            rebuildFileDerivedIndexes()
-            rebuildCategoryDerivedIndexes()
+            apply(derived.fileDerived)
+            apply(derived.categoryDerived)
             activateSecurityScopes()
             configureFileSystemMonitoring()
             onFilesChanged?()
+            refreshActiveSearchIfNeeded()
             isDatabaseAvailable = true
         } catch {
             suspendIndexAfterDatabaseFailure(error)
@@ -263,11 +313,58 @@ final class FileIndexCoordinator: ObservableObject {
 
     /// Canonical in-memory order: modified_at DESC (NULLs last), then name
     /// NOCASE ascending — matches `fetchFiles`'s ORDER BY.
-    private static func comesBefore(_ lhs: IndexedFile, _ rhs: IndexedFile) -> Bool {
+    nonisolated private static func comesBefore(_ lhs: IndexedFile, _ rhs: IndexedFile) -> Bool {
         let lhsDate = lhs.modifiedAt ?? .distantPast
         let rhsDate = rhs.modifiedAt ?? .distantPast
         if lhsDate != rhsDate { return lhsDate > rhsDate }
         return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
+    nonisolated static func mergeIncrementalFiles(
+        current: [IndexedFile],
+        fetched: [IndexedFile],
+        removedIDs: Set<String>,
+        includesHiddenFiles: Bool
+    ) -> [IndexedFile] {
+        let visibleFetched = fetched.filter {
+            includesHiddenFiles || !isDotPrefixedFile($0)
+        }
+        let fetchedByID = Dictionary(
+            uniqueKeysWithValues: visibleFetched.map { ($0.id, $0) }
+        )
+        let hiddenFetchedIDs = Set(fetched.lazy.filter {
+            !includesHiddenFiles && isDotPrefixedFile($0)
+        }.map(\.id))
+        let updated = current.compactMap { file -> IndexedFile? in
+            guard !removedIDs.contains(file.id), !hiddenFetchedIDs.contains(file.id) else {
+                return nil
+            }
+            return fetchedByID[file.id] ?? file
+        }
+        let currentIDs = Set(current.map(\.id))
+        let newFiles = visibleFetched.filter { !currentIDs.contains($0.id) }
+        guard !newFiles.isEmpty else { return updated }
+
+        var merged: [IndexedFile] = []
+        merged.reserveCapacity(updated.count + newFiles.count)
+        var existingIndex = 0
+        var newIndex = 0
+        while existingIndex < updated.count, newIndex < newFiles.count {
+            if comesBefore(newFiles[newIndex], updated[existingIndex]) {
+                merged.append(newFiles[newIndex])
+                newIndex += 1
+            } else {
+                merged.append(updated[existingIndex])
+                existingIndex += 1
+            }
+        }
+        if existingIndex < updated.count {
+            merged.append(contentsOf: updated[existingIndex...])
+        }
+        if newIndex < newFiles.count {
+            merged.append(contentsOf: newFiles[newIndex...])
+        }
+        return merged
     }
 
     /// Applies a small, known set of file changes to the in-memory model
@@ -279,6 +376,30 @@ final class FileIndexCoordinator: ObservableObject {
         upsertedFileIDs: [String],
         removedFileIDs: Set<String>
     ) async {
+        queuedFileRemovals.formUnion(removedFileIDs)
+        queuedFileUpserts.formUnion(upsertedFileIDs)
+        queuedFileUpserts.subtract(queuedFileRemovals)
+        guard !isRefreshingFiles else { return }
+
+        isRefreshingFiles = true
+        defer { isRefreshingFiles = false }
+        while !queuedFileUpserts.isEmpty || !queuedFileRemovals.isEmpty {
+            let upserts = queuedFileUpserts
+            let removals = queuedFileRemovals
+            queuedFileUpserts.removeAll(keepingCapacity: true)
+            queuedFileRemovals.removeAll(keepingCapacity: true)
+            await performRefreshFiles(
+                upsertedFileIDs: Array(upserts),
+                removedFileIDs: removals
+            )
+            guard database != nil else { return }
+        }
+    }
+
+    private func performRefreshFiles(
+        upsertedFileIDs: [String],
+        removedFileIDs: Set<String>
+    ) async {
         guard let database else { return }
         let upsertedIDs = Array(Set(upsertedFileIDs).subtracting(removedFileIDs))
         do {
@@ -286,52 +407,9 @@ final class FileIndexCoordinator: ObservableObject {
             let fetchedLinks = try await database.fetchFileCategoryLinks(
                 fileIDs: upsertedIDs
             )
-
-            var updated = files
-            if !removedFileIDs.isEmpty {
-                updated.removeAll { removedFileIDs.contains($0.id) }
-            }
-            let visibleFetched = fetchedFiles.filter {
-                includesHiddenFiles || !Self.isDotPrefixedFile($0)
-            }
-            // Patch in O(n + k): both `updated` and `visibleFetched` are in
-            // the canonical order (modified_at DESC, name NOCASE ASC), so
-            // existing rows are replaced via a dictionary and only genuinely
-            // new rows are merged in one sorted pass. The previous per-file
-            // firstIndex + insert was O(k·n) surgery on the main actor.
-            let fetchedByID = Dictionary(
-                uniqueKeysWithValues: visibleFetched.map { ($0.id, $0) }
+            await FinderTagService.shared.invalidate(
+                fileIDs: Set(upsertedIDs).union(removedFileIDs)
             )
-            for index in updated.indices {
-                if let replacement = fetchedByID[updated[index].id] {
-                    updated[index] = replacement
-                }
-            }
-            // Membership against the pre-batch cache avoids another O(n)
-            // scan per fetched row.
-            let preBatchIDs = filesByID
-            var newFiles: [IndexedFile] = []
-            for file in visibleFetched where preBatchIDs[file.id] == nil {
-                newFiles.append(file)
-            }
-            if !newFiles.isEmpty {
-                var merged: [IndexedFile] = []
-                merged.reserveCapacity(updated.count + newFiles.count)
-                var existingIndex = 0
-                var newIndex = 0
-                while existingIndex < updated.count, newIndex < newFiles.count {
-                    if Self.comesBefore(newFiles[newIndex], updated[existingIndex]) {
-                        merged.append(newFiles[newIndex])
-                        newIndex += 1
-                    } else {
-                        merged.append(updated[existingIndex])
-                        existingIndex += 1
-                    }
-                }
-                merged.append(contentsOf: updated[existingIndex...])
-                merged.append(contentsOf: newFiles[newIndex...])
-                updated = merged
-            }
 
             var links = fileCategoryLinks
             for removedID in removedFileIDs {
@@ -341,27 +419,36 @@ final class FileIndexCoordinator: ObservableObject {
                 links[fileID] = categoryIDs
             }
 
-            isBatchingIndexReload = true
-            files = updated
-            fileCategoryLinks = links
-            isBatchingIndexReload = false
-            rebuildFileDerivedIndexes()
-            rebuildCategoryDerivedIndexes()
+            let currentFiles = files
+            let currentCategories = categories
+            let includesHidden = includesHiddenFiles
+            let snapshot = await Task.detached(priority: .userInitiated) {
+                let updated = Self.mergeIncrementalFiles(
+                    current: currentFiles,
+                    fetched: fetchedFiles,
+                    removedIDs: removedFileIDs,
+                    includesHiddenFiles: includesHidden
+                )
+                return IncrementalIndexSnapshot(
+                    files: updated,
+                    links: links,
+                    fileDerived: Self.makeFileDerivedIndexes(updated),
+                    categoryDerived: Self.makeCategoryDerivedIndexes(
+                        categories: currentCategories,
+                        files: updated,
+                        links: links
+                    )
+                )
+            }.value
 
-            if !removedFileIDs.isEmpty {
-                let removedFromSearch = (searchResults ?? []).filter {
-                    removedFileIDs.contains($0.id)
-                }
-                if !removedFromSearch.isEmpty {
-                    searchResults?.removeAll { removedFileIDs.contains($0.id) }
-                    if let searchResultTotalCount {
-                        self.searchResultTotalCount = max(
-                            0,
-                            searchResultTotalCount - removedFromSearch.count
-                        )
-                    }
-                }
-            }
+            isBatchingIndexReload = true
+            files = snapshot.files
+            fileCategoryLinks = snapshot.links
+            isBatchingIndexReload = false
+            apply(snapshot.fileDerived)
+            apply(snapshot.categoryDerived)
+
+            refreshActiveSearchIfNeeded()
             onFilesChanged?()
             isDatabaseAvailable = true
         } catch {
@@ -383,6 +470,7 @@ final class FileIndexCoordinator: ObservableObject {
                 links[fileID] = fetchedLinks[fileID] ?? []
             }
             fileCategoryLinks = links
+            refreshActiveSearchIfNeeded()
             isDatabaseAvailable = true
         } catch {
             suspendIndexAfterDatabaseFailure(error)
@@ -398,6 +486,7 @@ final class FileIndexCoordinator: ObservableObject {
             if refetchingLinks {
                 fileCategoryLinks = try await database.fetchFileCategoryLinks()
             }
+            refreshActiveSearchIfNeeded()
             isDatabaseAvailable = true
         } catch {
             suspendIndexAfterDatabaseFailure(error)
@@ -509,7 +598,7 @@ final class FileIndexCoordinator: ObservableObject {
     /// recomputing meant a full filter + sort of the index each time.
     private(set) var recentFiles: [IndexedFile] = []
 
-    private static let recentFileCount = 8
+    nonisolated private static let recentFileCount = 8
 
     /// Hot-path lookup caches. Selection, inspector refreshes, and keyboard
     /// commands should not linearly scan a six-figure file index.
@@ -579,7 +668,12 @@ final class FileIndexCoordinator: ObservableObject {
     private(set) var categoryRevision: UInt64 = 0
 
     private func rebuildFileDerivedIndexes() {
-        filesRevision &+= 1
+        apply(Self.makeFileDerivedIndexes(files))
+    }
+
+    nonisolated private static func makeFileDerivedIndexes(
+        _ files: [IndexedFile]
+    ) -> FileDerivedIndexes {
         var kindCounts: [FileKind: Int] = [:]
         var byID: [String: IndexedFile] = [:]
         var orderByID: [String: Int] = [:]
@@ -609,21 +703,43 @@ final class FileIndexCoordinator: ObservableObject {
                 newest.removeLast()
             }
         }
-        fileCountsByKind = kindCounts
-        filesByID = byID
-        fileOrderByID = orderByID
-        fileIDByCanonicalPath = idByPath
-        allFileIDs = Set(byID.keys)
-        recentFiles = newest
+        return FileDerivedIndexes(
+            kindCounts: kindCounts,
+            byID: byID,
+            orderByID: orderByID,
+            idByPath: idByPath,
+            recentFiles: newest
+        )
+    }
+
+    private func apply(_ derived: FileDerivedIndexes) {
+        filesRevision &+= 1
+        fileCountsByKind = derived.kindCounts
+        filesByID = derived.byID
+        fileOrderByID = derived.orderByID
+        fileIDByCanonicalPath = derived.idByPath
+        allFileIDs = Set(derived.byID.keys)
+        recentFiles = derived.recentFiles
     }
 
     private func rebuildCategoryDerivedIndexes() {
-        categoryRevision &+= 1
+        apply(Self.makeCategoryDerivedIndexes(
+            categories: categories,
+            files: files,
+            links: fileCategoryLinks
+        ))
+    }
+
+    nonisolated private static func makeCategoryDerivedIndexes(
+        categories: [FileCategory],
+        files: [IndexedFile],
+        links: [String: Set<UUID>]
+    ) -> CategoryDerivedIndexes {
         let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
         var categoryLists: [String: [FileCategory]] = [:]
-        categoryLists.reserveCapacity(fileCategoryLinks.count)
+        categoryLists.reserveCapacity(links.count)
         var categoryCounts: [UUID: Int] = [:]
-        for (fileID, assignedIDs) in fileCategoryLinks where !assignedIDs.isEmpty {
+        for (fileID, assignedIDs) in links where !assignedIDs.isEmpty {
             categoryLists[fileID] = assignedIDs.compactMap { categoryByID[$0] }
             for categoryID in assignedIDs {
                 categoryCounts[categoryID, default: 0] += 1
@@ -631,13 +747,27 @@ final class FileIndexCoordinator: ObservableObject {
         }
         var categoryFiles: [UUID: [IndexedFile]] = [:]
         for file in files {
-            for categoryID in fileCategoryLinks[file.id] ?? [] {
+            for categoryID in links[file.id] ?? [] {
                 categoryFiles[categoryID, default: []].append(file)
             }
         }
-        categoriesByFileID = categoryLists
-        fileCountsByCategoryID = categoryCounts
-        filesByCategoryID = categoryFiles
+        return CategoryDerivedIndexes(
+            categoriesByFileID: categoryLists,
+            fileCountsByCategoryID: categoryCounts,
+            filesByCategoryID: categoryFiles
+        )
+    }
+
+    private func apply(_ derived: CategoryDerivedIndexes) {
+        categoryRevision &+= 1
+        categoriesByFileID = derived.categoriesByFileID
+        fileCountsByCategoryID = derived.fileCountsByCategoryID
+        filesByCategoryID = derived.filesByCategoryID
+        categoryIndexStore.replaceAll(
+            categories: categories,
+            files: files,
+            links: fileCategoryLinks
+        )
     }
 
     // MARK: - Search
@@ -648,20 +778,18 @@ final class FileIndexCoordinator: ObservableObject {
         activeSearchQuery = query
 
         guard !query.isEmpty else {
-            searchResults = nil
-            searchResultTotalCount = nil
+            publishSearchResults(nil, totalCount: nil)
             searchProgressStore.update(false)
             return
         }
         guard let database else {
-            searchResults = []
-            searchResultTotalCount = 0
+            publishSearchResults([], totalCount: 0)
             searchProgressStore.update(false)
             return
         }
 
-        searchResults = nil
-        searchResultTotalCount = nil
+        // Keep the previous page on screen. Assigning `nil` here published
+        // through AppModel and rebuilt the file table on every keystroke.
         searchProgressStore.update(true)
         let includesHiddenFiles = includesHiddenFiles
         searchTask = Task { [weak self] in
@@ -674,15 +802,13 @@ final class FileIndexCoordinator: ObservableObject {
                 )
                 try Task.checkCancellation()
                 guard let self, self.activeSearchQuery == query else { return }
-                self.searchResults = page.files
-                self.searchResultTotalCount = page.totalCount
+                self.publishSearchResults(page.files, totalCount: page.totalCount)
                 self.searchProgressStore.update(false)
             } catch is CancellationError {
                 // 新输入会替换尚未完成的查询。
             } catch {
                 guard let self else { return }
-                self.searchResults = []
-                self.searchResultTotalCount = 0
+                self.publishSearchResults([], totalCount: 0)
                 self.searchProgressStore.update(false)
                 self.onError?(Self.message(for: error))
             }
@@ -708,7 +834,10 @@ final class FileIndexCoordinator: ObservableObject {
                 )
                 try Task.checkCancellation()
                 guard self.activeSearchQuery == query else { return }
-                self.searchResults = existing + page.files.filter { !existingIDs.contains($0.id) }
+                self.publishSearchResults(
+                    existing + page.files.filter { !existingIDs.contains($0.id) },
+                    totalCount: self.searchResultTotalCount
+                )
                 self.searchProgressStore.update(false)
             } catch is CancellationError {
                 return
@@ -734,8 +863,7 @@ final class FileIndexCoordinator: ObservableObject {
                 includesHiddenFiles: includesHiddenFiles
             )
             guard activeSearchQuery == query else { return false }
-            searchResults = page.files
-            searchResultTotalCount = page.totalCount
+            publishSearchResults(page.files, totalCount: page.totalCount)
             return true
         } catch is CancellationError {
             return false
@@ -743,6 +871,27 @@ final class FileIndexCoordinator: ObservableObject {
             onError?(Self.message(for: error))
             return false
         }
+    }
+
+    static func retainedSearchResults(
+        forQuery query: String,
+        previous: [IndexedFile]?
+    ) -> [IndexedFile]? {
+        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : previous
+    }
+
+    private func publishSearchResults(
+        _ results: [IndexedFile]?,
+        totalCount: Int?
+    ) {
+        searchResults = results
+        searchResultTotalCount = totalCount
+        searchResultsRevision &+= 1
+    }
+
+    private func refreshActiveSearchIfNeeded() {
+        guard !activeSearchQuery.isEmpty else { return }
+        scheduleSearch(query: activeSearchQuery)
     }
 
     func searchFileIDs(
@@ -886,6 +1035,7 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func scanSource(_ source: FileSource) {
+        guard Self.isSourceEligibleForScanning(source) else { return }
         cancelScan(startsPendingFullRescan: false)
         let generation = UUID()
         scanGeneration = generation
@@ -903,9 +1053,9 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func refreshAllSources() {
-        guard !sources.isEmpty else { return }
+        let sourcesToScan = sources.filter(Self.isSourceEligibleForScanning)
+        guard !sourcesToScan.isEmpty else { return }
         cancelScan(startsPendingFullRescan: false)
-        let sourcesToScan = sources
         let generation = UUID()
         scanGeneration = generation
         scanningSourceIDs = Set(sourcesToScan.map(\.id))
@@ -941,9 +1091,9 @@ final class FileIndexCoordinator: ObservableObject {
         )
         if !includesHiddenFiles {
             files.removeAll(where: Self.isDotPrefixedFile)
-            searchResults?.removeAll(where: Self.isDotPrefixedFile)
             onFilesChanged?()
         }
+        refreshActiveSearchIfNeeded()
         refreshAllSources()
     }
 
@@ -982,6 +1132,7 @@ final class FileIndexCoordinator: ObservableObject {
                     true,
                     forKey: FileIndexPreferences.disabledContentPurgeCompletedKey
                 )
+                self?.refreshActiveSearchIfNeeded()
             } catch {
                 guard !Task.isCancelled,
                       self?.contentIndexPreferenceRevision == revision else { return }
@@ -991,6 +1142,10 @@ final class FileIndexCoordinator: ObservableObject {
             self?.isUpdatingContentIndex = false
             self?.contentIndexPreferenceTask = nil
         }
+    }
+
+    static func isSourceEligibleForScanning(_ source: FileSource) -> Bool {
+        source.enabled && source.accessState == .available
     }
 
     private func ensureDisabledContentIsPurged() async -> Bool {
@@ -1383,19 +1538,60 @@ final class FileIndexCoordinator: ObservableObject {
     private func applyBatchCategory(
         _ category: FileCategory,
         assigned: Bool,
-        to files: [IndexedFile]
+        to files: [IndexedFile],
+        recordsUndo: Bool = true
     ) {
+        guard let database else { return reportDatabaseUnavailable() }
         let changed = files.filter { isCategory(category, assignedTo: $0) != assigned }
         guard !changed.isEmpty else { return }
 
+        var links = fileCategoryLinks
         for file in changed {
-            setCategory(category, assigned: assigned, for: file, recordsUndo: false)
+            if assigned {
+                links[file.id, default: []].insert(category.id)
+            } else {
+                links[file.id]?.remove(category.id)
+                if links[file.id]?.isEmpty == true {
+                    links.removeValue(forKey: file.id)
+                }
+            }
+        }
+        isBatchingIndexReload = true
+        fileCategoryLinks = links
+        isBatchingIndexReload = false
+        for file in changed {
+            patchCategoryDerivedIndexes(
+                assigned: assigned,
+                for: FileCategoryAssignmentKey(fileID: file.id, categoryID: category.id)
+            )
         }
 
-        undoCoordinator?.record(title: UndoCoordinator.batchCategoryTitle) { [weak self] in
-            guard let self else { return }
-            for file in changed {
-                setCategory(category, assigned: !assigned, for: file, recordsUndo: false)
+        if recordsUndo {
+            undoCoordinator?.record(title: UndoCoordinator.batchCategoryTitle) { [weak self] in
+                self?.applyBatchCategory(
+                    category,
+                    assigned: !assigned,
+                    to: changed,
+                    recordsUndo: false
+                )
+            }
+        }
+
+        let changes = changed.map {
+            AIClassificationChange(fileID: $0.id, categoryID: category.id)
+        }
+        let previousTask = batchCategoryMutationTask
+        batchCategoryMutationTask = Task { [weak self] in
+            await previousTask?.value
+            guard let self, !Task.isCancelled else { return }
+            do {
+                try await database.setCategories(changes, assigned: assigned)
+                self.refreshActiveSearchIfNeeded()
+            } catch is CancellationError {
+                return
+            } catch {
+                self.onError?(Self.message(for: error))
+                await self.reloadIndex()
             }
         }
     }
@@ -1461,6 +1657,7 @@ final class FileIndexCoordinator: ObservableObject {
                     assigned: pending.desiredAssignment,
                     toFile: key.fileID
                 )
+                refreshActiveSearchIfNeeded()
                 guard pendingCategoryAssignments[key]?.revision == pending.revision else {
                     if let newest = pendingCategoryAssignments[key] {
                         applyCategoryAssignment(newest.desiredAssignment, for: key)
@@ -1499,7 +1696,42 @@ final class FileIndexCoordinator: ObservableObject {
                 links.removeValue(forKey: key.fileID)
             }
         }
+        isBatchingIndexReload = true
         fileCategoryLinks = links
+        isBatchingIndexReload = false
+        patchCategoryDerivedIndexes(assigned: assigned, for: key)
+    }
+
+    /// Updates one file's category caches without scanning the whole library.
+    private func patchCategoryDerivedIndexes(
+        assigned: Bool,
+        for key: FileCategoryAssignmentKey
+    ) {
+        guard let file = filesByID[key.fileID],
+              let category = categories.first(where: { $0.id == key.categoryID }) else {
+            rebuildCategoryDerivedIndexes()
+            return
+        }
+
+        let assignedIDs = fileCategoryLinks[key.fileID] ?? []
+        let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        if assignedIDs.isEmpty {
+            categoriesByFileID.removeValue(forKey: key.fileID)
+        } else {
+            categoriesByFileID[key.fileID] = assignedIDs.compactMap { categoryByID[$0] }
+        }
+        var list = filesByCategoryID[key.categoryID] ?? []
+        if assigned {
+            if !list.contains(where: { $0.id == file.id }) {
+                list.append(file)
+            }
+        } else {
+            list.removeAll { $0.id == file.id }
+        }
+        filesByCategoryID[key.categoryID] = list
+        fileCountsByCategoryID[key.categoryID] = list.count
+        categoryRevision &+= 1
+        categoryIndexStore.applyAssignment(assigned: assigned, file: file, category: category)
     }
 
     // MARK: - Source management
@@ -1585,11 +1817,11 @@ final class FileIndexCoordinator: ObservableObject {
             return
         }
         let didAccess = destinationURL.startAccessingSecurityScopedResource()
-        defer {
-            if didAccess {
-                destinationURL.stopAccessingSecurityScopedResource()
-            }
+        guard didAccess else {
+            onError?(FileIndexError.unreadableFolder(destinationURL.lastPathComponent).localizedDescription)
+            return
         }
+        defer { destinationURL.stopAccessingSecurityScopedResource() }
 
         var physicallyMovedURL: URL?
         do {
@@ -1733,10 +1965,12 @@ final class FileIndexCoordinator: ObservableObject {
             }
 
             let didAccess = restored.url.startAccessingSecurityScopedResource()
+            guard didAccess else {
+                markSourceNeedsAuthorization(source.id)
+                throw FileIndexError.bookmarkResolution
+            }
             defer {
-                if didAccess {
-                    restored.url.stopAccessingSecurityScopedResource()
-                }
+                restored.url.stopAccessingSecurityScopedResource()
             }
 
             await syncScanExclusions()
@@ -1767,6 +2001,7 @@ final class FileIndexCoordinator: ObservableObject {
                 deletesUnscanned: skipped.isEmpty,
                 preservesExistingText: indexesFileContents
             )
+            await FinderTagService.shared.invalidateAll()
             guard scanGeneration == generation else { return }
             skippedScanPaths.append(contentsOf: skipped)
             await reloadIndex()
@@ -1789,6 +2024,7 @@ final class FileIndexCoordinator: ObservableObject {
                 )
                 try Task.checkCancellation()
                 guard scanGeneration == generation else { return }
+                refreshActiveSearchIfNeeded()
             }
         } catch is CancellationError {
             // 用户取消扫描时保留上一次完整索引。
@@ -1964,7 +2200,9 @@ final class FileIndexCoordinator: ObservableObject {
         _ events: [FileSystemChangeEvent],
         to source: FileSource
     ) async {
-        guard let database, !events.isEmpty else { return }
+        guard let database,
+              !events.isEmpty,
+              Self.isSourceEligibleForScanning(source) else { return }
         if events.contains(where: \.requiresFullRescan) {
             if Self.shouldQueueFullRescan(isScanning: isScanning) {
                 pendingFullRescanSourceIDs.insert(source.id)
@@ -1977,10 +2215,12 @@ final class FileIndexCoordinator: ObservableObject {
         do {
             let restored = try bookmarkManager.resolveBookmark(source.bookmark)
             let didAccess = restored.url.startAccessingSecurityScopedResource()
+            guard didAccess else {
+                markSourceNeedsAuthorization(source.id)
+                throw FileIndexError.bookmarkResolution
+            }
             defer {
-                if didAccess {
-                    restored.url.stopAccessingSecurityScopedResource()
-                }
+                restored.url.stopAccessingSecurityScopedResource()
             }
 
             await syncScanExclusions()
@@ -2050,7 +2290,7 @@ final class FileIndexCoordinator: ObservableObject {
 
     static func sourcesAffected(by urls: [URL], in sources: [FileSource]) -> [FileSource] {
         sources.filter { source in
-            guard source.accessState == .available else { return false }
+            guard isSourceEligibleForScanning(source) else { return false }
             let rootPath = FilePathCanonicalizer.path(source.url)
             return urls.contains { url in
                 let path = FilePathCanonicalizer.path(url)
@@ -2063,24 +2303,23 @@ final class FileIndexCoordinator: ObservableObject {
     private func forgetFiles(_ filesToDrop: [IndexedFile]) {
         let ids = Set(filesToDrop.map(\.id))
         guard !ids.isEmpty else { return }
-        let removed = files.filter { ids.contains($0.id) }.count
+        isBatchingIndexReload = true
         files.removeAll { ids.contains($0.id) }
         searchResults?.removeAll { ids.contains($0.id) }
-        if let searchResultTotalCount {
-            self.searchResultTotalCount = max(0, searchResultTotalCount - removed)
-        }
-        for id in ids {
-            fileCategoryLinks.removeValue(forKey: id)
-        }
+        searchResultTotalCount = nil
+        var links = fileCategoryLinks
+        for id in ids { links.removeValue(forKey: id) }
+        fileCategoryLinks = links
+        isBatchingIndexReload = false
+        rebuildFileDerivedIndexes()
+        rebuildCategoryDerivedIndexes()
     }
 
     private func handleMissingIndexedFile(_ file: IndexedFile) {
         onError?(FileOperationError.fileNotFound.localizedDescription)
         files.removeAll { $0.id == file.id }
         searchResults?.removeAll { $0.id == file.id }
-        if let searchResultTotalCount {
-            self.searchResultTotalCount = max(0, searchResultTotalCount - 1)
-        }
+        searchResultTotalCount = nil
         fileCategoryLinks.removeValue(forKey: file.id)
         onFilesChanged?()
 
@@ -2136,6 +2375,14 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    private func markSourceNeedsAuthorization(_ sourceID: UUID) {
+        guard let index = sources.firstIndex(where: { $0.id == sourceID }) else { return }
+        sources[index].accessState = .needsAuthorization
+        activeSecurityScopes.removeValue(forKey: sourceID)?
+            .stopAccessingSecurityScopedResource()
+        configureFileSystemMonitoring()
+    }
+
     // MARK: - Helpers
 
     private func reportDatabaseUnavailable() {
@@ -2145,7 +2392,7 @@ final class FileIndexCoordinator: ObservableObject {
         ))
     }
 
-    static func isDotPrefixedFile(_ file: IndexedFile) -> Bool {
+    nonisolated static func isDotPrefixedFile(_ file: IndexedFile) -> Bool {
         file.url.pathComponents.contains { component in
             component.count > 1 && component.hasPrefix(".")
         }

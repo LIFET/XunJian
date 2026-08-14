@@ -48,61 +48,66 @@ struct AllFilesView: View {
     }
 
     var body: some View {
-        let filesSnapshot = appModel.browseSnapshot
-        return content(filesSnapshot: filesSnapshot)
+        Group {
+            if isVisible {
+                content(filesSnapshot: appModel.browseSnapshot)
+            } else {
+                Color.clear
+                    .accessibilityHidden(true)
+            }
+        }
+        .task(id: displayedFilesRefreshKey) {
+            guard isVisible else { return }
+            await refreshDisplayedFilesSnapshot()
+        }
+        .onAppear {
+            guard isVisible else { return }
+            appModel.highlightQuery = appModel.searchText
+        }
+        .onChange(of: isVisible) { _, visible in
+            guard visible else { return }
+            appModel.highlightQuery = appModel.searchText
+            // The retained All Files view may still hold the previous
+            // page's snapshot. Publish only after the current filters
+            // have been recomputed so commands cannot target stale rows.
+            appModel.updateCommandTargetFiles([])
+            Task { await refreshDisplayedFilesSnapshot() }
+        }
+        .onChange(of: appModel.searchText) { _, text in
+            guard isVisible else { return }
+            appModel.highlightQuery = text
+        }
+        .onChange(of: appModel.selectedFileID) { _, id in
+            guard let id else { return }
+            // Coalesce: arrow-key navigation changes the selection many
+            // times per second, and each @AppStorage write wakes the
+            // UserDefaults observers. Persist the settled position once.
+            scrollPositionPersistenceTask?.cancel()
+            let isListView = viewMode == .list
+            scrollPositionPersistenceTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(500))
+                guard !Task.isCancelled else { return }
+                if isListView {
+                    listScrollPosition = id
+                } else {
+                    gridScrollPosition = id
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
+            guard isVisible,
+                  let raw = note.object as? String,
+                  let mode = FileBrowseViewMode(rawValue: raw) else { return }
+            viewMode = mode
+        }
     }
 
     private func content(filesSnapshot: [IndexedFile]) -> some View {
-        let content = VStack(spacing: 0) {
+        VStack(spacing: 0) {
             fileHeader(filesSnapshot: filesSnapshot)
             Divider().opacity(0.7)
             emptyState(files: filesSnapshot)
         }
-        return content
-            .task(id: displayedFilesRefreshKey) {
-                guard isVisible else { return }
-                await refreshDisplayedFilesSnapshot()
-            }
-            .onAppear {
-                guard isVisible else { return }
-                appModel.highlightQuery = appModel.searchText
-            }
-            .onChange(of: isVisible) { _, visible in
-                guard visible else { return }
-                appModel.highlightQuery = appModel.searchText
-                // The retained All Files view may still hold the previous
-                // page's snapshot. Publish only after the current filters
-                // have been recomputed so commands cannot target stale rows.
-                appModel.updateCommandTargetFiles([])
-                Task { await refreshDisplayedFilesSnapshot() }
-            }
-            .onChange(of: appModel.searchText) { _, text in
-                guard isVisible else { return }
-                appModel.highlightQuery = text
-            }
-            .onChange(of: appModel.selectedFileID) { _, id in
-                guard let id else { return }
-                // Coalesce: arrow-key navigation changes the selection many
-                // times per second, and each @AppStorage write wakes the
-                // UserDefaults observers. Persist the settled position once.
-                scrollPositionPersistenceTask?.cancel()
-                let isListView = viewMode == .list
-                scrollPositionPersistenceTask = Task { @MainActor in
-                    try? await Task.sleep(for: .milliseconds(500))
-                    guard !Task.isCancelled else { return }
-                    if isListView {
-                        listScrollPosition = id
-                    } else {
-                        gridScrollPosition = id
-                    }
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
-                guard isVisible,
-                      let raw = note.object as? String,
-                      let mode = FileBrowseViewMode(rawValue: raw) else { return }
-                viewMode = mode
-            }
     }
 
     @ViewBuilder
@@ -682,23 +687,39 @@ struct AllFilesView: View {
                     )
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewMode == .list, !files.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    if FileTableLayout.needsHorizontalScroll(contentWidth: contentWidth) {
-                        Text(verbatim: AppLanguage.localized(
-                            "窗口较窄，可左右滑动查看全部列。",
-                            english: "Window is narrow — swipe sideways to see every column."
-                        ))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
+                EquatableSnapshotList(
+                    signature: appModel.browseSnapshotSignature,
+                    viewMode: viewMode,
+                    contentWidth: contentWidth,
+                    selectionToken: appModel.selectedFileIDs.hashValue
+                ) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if FileTableLayout.needsHorizontalScroll(contentWidth: contentWidth) {
+                            Text(verbatim: AppLanguage.localized(
+                                "窗口较窄，可左右滑动查看全部列。",
+                                english: "Window is narrow — swipe sideways to see every column."
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
+                        }
+                        ScrollView(.horizontal) {
+                            fileTable(files: files)
+                        }
+                        .scrollIndicators(.automatic)
                     }
-                    ScrollView(.horizontal) {
-                        fileTable(files: files)
-                    }
-                    .scrollIndicators(.automatic)
                 }
+                .equatable()
             } else if viewMode == .grid, !files.isEmpty {
-                fileGrid(files: files)
+                EquatableSnapshotList(
+                    signature: appModel.browseSnapshotSignature,
+                    viewMode: viewMode,
+                    contentWidth: contentWidth,
+                    selectionToken: appModel.selectedFileIDs.hashValue
+                ) {
+                    fileGrid(files: files)
+                }
+                .equatable()
             } else {
                 ContentUnavailableView {
                     Label(emptyTitle, systemImage: "tray")
@@ -965,11 +986,9 @@ struct AllFilesView: View {
     private var displayedFilesRefreshKey: DisplayedFilesRefreshKey {
         DisplayedFilesRefreshKey(
             filesRevision: appModel.filesRevision,
-            searchResultCount: appModel.searchResults?.count,
+            searchResultsRevision: appModel.searchResultsRevision,
             aiSearchResultCount: appModel.aiSearchResults?.count,
             aiSearchRevision: appModel.aiSearchRevision,
-            isSearching: searchProgressStore.isSearching,
-            query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
             selectedKind: appModel.selectedKind,
             sortOrder: activeSortOrder,
             sortAscending: activeSortAscending,
@@ -1079,14 +1098,8 @@ struct AllFilesView: View {
             .customizationID("name")
 
             TableColumn(AppLanguage.localized("分类", english: "Category")) { file in
-                let categoryNames = appModel.categories(for: file).map(\.localizedDisplayName)
                 selectableTableCell(file: file) {
-                    Text(
-                        categoryNames.isEmpty
-                            ? "—"
-                            : categoryNames.joined(separator: AppLanguage.listSeparator)
-                    )
-                        .lineLimit(1)
+                    FileCategoryNamesLabel(fileID: file.id)
                 }
             }
             .width(min: 45, ideal: categoryColumnWidth, max: categoryColumnWidth)
@@ -1289,13 +1302,11 @@ struct AllFilesView: View {
 /// `body` evaluation and compared by `.task(id:)`, so carrying the whole index
 /// made both the comparison and the allocation O(files). `filesRevision` from
 /// the coordinator stands in for "the file set changed".
-private struct DisplayedFilesRefreshKey: Equatable {
+struct DisplayedFilesRefreshKey: Equatable {
     let filesRevision: UInt64
-    let searchResultCount: Int?
+    let searchResultsRevision: UInt64
     let aiSearchResultCount: Int?
     let aiSearchRevision: UInt64
-    let isSearching: Bool
-    let query: String
     let selectedKind: FileKind?
     let sortOrder: FileSortOrder
     let sortAscending: Bool
@@ -1305,11 +1316,9 @@ private struct DisplayedFilesRefreshKey: Equatable {
     var signature: Int {
         var hasher = Hasher()
         hasher.combine(filesRevision)
-        hasher.combine(searchResultCount)
+        hasher.combine(searchResultsRevision)
         hasher.combine(aiSearchResultCount)
         hasher.combine(aiSearchRevision)
-        hasher.combine(isSearching)
-        hasher.combine(query)
         hasher.combine(selectedKind)
         hasher.combine(sortOrder)
         hasher.combine(sortAscending)
@@ -1319,6 +1328,56 @@ private struct DisplayedFilesRefreshKey: Equatable {
     }
 }
 
+/// Skips rebuilding the file table when only unrelated AppModel fields changed.
+private struct EquatableSnapshotList<Content: View>: View, Equatable {
+    let signature: Int?
+    let viewMode: FileBrowseViewMode
+    let contentWidth: CGFloat
+    let selectionToken: Int
+    let content: () -> Content
+
+    init(
+        signature: Int?,
+        viewMode: FileBrowseViewMode,
+        contentWidth: CGFloat,
+        selectionToken: Int,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
+        self.signature = signature
+        self.viewMode = viewMode
+        self.contentWidth = contentWidth
+        self.selectionToken = selectionToken
+        self.content = content
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.signature == rhs.signature
+            && lhs.viewMode == rhs.viewMode
+            && lhs.contentWidth == rhs.contentWidth
+            && lhs.selectionToken == rhs.selectionToken
+    }
+
+    var body: some View {
+        content()
+    }
+}
+
+/// Category chips observe `CategoryIndexStore` so toggling one file does not
+/// rebuild the enclosing table.
+struct FileCategoryNamesLabel: View {
+    let fileID: String
+    @EnvironmentObject private var categoryIndex: CategoryIndexStore
+
+    var body: some View {
+        let names = categoryIndex.categories(for: fileID).map(\.localizedDisplayName)
+        Text(
+            names.isEmpty
+                ? "—"
+                : names.joined(separator: AppLanguage.listSeparator)
+        )
+        .lineLimit(1)
+    }
+}
 
 struct FileContextMenu: View {
     @EnvironmentObject private var appModel: AppModel

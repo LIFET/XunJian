@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CategoriesView: View {
     @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
     let selectedCategory: FileCategory?
     let openCategory: (FileCategory) -> Void
@@ -529,7 +530,7 @@ struct CategoriesView: View {
     private var categoryFilesRefreshKey: CategoryFilesRefreshKey {
         CategoryFilesRefreshKey(
             filesRevision: appModel.filesRevision,
-            categoryRevision: appModel.categoryRevision,
+            categoryRevision: categoryIndex.revision,
             categoryID: selectedCategory?.id,
             kind: selectedKind,
             query: categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -549,18 +550,13 @@ struct CategoriesView: View {
         }
 
         let signature = categoryFilesRefreshKey.signature
-        if displayedSignature != signature {
-            appModel.updateCommandTargetFiles([])
-            displayedFiles = []
-        }
         guard displayedSignature != signature else {
             appModel.updateCommandTargetFiles(displayedFiles)
             return
         }
 
-        let allFiles = appModel.files
-        let links = appModel.fileCategoryLinks
         let categoryID = selectedCategory.id
+        let categoryFiles = categoryIndex.files(in: categoryID)
         let kind = selectedKind
         let query = categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let order = sortOrder
@@ -592,33 +588,29 @@ struct CategoriesView: View {
         let cancellationFlag = QuickSearchCancellationFlag()
         let result = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
-                let inCategory = allFiles.filter { file in
-                    links[file.id]?.contains(categoryID) == true
-                }
                 guard !cancellationFlag.isCancelled else {
-                    return (inCategory.count, [IndexedFile]())
+                    return [IndexedFile]()
                 }
-                let displayed = CategoriesView.displayed(
-                    inCategory,
+                return CategoriesView.displayed(
+                    categoryFiles,
                     kind: kind,
                     query: query,
                     ftsMatchIDs: matchingIDs,
                     sortOrder: order,
                     ascending: ascending
                 )
-                return (inCategory.count, displayed)
             }.value
         } onCancel: {
             cancellationFlag.cancel()
         }
         guard !Task.isCancelled,
               categoryFilesRefreshKey.signature == signature else { return }
-        categoryFileCount = result.0
-        displayedFiles = result.1
+        categoryFileCount = categoryFiles.count
+        displayedFiles = result
         displayedSignature = signature
         isCategorySearching = false
-        appModel.updateCommandTargetFiles(result.1)
-        appModel.clearSelectionIfHidden(from: Set(result.1.map(\.id)))
+        appModel.updateCommandTargetFiles(result)
+        appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
     }
 
     private var deleteMessage: String {

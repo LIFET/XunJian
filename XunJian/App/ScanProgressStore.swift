@@ -27,3 +27,27 @@ final class SearchProgressStore: ObservableObject {
         self.isSearching = isSearching
     }
 }
+
+/// Export progress, kept off `AppModel` so ticking the counter does not
+/// rebuild the file table, sidebar, and inspector.
+@MainActor
+final class FileExportProgressStore: ObservableObject {
+    @Published private(set) var progress: FileExportProgress?
+
+    func update(_ progress: FileExportProgress?) {
+        guard self.progress != progress else { return }
+        self.progress = progress
+    }
+}
+
+/// One-hop trash undo banner state. Not `@Published` on the index coordinator:
+/// showing or dismissing the banner used to redraw the whole window.
+@MainActor
+final class TrashUndoStore: ObservableObject {
+    @Published private(set) var undo: FileIndexCoordinator.TrashUndo?
+
+    func update(_ undo: FileIndexCoordinator.TrashUndo?) {
+        guard self.undo != undo else { return }
+        self.undo = undo
+    }
+}
