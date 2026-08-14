@@ -11,7 +11,6 @@ struct CategoriesView: View {
     @State private var categoryToRename: FileCategory?
     @State private var categoryToDelete: FileCategory?
     @State private var hoveredCategoryID: UUID?
-    @State private var hoveredFileID: String?
     @State private var categoryQuery = ""
     @State private var displayedFiles: [IndexedFile] = []
     @State private var categoryFileCount = 0
@@ -443,14 +442,10 @@ struct CategoriesView: View {
                 FileGridCard(
                     file: file,
                     isSelected: appModel.selectedFileIDs.contains(file.id),
-                    isHovered: hoveredFileID == file.id,
                     onSelect: { appModel.selectDisplayedFile(file, in: files) },
                     onOpen: {
                         appModel.selectedFileID = file.id
                         doubleClickBehavior.perform(on: file, using: appModel)
-                    },
-                    onHover: { isHovering in
-                        hoveredFileID = isHovering ? file.id : nil
                     }
                 )
                 .contextMenu {
@@ -465,48 +460,15 @@ struct CategoriesView: View {
         GroupedSurface(padding: 4) {
             LazyVStack(spacing: 0) {
                 ForEach(files) { file in
-                    Button {
-                        appModel.selectDisplayedFile(file, in: files)
-                    } label: {
-                        HStack(spacing: 12) {
-                            FileThumbnail(file: file, size: 34)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(verbatim: file.name)
-                                    .lineLimit(1)
-                                Text(verbatim: file.parentPath)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            Spacer(minLength: 0)
-                            Text(verbatim: FileGridCard.sizeText(file))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 9)
-                        .background(
-                            categoryFileBackground(for: file),
-                            in: RoundedRectangle(
-                                cornerRadius: XunJianUI.Radius.row,
-                                style: .continuous
-                            )
-                        )
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .simultaneousGesture(
-                        TapGesture(count: 2).onEnded {
+                    CategoryFileRow(
+                        file: file,
+                        isSelected: appModel.selectedFileIDs.contains(file.id),
+                        onSelect: { appModel.selectDisplayedFile(file, in: files) },
+                        onOpen: {
                             appModel.selectedFileID = file.id
                             doubleClickBehavior.perform(on: file, using: appModel)
                         }
                     )
-                    .onHover { isHovering in
-                        hoveredFileID = isHovering ? file.id : nil
-                    }
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
@@ -552,7 +514,9 @@ struct CategoriesView: View {
     /// itself performs.
     private func clearSelectionIfHidden() {
         guard selectedCategory != nil else {
-            appModel.clearSelectionIfHidden(from: Set(appModel.files.map(\.id)))
+            // Reuses the coordinator's maintained ID set instead of building
+            // a six-figure Set per files-count change on the main actor.
+            appModel.clearSelectionIfHidden(from: appModel.allFileIDs)
             return
         }
         // While a debounced FTS request is pending, keep the selection. Once
@@ -622,20 +586,31 @@ struct CategoriesView: View {
                 matchingIDs = []
             }
         }
-        let result = await Task.detached(priority: .userInitiated) {
-            let inCategory = allFiles.filter { file in
-                links[file.id]?.contains(categoryID) == true
-            }
-            let displayed = CategoriesView.displayed(
-                inCategory,
-                kind: kind,
-                query: query,
-                ftsMatchIDs: matchingIDs,
-                sortOrder: order,
-                ascending: ascending
-            )
-            return (inCategory.count, displayed)
-        }.value
+        // Detached sorts cannot observe cancellation: the flag aborts the
+        // expensive category sort when a newer revision already landed, so
+        // bursts of file activity keep at most one sort in flight.
+        let cancellationFlag = QuickSearchCancellationFlag()
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                let inCategory = allFiles.filter { file in
+                    links[file.id]?.contains(categoryID) == true
+                }
+                guard !cancellationFlag.isCancelled else {
+                    return (inCategory.count, [IndexedFile]())
+                }
+                let displayed = CategoriesView.displayed(
+                    inCategory,
+                    kind: kind,
+                    query: query,
+                    ftsMatchIDs: matchingIDs,
+                    sortOrder: order,
+                    ascending: ascending
+                )
+                return (inCategory.count, displayed)
+            }.value
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
         guard !Task.isCancelled,
               categoryFilesRefreshKey.signature == signature else { return }
         categoryFileCount = result.0
@@ -654,12 +629,56 @@ struct CategoriesView: View {
             english: "Only “\(name)” and its category relationships will be deleted. No files will be deleted."
         )
     }
+}
 
-    private func categoryFileBackground(for file: IndexedFile) -> Color {
-        if appModel.selectedFileIDs.contains(file.id) {
-            return XunJianUI.Fill.selectedSoft
+/// One file row in the category detail list. Hover state is local so mouse
+/// movement repaints only this row instead of invalidating the whole page.
+private struct CategoryFileRow: View {
+    let file: IndexedFile
+    let isSelected: Bool
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: onSelect) {
+            HStack(spacing: 12) {
+                FileThumbnail(file: file, size: 34)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: file.name)
+                        .lineLimit(1)
+                    Text(verbatim: file.parentPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                Spacer(minLength: 0)
+                Text(verbatim: FileGridCard.sizeText(file))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
+            .background(
+                isSelected
+                    ? XunJianUI.Fill.selectedSoft
+                    : (isHovered ? XunJianUI.Fill.hover : .clear),
+                in: RoundedRectangle(
+                    cornerRadius: XunJianUI.Radius.row,
+                    style: .continuous
+                )
+            )
+            .contentShape(Rectangle())
         }
-        return hoveredFileID == file.id ? XunJianUI.Fill.hover : .clear
+        .buttonStyle(.plain)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .simultaneousGesture(
+            TapGesture(count: 2).onEnded(onOpen)
+        )
+        .onHover { isHovered = $0 }
     }
 }
 

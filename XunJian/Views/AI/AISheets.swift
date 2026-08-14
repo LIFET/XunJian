@@ -398,12 +398,13 @@ struct AIClassificationSheet: View {
     @State private var appliedChanges: [AIClassificationChange] = []
     @State private var showsAppliedConfirmation = false
     @State private var isCommittingChanges = false
-    /// Name-sorted copy of the index, recomputed only when the file set
-    /// changes. The per-body selected-first partitioning above it is O(n)
-    /// with cheap set lookups, so body evaluation no longer pays a
-    /// locale-collated sort of up to ~100k names per keystroke.
+    /// Name-sorted copy of the index, rebuilt off the main actor only when
+    /// the file set changes.
     @State private var nameSortedFilesCache: [IndexedFile] = []
     @State private var nameSortedFilesRevision: UInt64 = 0
+    /// The list the picker renders, computed asynchronously so body
+    /// evaluation stays O(1) even at six-figure index sizes.
+    @State private var displayedClassificationFiles: [IndexedFile] = []
 
     init(initialFileID: String?) {
         _selectedFileIDs = State(
@@ -411,8 +412,60 @@ struct AIClassificationSheet: View {
         )
     }
 
+    /// Everything the displayed list depends on, hashed so `.task(id:)`
+    /// restarts the computation (and cancels the previous one) only when
+    /// one of them actually changes.
+    private var classificationListKey: Int {
+        var hasher = Hasher()
+        hasher.combine(appModel.filesRevision)
+        hasher.combine(fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines))
+        hasher.combine(selectedFileIDs)
+        return hasher.finalize()
+    }
+
+    private func rebuildNameSortedFilesCacheIfNeeded() {
+        guard nameSortedFilesRevision != appModel.filesRevision else { return }
+        nameSortedFilesRevision = appModel.filesRevision
+        let files = appModel.files
+        Task { @MainActor in
+            let computed = await Task.detached(priority: .userInitiated) {
+                files
+                    .filter { TextExtractionService.supports($0.url) }
+                    .sorted {
+                        $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                    }
+            }.value
+            guard !Task.isCancelled else { return }
+            nameSortedFilesCache = computed
+        }
+    }
+
+    private func refreshDisplayedClassificationFiles() async {
+        // The task restarts per keystroke, so this sleep is the debounce.
+        try? await Task.sleep(for: .milliseconds(60))
+        guard !Task.isCancelled else { return }
+        let query = fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selected = selectedFileIDs
+        let base = nameSortedFilesCache
+        let cancellationFlag = QuickSearchCancellationFlag()
+        let computed = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                let filtered = query.isEmpty
+                    ? base
+                    : base.filter { $0.name.localizedCaseInsensitiveContains(query) }
+                guard !cancellationFlag.isCancelled else { return [IndexedFile]() }
+                let selectedFiles = filtered.filter { selected.contains($0.id) }
+                let unselected = filtered.filter { !selected.contains($0.id) }
+                return selectedFiles + unselected
+            }.value
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
+        guard !Task.isCancelled else { return }
+        displayedClassificationFiles = computed
+    }
+
     var body: some View {
-        refreshNameSortedFilesCacheIfNeeded()
         return VStack(alignment: .leading, spacing: 16) {
             Text(AppLanguage.localized("AI 分类", english: "AI Classify"))
                 .font(.title2.weight(.semibold))
@@ -465,6 +518,13 @@ struct AIClassificationSheet: View {
                 .filter(appModel.supportsTextContent)
                 .map(\.id))
             selectedFileIDs.formIntersection(supportedIDs)
+            rebuildNameSortedFilesCacheIfNeeded()
+        }
+        .onChange(of: appModel.filesRevision) { _, _ in
+            rebuildNameSortedFilesCacheIfNeeded()
+        }
+        .task(id: classificationListKey) {
+            await refreshDisplayedClassificationFiles()
         }
         .alert(
             AppLanguage.localized("分类已应用", english: "Classification Applied"),
@@ -492,7 +552,7 @@ struct AIClassificationSheet: View {
                 text: $fileSearchText
             )
                 .textFieldStyle(.roundedBorder)
-            List(filteredClassificationFiles) { file in
+            List(displayedClassificationFiles) { file in
                 Button {
                     toggle(file.id)
                 } label: {
@@ -519,27 +579,6 @@ struct AIClassificationSheet: View {
             }
             .listStyle(.bordered(alternatesRowBackgrounds: true))
         }
-    }
-
-    private var filteredClassificationFiles: [IndexedFile] {
-        let query = fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Selected-first is a stable partition over the cached name order;
-        // the name sort itself is refreshed only when the index changes.
-        let selected = nameSortedFilesCache.filter { selectedFileIDs.contains($0.id) }
-        let unselected = nameSortedFilesCache.filter { !selectedFileIDs.contains($0.id) }
-        let ordered = selected + unselected
-        guard !query.isEmpty else { return ordered }
-        return ordered.filter { $0.name.localizedCaseInsensitiveContains(query) }
-    }
-
-    private func refreshNameSortedFilesCacheIfNeeded() {
-        guard nameSortedFilesRevision != appModel.filesRevision else { return }
-        nameSortedFilesRevision = appModel.filesRevision
-        nameSortedFilesCache = appModel.files
-            .filter(appModel.supportsTextContent)
-            .sorted {
-                $0.name.localizedStandardCompare($1.name) == .orderedAscending
-            }
     }
 
     private var classificationFooter: some View {

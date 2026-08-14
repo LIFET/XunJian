@@ -198,11 +198,22 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
     ) -> Registration? {
         let rootPath = canonicalPath(source.rootPath)
         let callbackBox = CallbackBox(sourceID: source.sourceID, handler: handler)
+        // The context retains the box on copy and releases it when the
+        // stream is torn down, so a callback already executing on the
+        // monitor queue can never race the box's deallocation in `stop()`.
         var context = FSEventStreamContext(
             version: 0,
             info: Unmanaged.passUnretained(callbackBox).toOpaque(),
-            retain: nil,
-            release: nil,
+            retain: { info in
+                guard let info else { return nil }
+                return UnsafeRawPointer(
+                    Unmanaged<CallbackBox>.fromOpaque(info).retain().toOpaque()
+                )
+            },
+            release: { info in
+                guard let info else { return }
+                Unmanaged<CallbackBox>.fromOpaque(info).release()
+            },
             copyDescription: nil
         )
         let callback: FSEventStreamCallback = { _, info, eventCount, eventPaths, eventFlags, _ in

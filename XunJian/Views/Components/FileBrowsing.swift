@@ -85,10 +85,13 @@ enum FileBrowseViewMode: String, CaseIterable, Identifiable {
 struct FileGridCard: View {
     let file: IndexedFile
     let isSelected: Bool
-    let isHovered: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
-    let onHover: (Bool) -> Void
+
+    /// Hover lives on the card instead of the page: a page-level @State made
+    /// every mouse move invalidate the whole grid (and on All Files, the
+    /// 100k-row table view graph) just to repaint one card.
+    @State private var isHovered = false
 
     @ScaledMetric(relativeTo: .body) private var thumbnailSize: CGFloat = 72
     @ScaledMetric(relativeTo: .body) private var minimumHeight: CGFloat = 122
@@ -118,7 +121,7 @@ struct FileGridCard: View {
         }
         .buttonStyle(SoftCardButtonStyle())
         .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
-        .onHover(perform: onHover)
+        .onHover { isHovered = $0 }
         .accessibilityLabel(Text(verbatim: AppLanguage.joinedForAccessibility([
             file.name,
             Self.sizeText(file)

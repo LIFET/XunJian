@@ -557,9 +557,12 @@ struct XunJianApp: App {
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
     // Menu bar quick search is an `NSStatusItem` owned by the app delegate
     // rather than a `MenuBarExtra` scene, which hangs the XCTest runner.
+    //
+    // Settings are a page inside the main window (NavigationDestination
+    // `.settings`), not a separate Settings scene: a second window doubled
+    // environment wiring and split the user's attention.
     var body: some Scene {
         mainWindow
-        settingsScene
     }
 
     private var mainWindow: some Scene {
@@ -595,21 +598,15 @@ struct XunJianApp: App {
             // `XunJianCommands` supplies its own `.newItem` group; replacing it
             // here as well would drop those items.
             XunJianCommands(appModel: appModel, undo: appModel.undo)
-        }
-    }
-
-    private var settingsScene: some Scene {
-        Settings {
-            SettingsView(presentsErrors: true)
-                .environmentObject(appModel)
-                .environmentObject(appModel.oauth)
-                .environmentObject(appModel.ai)
-                .preferredColorScheme(AppAppearance(rawValue: appearance)?.colorScheme)
-                .environment(
-                    \.locale,
-                    AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
-                )
-                .frame(minWidth: 360, minHeight: 520)
+            CommandGroup(replacing: .appSettings) {
+                Button(AppLanguage.localized("设置…", english: "Settings…")) {
+                    NotificationCenter.default.post(
+                        name: .xunJianOpenSettings,
+                        object: nil
+                    )
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }

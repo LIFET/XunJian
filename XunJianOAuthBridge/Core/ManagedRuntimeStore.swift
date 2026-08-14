@@ -342,12 +342,50 @@ enum ManagedRuntimeDigest {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// Identity of an opened file, used to keep the digest cache valid: any
+    /// change to the binary invalidates the cached hash.
+    private struct FileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let size: Int64
+        let modificationNanoseconds: UInt64
+    }
+
+    private static let cacheLock = NSLock()
+    /// Keyed by path; only the two bundled runtime executables are ever
+    /// hashed, so the cache is bounded by design.
+    nonisolated(unsafe) private static var cachedDigests: [
+        String: (identity: FileIdentity, digest: String)
+    ] = [:]
+
     static func sha256Hex(fileURL: URL) throws -> String {
-        let descriptor = open(fileURL.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let path = fileURL.standardizedFileURL.path
+        let descriptor = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard descriptor >= 0 else {
             throw ManagedRuntimeDigestError.unreadableFile
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+
+        var openedInformation = stat()
+        guard fstat(descriptor, &openedInformation) == 0 else {
+            throw ManagedRuntimeDigestError.unreadableFile
+        }
+        let identity = FileIdentity(
+            device: UInt64(openedInformation.st_dev),
+            inode: UInt64(openedInformation.st_ino),
+            size: openedInformation.st_size,
+            modificationNanoseconds:
+                UInt64(openedInformation.st_mtimespec.tv_sec) * 1_000_000_000
+                + UInt64(openedInformation.st_mtimespec.tv_nsec)
+        )
+
+        cacheLock.lock()
+        if let cached = cachedDigests[path], cached.identity == identity {
+            cacheLock.unlock()
+            return cached.digest
+        }
+        cacheLock.unlock()
+
         var hasher = SHA256()
         do {
             while let chunk = try handle.read(upToCount: 1_048_576), !chunk.isEmpty {
@@ -356,6 +394,11 @@ enum ManagedRuntimeDigest {
         } catch {
             throw ManagedRuntimeDigestError.unreadableFile
         }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+
+        cacheLock.lock()
+        cachedDigests[path] = (identity, digest)
+        cacheLock.unlock()
+        return digest
     }
 }

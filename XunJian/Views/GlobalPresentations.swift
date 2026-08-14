@@ -30,6 +30,9 @@ struct GlobalPresentations: ViewModifier {
                       let format = FileListExport.Format(rawValue: raw) else { return }
                 FileListExport.run(appModel: appModel, format: format)
             }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianOpenSettings)) { _ in
+                selection = .settings
+            }
     }
 }
 

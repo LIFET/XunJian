@@ -23,7 +23,12 @@ struct IndexStatistics: Equatable, Sendable {
     }
 
     static func make(files: [IndexedFile]) async -> IndexStatistics {
-        let lastIndexedAt = files.map(\.indexedAt).max()
+        // Both figures are computed off the main actor: the "last indexed"
+        // scan maps the whole file array, which at six-figure index sizes
+        // otherwise hitched the settings page on every revision change.
+        let lastIndexedAt = await Task.detached(priority: .utility) {
+            files.map(\.indexedAt).max()
+        }.value
         let size = await Task.detached(priority: .utility) {
             databaseSizeOnDisk()
         }.value

@@ -22,9 +22,9 @@ struct AllFilesView: View {
     @AppStorage("allFiles.searchSortAscending") private var searchSortAscending = false
     @AppStorage("allFiles.tableColumnCustomization")
     private var tableColumnCustomization = TableColumnCustomization<IndexedFile>()
-    @State private var hoveredGridFileID: String?
     @AppStorage("allFiles.listScrollPosition") private var listScrollPosition = ""
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
+    @State private var scrollPositionPersistenceTask: Task<Void, Never>?
 
     // Manual filters (N02): a size floor and a modified-since date, applied
     // on top of whatever search/AI narrowing is active. Values live on
@@ -82,10 +82,19 @@ struct AllFilesView: View {
             }
             .onChange(of: appModel.selectedFileID) { _, id in
                 guard let id else { return }
-                if viewMode == .list {
-                    listScrollPosition = id
-                } else {
-                    gridScrollPosition = id
+                // Coalesce: arrow-key navigation changes the selection many
+                // times per second, and each @AppStorage write wakes the
+                // UserDefaults observers. Persist the settled position once.
+                scrollPositionPersistenceTask?.cancel()
+                let isListView = viewMode == .list
+                scrollPositionPersistenceTask = Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(500))
+                    guard !Task.isCancelled else { return }
+                    if isListView {
+                        listScrollPosition = id
+                    } else {
+                        gridScrollPosition = id
+                    }
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
@@ -295,7 +304,9 @@ struct AllFilesView: View {
                         english: "Configure the current AI in Settings first"
                     )
                 )
-                SettingsLink {
+                Button {
+                    NotificationCenter.default.post(name: .xunJianOpenSettings, object: nil)
+                } label: {
                     Label(
                         AppLanguage.localized("打开设置…", english: "Open Settings…"),
                         systemImage: "gearshape"
@@ -1000,18 +1011,38 @@ struct AllFilesView: View {
         let requestedAscending = activeSortAscending
         let minSize = minimumSizeBytes
         let minDate = minimumFilterDate
-        let result = await Task.detached(priority: .userInitiated) {
-            let filteredFiles = sourceFiles.filter { file in
-                guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
-                if minSize > 0, file.size < minSize { return false }
-                if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
-                    return false
+        // Detached sorts cannot observe cancellation, so a flag flipped by
+        // the cancellation handler aborts the expensive 100k-file sort when a
+        // newer revision already landed — at most one sort runs at a time
+        // during bursts of file activity.
+        let cancellationFlag = QuickSearchCancellationFlag()
+        let computed = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                let filteredFiles = sourceFiles.filter { file in
+                    guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
+                    if minSize > 0, file.size < minSize { return false }
+                    if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
+                        return false
+                    }
+                    return true
                 }
-                return true
-            }
-            return requestedSortOrder.sorted(filteredFiles, ascending: requestedAscending)
-        }.value
+                guard !cancellationFlag.isCancelled else {
+                    return (files: [IndexedFile](), visibleIDs: Set<String>())
+                }
+                let sorted = requestedSortOrder.sorted(
+                    filteredFiles,
+                    ascending: requestedAscending
+                )
+                // The visible-ID set is built here so the main actor only
+                // pays the dictionary construction cost for the selection
+                // cleanup below.
+                return (files: sorted, visibleIDs: Set(sorted.map(\.id)))
+            }.value
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
         guard !Task.isCancelled else { return }
+        let result = computed.files
         appModel.browseSnapshot = result
         appModel.browseSnapshotSignature = signature
         if isVisible {
@@ -1020,7 +1051,7 @@ struct AllFilesView: View {
                 usesGlobalSearchPagination: true
             )
         }
-        appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
+        appModel.clearSelectionIfHidden(from: computed.visibleIDs)
     }
 
     private func fileTable(files: [IndexedFile]) -> some View {
@@ -1229,14 +1260,10 @@ struct AllFilesView: View {
                     FileGridCard(
                         file: file,
                         isSelected: appModel.selectedFileIDs.contains(file.id),
-                        isHovered: hoveredGridFileID == file.id,
                         onSelect: { appModel.selectDisplayedFile(file, in: files) },
                         onOpen: {
                             appModel.selectedFileID = file.id
                             doubleClickBehavior.perform(on: file, using: appModel)
-                        },
-                        onHover: { isHovering in
-                            hoveredGridFileID = isHovering ? file.id : nil
                         }
                     )
                     .contextMenu {

@@ -24,6 +24,9 @@ struct TextPreviewView: View {
     @State private var loadState = LoadState.loading
     @State private var query = ""
     @State private var matches: [Match] = []
+    /// Precomputed per-chunk ranges for the current query so `attributed` can
+    /// highlight without re-scanning the text on every render.
+    @State private var chunkMatchRanges: [Int: [Range<String.Index>]] = [:]
     @State private var currentMatch = 0
     @State private var matchTask: Task<Void, Never>?
 
@@ -225,14 +228,18 @@ struct TextPreviewView: View {
 
     private func attributed(_ chunk: TextChunk) -> AttributedString {
         var result = AttributedString(chunk.text)
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return result }
+        // Ranges are precomputed once per query (see scheduleMatchComputation);
+        // re-scanning every visible chunk here on every render made match
+        // navigation re-run the case-insensitive search over the whole text.
+        guard let ranges = chunkMatchRanges[chunk.id], !ranges.isEmpty else {
+            return result
+        }
 
         let activeChunkID = matches.indices.contains(currentMatch)
             ? matches[currentMatch].chunkID
             : nil
 
-        for range in Self.ranges(of: trimmed, in: chunk.text) {
+        for range in ranges {
             guard let attributedRange = Range(range, in: result) else { continue }
             // The chunk holding the current match gets a stronger tint so the
             // user can tell where "next match" landed.
@@ -267,6 +274,7 @@ struct TextPreviewView: View {
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             matches = []
+            chunkMatchRanges = [:]
             currentMatch = 0
             return
         }
@@ -275,13 +283,14 @@ struct TextPreviewView: View {
             do {
                 try await Task.sleep(for: .milliseconds(80))
                 let computed = await Task.detached(priority: .userInitiated) {
-                    Self.matches(for: trimmed, in: chunkSnapshot)
+                    Self.matchesWithRanges(for: trimmed, in: chunkSnapshot)
                 }.value
                 try Task.checkCancellation()
                 guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else {
                     return
                 }
-                matches = computed
+                matches = computed.matches
+                chunkMatchRanges = computed.rangesByChunk
                 currentMatch = 0
             } catch is CancellationError {
                 return
@@ -289,6 +298,22 @@ struct TextPreviewView: View {
                 return
             }
         }
+    }
+
+    nonisolated private static func matchesWithRanges(
+        for query: String,
+        in chunks: [TextChunk]
+    ) -> (matches: [Match], rangesByChunk: [Int: [Range<String.Index>]]) {
+        var matches: [Match] = []
+        var rangesByChunk: [Int: [Range<String.Index>]] = [:]
+        for chunk in chunks {
+            let ranges = Self.ranges(of: query, in: chunk.text)
+            if !ranges.isEmpty {
+                rangesByChunk[chunk.id] = ranges
+            }
+            matches.append(contentsOf: ranges.map { Match(chunkID: chunk.id, range: $0) })
+        }
+        return (matches, rangesByChunk)
     }
 
     nonisolated private static func matches(for query: String, in chunks: [TextChunk]) -> [Match] {

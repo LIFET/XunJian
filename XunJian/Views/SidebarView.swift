@@ -2,7 +2,6 @@ import SwiftUI
 
 struct SidebarView: View {
     @EnvironmentObject private var appModel: AppModel
-    @Environment(\.openSettings) private var openSettings
     @Binding var selection: NavigationDestination?
     let categories: [FileCategory]
 
@@ -117,15 +116,11 @@ struct SidebarView: View {
             }
 
             Section {
-                Button {
-                    openSettings()
-                } label: {
-                    Label(
-                        AppLanguage.localized("设置", english: "Settings"),
-                        systemImage: "gearshape"
-                    )
-                }
-                .buttonStyle(.plain)
+                navigationRow(
+                    Text(AppLanguage.localized("设置", english: "Settings")),
+                    symbol: "gearshape",
+                    destination: .settings
+                )
             }
         }
         .listStyle(.sidebar)

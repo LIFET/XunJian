@@ -417,11 +417,16 @@ actor FileScanner {
             func addNext() {
                 guard let file = iterator.next() else { return }
                 group.addTask { [textExtractor] in
-                    (
-                        FileTextContentUpdate(
-                            fileID: file.id,
-                            textContent: textExtractor.extractText(from: file.url)
-                        ),
+                    // Extraction is blocking I/O (up to 8MB reads, PDF
+                    // parsing). Group children run on the cooperative pool,
+                    // so the blocking work is detached to keep the pool free
+                    // for UI tasks instead of stalling the whole app during
+                    // large scans.
+                    let text = await Task.detached(priority: .userInitiated) {
+                        textExtractor.extractText(from: file.url)
+                    }.value
+                    return (
+                        FileTextContentUpdate(fileID: file.id, textContent: text),
                         file.path
                     )
                 }
@@ -1112,28 +1117,37 @@ actor FileIndexDatabase {
         var removedFileIDs = Set<String>()
         try transaction {
             var existingFileIDs: Set<String> = []
+            // Two hoisted, index-seekable statements instead of one prepared
+            // per scope with an OR (which defeats the range seek and scans
+            // every source row per scope).
+            let exactStatement = try prepare(
+                "SELECT id FROM files WHERE source_id = ? AND path = ?;"
+            )
+            defer { sqlite3_finalize(exactStatement) }
+            let prefixStatement = try prepare(
+                "SELECT id FROM files WHERE source_id = ? AND path LIKE ? ESCAPE '\\';"
+            )
+            defer { sqlite3_finalize(prefixStatement) }
+
             for scope in Set(scopes) {
-                let statement: OpaquePointer
+                let statement = scope.includesDescendants
+                    ? prefixStatement
+                    : exactStatement
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                try bind(sourceID.uuidString, at: 1, to: statement)
                 if scope.includesDescendants {
-                    statement = try prepare(
-                        """
-                        SELECT id FROM files
-                        WHERE source_id = ?
-                          AND (path = ? OR path LIKE ? ESCAPE '\\');
-                        """
+                    let prefix = scope.path.hasSuffix("/")
+                        ? scope.path
+                        : scope.path + "/"
+                    try bind(
+                        Self.escapedLikePattern(prefix) + "%",
+                        at: 2,
+                        to: statement
                     )
-                    try bind(sourceID.uuidString, at: 1, to: statement)
-                    try bind(scope.path, at: 2, to: statement)
-                    let prefix = scope.path.hasSuffix("/") ? scope.path : scope.path + "/"
-                    try bind(Self.escapedLikePattern(prefix) + "%", at: 3, to: statement)
                 } else {
-                    statement = try prepare(
-                        "SELECT id FROM files WHERE source_id = ? AND path = ?;"
-                    )
-                    try bind(sourceID.uuidString, at: 1, to: statement)
                     try bind(scope.path, at: 2, to: statement)
                 }
-                defer { sqlite3_finalize(statement) }
                 while sqlite3_step(statement) == SQLITE_ROW {
                     existingFileIDs.insert(text(statement, column: 0))
                 }
@@ -1293,26 +1307,36 @@ actor FileIndexDatabase {
     /// in-memory model without refetching the whole table (H2 incremental).
     func fetchFiles(fileIDs: [String]) throws -> [IndexedFile] {
         guard !fileIDs.isEmpty else { return [] }
-        let placeholders = Array(repeating: "?", count: fileIDs.count)
-            .joined(separator: ", ")
-        let statement = try prepare(
-            """
-            SELECT id, source_id, name, path, extension, file_type, size,
-                   created_at, modified_at, indexed_at
-            FROM files
-            WHERE id IN (\(placeholders))
-            ORDER BY modified_at DESC, name COLLATE NOCASE ASC;
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        for (index, fileID) in fileIDs.enumerated() {
-            try bind(fileID, at: Int32(index + 1), to: statement)
-        }
-
+        // Chunked to stay under SQLite's bound-parameter limit; a huge event
+        // batch must not fail prepare.
         var files: [IndexedFile] = []
-        while sqlite3_step(statement) == SQLITE_ROW {
-            guard let file = rowFile(from: statement) else { continue }
-            files.append(file)
+        for chunk in Self.chunkedFileIDs(fileIDs) {
+            let placeholders = Array(repeating: "?", count: chunk.count)
+                .joined(separator: ", ")
+            let statement = try prepare(
+                """
+                SELECT id, source_id, name, path, extension, file_type, size,
+                       created_at, modified_at, indexed_at
+                FROM files
+                WHERE id IN (\(placeholders))
+                ORDER BY modified_at DESC, name COLLATE NOCASE ASC;
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            for (index, fileID) in chunk.enumerated() {
+                try bind(fileID, at: Int32(index + 1), to: statement)
+            }
+
+            while sqlite3_step(statement) == SQLITE_ROW {
+                guard let file = rowFile(from: statement) else { continue }
+                files.append(file)
+            }
+        }
+        files.sort {
+            let lhsDate = $0.modifiedAt ?? .distantPast
+            let rhsDate = $1.modifiedAt ?? .distantPast
+            if lhsDate != rhsDate { return lhsDate > rhsDate }
+            return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
         }
         return files
     }
@@ -1897,26 +1921,39 @@ actor FileIndexDatabase {
 
     /// Fetches category links only for the given file IDs, so single-file
     /// mutations can refresh the in-memory model without reading the whole
-    /// link table (H2 incremental).
+    /// link table (H2 incremental). Chunked to stay under SQLite's
+    /// bound-parameter limit.
     func fetchFileCategoryLinks(fileIDs: [String]) throws -> [String: Set<UUID>] {
         guard !fileIDs.isEmpty else { return [:] }
-        let placeholders = Array(repeating: "?", count: fileIDs.count)
-            .joined(separator: ", ")
-        let statement = try prepare(
-            "SELECT file_id, category_id FROM file_categories WHERE file_id IN (\(placeholders));"
-        )
-        defer { sqlite3_finalize(statement) }
-        for (index, fileID) in fileIDs.enumerated() {
-            try bind(fileID, at: Int32(index + 1), to: statement)
-        }
-
         var links: [String: Set<UUID>] = [:]
-        while sqlite3_step(statement) == SQLITE_ROW {
-            let fileID = text(statement, column: 0)
-            guard let categoryID = UUID(uuidString: text(statement, column: 1)) else { continue }
-            links[fileID, default: []].insert(categoryID)
+        for chunk in Self.chunkedFileIDs(fileIDs) {
+            let placeholders = Array(repeating: "?", count: chunk.count)
+                .joined(separator: ", ")
+            let statement = try prepare(
+                "SELECT file_id, category_id FROM file_categories WHERE file_id IN (\(placeholders));"
+            )
+            defer { sqlite3_finalize(statement) }
+            for (index, fileID) in chunk.enumerated() {
+                try bind(fileID, at: Int32(index + 1), to: statement)
+            }
+
+            while sqlite3_step(statement) == SQLITE_ROW {
+                let fileID = text(statement, column: 0)
+                guard let categoryID = UUID(uuidString: text(statement, column: 1)) else { continue }
+                links[fileID, default: []].insert(categoryID)
+            }
         }
         return links
+    }
+
+    /// Splits ID lists so a single IN clause stays comfortably below
+    /// SQLite's bound-parameter limit.
+    private static let maximumIDsPerInClause = 900
+    private static func chunkedFileIDs(_ fileIDs: [String]) -> [[String]] {
+        guard fileIDs.count > maximumIDsPerInClause else { return [fileIDs] }
+        return stride(from: 0, to: fileIDs.count, by: maximumIDsPerInClause).map {
+            Array(fileIDs[$0..<min($0 + maximumIDsPerInClause, fileIDs.count)])
+        }
     }
 
     /// Rebuilds the full-text table from the `files` rows and compacts the

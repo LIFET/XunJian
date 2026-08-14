@@ -261,6 +261,15 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    /// Canonical in-memory order: modified_at DESC (NULLs last), then name
+    /// NOCASE ascending — matches `fetchFiles`'s ORDER BY.
+    private static func comesBefore(_ lhs: IndexedFile, _ rhs: IndexedFile) -> Bool {
+        let lhsDate = lhs.modifiedAt ?? .distantPast
+        let rhsDate = rhs.modifiedAt ?? .distantPast
+        if lhsDate != rhsDate { return lhsDate > rhsDate }
+        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
+    }
+
     /// Applies a small, known set of file changes to the in-memory model
     /// without refetching the whole `files`/`file_categories` tables (H2).
     /// The database is authoritative for the changed rows; anything else
@@ -282,22 +291,46 @@ final class FileIndexCoordinator: ObservableObject {
             if !removedFileIDs.isEmpty {
                 updated.removeAll { removedFileIDs.contains($0.id) }
             }
-            for file in fetchedFiles
-            where includesHiddenFiles || !Self.isDotPrefixedFile(file) {
-                if let existingIndex = updated.firstIndex(where: { $0.id == file.id }) {
-                    updated[existingIndex] = file
-                } else {
-                    // Keep the canonical order of `fetchFiles`:
-                    // modified_at DESC, name NOCASE ASC.
-                    let insertionIndex = updated.firstIndex { existing in
-                        let existingDate = existing.modifiedAt ?? .distantPast
-                        let fileDate = file.modifiedAt ?? .distantPast
-                        if existingDate != fileDate { return existingDate < fileDate }
-                        return existing.name.localizedCaseInsensitiveCompare(file.name)
-                            == .orderedDescending
-                    } ?? updated.endIndex
-                    updated.insert(file, at: insertionIndex)
+            let visibleFetched = fetchedFiles.filter {
+                includesHiddenFiles || !Self.isDotPrefixedFile($0)
+            }
+            // Patch in O(n + k): both `updated` and `visibleFetched` are in
+            // the canonical order (modified_at DESC, name NOCASE ASC), so
+            // existing rows are replaced via a dictionary and only genuinely
+            // new rows are merged in one sorted pass. The previous per-file
+            // firstIndex + insert was O(k·n) surgery on the main actor.
+            let fetchedByID = Dictionary(
+                uniqueKeysWithValues: visibleFetched.map { ($0.id, $0) }
+            )
+            for index in updated.indices {
+                if let replacement = fetchedByID[updated[index].id] {
+                    updated[index] = replacement
                 }
+            }
+            // Membership against the pre-batch cache avoids another O(n)
+            // scan per fetched row.
+            let preBatchIDs = filesByID
+            var newFiles: [IndexedFile] = []
+            for file in visibleFetched where preBatchIDs[file.id] == nil {
+                newFiles.append(file)
+            }
+            if !newFiles.isEmpty {
+                var merged: [IndexedFile] = []
+                merged.reserveCapacity(updated.count + newFiles.count)
+                var existingIndex = 0
+                var newIndex = 0
+                while existingIndex < updated.count, newIndex < newFiles.count {
+                    if Self.comesBefore(newFiles[newIndex], updated[existingIndex]) {
+                        merged.append(newFiles[newIndex])
+                        newIndex += 1
+                    } else {
+                        merged.append(updated[existingIndex])
+                        existingIndex += 1
+                    }
+                }
+                merged.append(contentsOf: updated[existingIndex...])
+                merged.append(contentsOf: newFiles[newIndex...])
+                updated = merged
             }
 
             var links = fileCategoryLinks
@@ -561,7 +594,12 @@ final class FileIndexCoordinator: ObservableObject {
             kindCounts[file.kind, default: 0] += 1
             byID[file.id] = file
             orderByID[file.id] = index
-            idByPath[FilePathCanonicalizer.path(file.url)] = file.id
+            // `file.path` is already the canonical form: the scanner and
+            // every writer canonicalize before persisting. Re-resolving it
+            // here cost one stat + realpath syscall per file per mutation on
+            // the main actor (~200k syscalls per FSEvents batch at 100k
+            // files), which froze the UI during file activity.
+            idByPath[file.path] = file.id
             guard file.modifiedAt != nil else { continue }
             let insertionIndex = newest.firstIndex {
                 ($0.modifiedAt ?? .distantPast) < (file.modifiedAt ?? .distantPast)

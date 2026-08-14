@@ -37,7 +37,6 @@ struct PaletteCommand: Identifiable {
 /// opening the palette never touches the database.
 struct CommandPaletteView: View {
     @EnvironmentObject private var appModel: AppModel
-    @Environment(\.openSettings) private var openSettings
     @Binding var isPresented: Bool
     @Binding var selection: NavigationDestination?
 
@@ -298,12 +297,11 @@ struct CommandPaletteView: View {
                 title: AppLanguage.localized("分类", english: "Categories"),
                 symbol: "folder"
             ),
-            PaletteCommand(
-                id: "navigation-settings-window",
+            navigationCommand(
+                .settings,
                 title: AppLanguage.localized("设置", english: "Settings"),
-                symbolName: "gearshape",
-                group: .navigation
-            ) { openSettings() }
+                symbol: "gearshape"
+            )
         ]
         items += appModel.categories.map { category in
             navigationCommand(

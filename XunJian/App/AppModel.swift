@@ -208,10 +208,14 @@ final class AppModel: ObservableObject {
         _ files: [IndexedFile],
         usesGlobalSearchPagination: Bool = false
     ) {
-        let ids = files.map(\.id)
+        // Compare without allocating two ID arrays: publishing a 100k-file
+        // snapshot was churning two full-size arrays per call.
         if hasPublishedCommandTarget,
-           commandTargetFiles.map(\.id) == ids,
-           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination { return }
+           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination,
+           files.count == commandTargetFiles.count,
+           zip(files, commandTargetFiles).allSatisfy({ $0.id == $1.id }) {
+            return
+        }
         commandTargetFiles = files
         commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
         hasPublishedCommandTarget = true
@@ -755,6 +759,10 @@ final class AppModel: ObservableObject {
     func isCategory(_ category: FileCategory, assignedTo file: IndexedFile) -> Bool {
         index.isCategory(category, assignedTo: file)
     }
+
+    /// Maintained ID set of every indexed file (O(1) lookup); views use it
+    /// instead of building `Set(files.map(\.id))` per change.
+    var allFileIDs: Set<String> { index.allFileIDs }
 
     func fileCount(for kind: FileKind) -> Int {
         index.fileCount(for: kind)

@@ -191,6 +191,9 @@ actor JSONLineRPCPeer {
     private static let maximumQueuedNotifications = 256
     private static let notificationQuiescenceNanoseconds: UInt64 = 150_000_000
     private static let requiredNotificationQuiescenceChecks = 2
+    /// Stateless for decoding; used by every received line. `decode` is
+    /// documented thread-safe for independent calls.
+    nonisolated(unsafe) private static let sharedDecoder = JSONDecoder()
 
     private let transport: any JSONLineTransport
     private let dialect: JSONRPCDialect
@@ -452,7 +455,9 @@ actor JSONLineRPCPeer {
 
         let value: JSONValue
         do {
-            value = try JSONDecoder().decode(JSONValue.self, from: data)
+            // Decoders are stateless for decoding; sharing one instance
+            // avoids a fresh allocation per RPC line.
+            value = try Self.sharedDecoder.decode(JSONValue.self, from: data)
         } catch {
             await failClosed(.malformedMessage)
             return

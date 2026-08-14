@@ -1373,12 +1373,18 @@ actor SupervisedLineProcess: JSONLineTransport {
     ) async -> SupervisedLineProcessError? {
         defer { Darwin.close(descriptor) }
         var buffer = [UInt8](repeating: 0, count: 16_384)
+        // Adaptive idle backoff: 10ms while data is flowing so responses
+        // stay snappy, backing off to 100ms when the pipe is quiet so a
+        // long-lived idle runtime does not wake the drain task 100 times a
+        // second.
+        var consecutiveEmptyPolls = 0
 
         while true {
             let count = buffer.withUnsafeMutableBytes { bytes in
                 Darwin.read(descriptor, bytes.baseAddress, bytes.count)
             }
             if count > 0 {
+                consecutiveEmptyPolls = 0
                 let outcome = await channel.append(Data(buffer.prefix(count)))
                 if let outcome {
                     _ = control.signalOwnedProcesses(SIGKILL)
@@ -1390,7 +1396,12 @@ actor SupervisedLineProcess: JSONLineTransport {
                 continue
             } else if errno == EAGAIN || errno == EWOULDBLOCK {
                 if control.shouldStopDraining { return nil }
-                try? await Task.sleep(nanoseconds: 10_000_000)
+                consecutiveEmptyPolls += 1
+                try? await Task.sleep(
+                    nanoseconds: consecutiveEmptyPolls > 3
+                        ? 100_000_000
+                        : 10_000_000
+                )
             } else {
                 _ = control.signalOwnedProcesses(SIGKILL)
                 return .readFailed
@@ -1404,6 +1415,7 @@ actor SupervisedLineProcess: JSONLineTransport {
     ) {
         defer { Darwin.close(descriptor) }
         var buffer = [UInt8](repeating: 0, count: 16_384)
+        var consecutiveEmptyPolls = 0
         while true {
             let count = buffer.withUnsafeMutableBytes { bytes in
                 Darwin.read(descriptor, bytes.baseAddress, bytes.count)
@@ -1412,20 +1424,42 @@ actor SupervisedLineProcess: JSONLineTransport {
             if count < 0, errno == EINTR { continue }
             if count < 0, errno == EAGAIN || errno == EWOULDBLOCK {
                 if control.shouldStopDraining { return }
-                Thread.sleep(forTimeInterval: 0.01)
+                consecutiveEmptyPolls += 1
+                Thread.sleep(
+                    forTimeInterval: consecutiveEmptyPolls > 3 ? 0.1 : 0.01
+                )
                 continue
             }
             if count < 0 { return }
+            consecutiveEmptyPolls = 0
         }
     }
 
+    /// Polls with WNOHANG instead of blocking: a child stuck in an
+    /// uninterruptible state (D-state I/O) survives SIGKILL and would make a
+    /// blocking `waitpid` wedge the lifecycle task — and with it `close()`
+    /// and every teardown path — forever. After the deadline the state
+    /// machine finalizes regardless; the orphan is reaped by init.
     private static func waitForExit(of identifier: pid_t) -> Int32 {
         var processStatus: Int32 = 0
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + maximumReapWaitNanoseconds
         while true {
-            let result = waitpid(identifier, &processStatus, 0)
+            let result = waitpid(identifier, &processStatus, WNOHANG)
             if result == identifier { break }
             if result == -1, errno == EINTR { continue }
-            return -1
+            if DispatchTime.now().uptimeNanoseconds >= deadline {
+                return -1
+            }
+            // Keep the poll cheap: nanosleep between attempts.
+            var request = timespec(tv_sec: 0, tv_nsec: 10_000_000)
+            while true {
+                var remaining = timespec(tv_sec: 0, tv_nsec: 0)
+                let result = nanosleep(&request, &remaining)
+                if result != -1 { break }
+                guard errno == EINTR else { break }
+                request = remaining
+            }
         }
 
         let terminatingSignal = processStatus & 0x7F
@@ -1434,6 +1468,11 @@ actor SupervisedLineProcess: JSONLineTransport {
         }
         return 128 + terminatingSignal
     }
+
+    /// How long `waitForExit` keeps polling before giving up on an
+    /// unkillable child. The drain loops in `close()` are already bounded;
+    /// this bounds the final reap as well.
+    private static let maximumReapWaitNanoseconds: UInt64 = 5_000_000_000
 
     private struct SpawnedProcess {
         let identifier: pid_t

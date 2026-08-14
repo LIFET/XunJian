@@ -436,7 +436,7 @@ struct AppShellView: View {
             )
             .disabled(!appModel.isDatabaseAvailable)
         case .settings:
-            SettingsView()
+            SettingsView(presentsErrors: true)
         }
     }
 }
@@ -474,6 +474,9 @@ private struct FileExportProgressBanner: View {
 extension Notification.Name {
     static let xunJianRequestNewCategory = Notification.Name(
         "com.xunjian.request-new-category"
+    )
+    static let xunJianOpenSettings = Notification.Name(
+        "com.xunjian.open-settings"
     )
 }
 
