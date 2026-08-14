@@ -14,6 +14,9 @@ extension Notification.Name {
     static let xunJianRevealInAllFiles = Notification.Name(
         "com.xingmingbo.XunJian.revealInAllFiles"
     )
+    static let xunJianSetBrowseViewMode = Notification.Name(
+        "com.xingmingbo.XunJian.setBrowseViewMode"
+    )
 }
 
 /// The app's menu bar.
@@ -28,8 +31,6 @@ extension Notification.Name {
 struct XunJianCommands: Commands {
     @ObservedObject var appModel: AppModel
     @ObservedObject var undo: UndoCoordinator
-
-    @AppStorage("allFiles.viewMode") private var viewMode = FileBrowseViewMode.list
 
     private var selectedFile: IndexedFile? { appModel.selectedFile }
     private var hasSelection: Bool { selectedFile != nil }
@@ -159,12 +160,18 @@ struct XunJianCommands: Commands {
     private var viewCommands: some Commands {
         CommandGroup(after: .toolbar) {
             Button(AppLanguage.localized("以列表显示", english: "As List")) {
-                viewMode = .list
+                NotificationCenter.default.post(
+                    name: .xunJianSetBrowseViewMode,
+                    object: FileBrowseViewMode.list.rawValue
+                )
             }
             .keyboardShortcut("1", modifiers: .command)
 
             Button(AppLanguage.localized("以图标显示", english: "As Icons")) {
-                viewMode = .grid
+                NotificationCenter.default.post(
+                    name: .xunJianSetBrowseViewMode,
+                    object: FileBrowseViewMode.grid.rawValue
+                )
             }
             .keyboardShortcut("2", modifiers: .command)
 

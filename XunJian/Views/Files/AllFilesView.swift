@@ -75,6 +75,12 @@ struct AllFilesView: View {
                     gridScrollPosition = id
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
+                guard isVisible,
+                      let raw = note.object as? String,
+                      let mode = FileBrowseViewMode(rawValue: raw) else { return }
+                viewMode = mode
+            }
     }
 
     @ViewBuilder
@@ -169,8 +175,9 @@ struct AllFilesView: View {
                         .labelsHidden()
                         .frame(width: 160)
                     } else {
-                        Button(AppLanguage.localized("不限日期", english: "Any date")) {
-                            appModel.filterMinDate = 0
+                        Button(AppLanguage.localized("选择日期…", english: "Choose Date…")) {
+                            appModel.filterMinDate = Calendar.current.startOfDay(for: Date())
+                                .timeIntervalSince1970
                         }
                     }
                 }
@@ -1092,7 +1099,7 @@ struct AllFilesView: View {
         )
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
-        .fileListKeyboardNavigation(files: [])
+        .fileListKeyboardNavigation(files: files, handlesArrowKeys: false)
     }
 
     private func selectableTableCell<Content: View>(

@@ -161,6 +161,88 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(result.remainingCount, 1)
     }
 
+    func testDocumentPackageIsIndexedAsOneFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-package-\(UUID().uuidString)", isDirectory: true)
+        let package = root.appendingPathComponent("Report.pages", isDirectory: true)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: true)
+        try Data("internal".utf8).write(to: package.appendingPathComponent("index.xml"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let files = try await FileScanner().scan(sourceID: UUID(), rootURL: root)
+
+        XCTAssertEqual(files.map(\.name), ["Report.pages"])
+        XCTAssertEqual(files.first?.kind, .document)
+    }
+
+    func testDestructiveOperationRejectsFileReplacedAtIndexedPath() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-identity-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("report.txt")
+        try Data("first".utf8).write(to: url)
+        let scanner = FileScanner()
+        let scanned = try await scanner.scan(sourceID: UUID(), rootURL: root)
+        let indexed = try XCTUnwrap(scanned.first)
+        let service = FileOperationService()
+        try await service.requireIndexedIdentity(indexed)
+
+        try FileManager.default.removeItem(at: url)
+        try Data("replacement".utf8).write(to: url)
+
+        do {
+            try await service.requireIndexedIdentity(indexed)
+            XCTFail("Expected replacement to be rejected")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .fileIdentityChanged)
+        }
+    }
+
+    func testContentIndexCanBeEnrichedAndClearedWithoutRemovingFile() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-content-index-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(
+            databaseURL: root.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "Documents",
+            path: root.path,
+            bookmark: Data([1])
+        )
+        let file = IndexedFile(
+            id: "content-file",
+            sourceID: source.id,
+            name: "notes.md",
+            path: root.appendingPathComponent("notes.md").path,
+            fileExtension: "md",
+            kind: .document,
+            size: 12,
+            createdAt: nil,
+            modifiedAt: nil,
+            indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [file])
+        try await database.updateTextContents([
+            FileTextContentUpdate(fileID: file.id, textContent: "private searchable phrase")
+        ])
+        let storedText = try await database.fetchTextContent(forFileID: file.id)
+        let matchingBeforeClear = try await database.searchFiles(matching: "searchable")
+        XCTAssertEqual(storedText, "private searchable phrase")
+        XCTAssertEqual(matchingBeforeClear.map(\.id), [file.id])
+
+        try await database.clearTextContents()
+
+        let clearedText = try await database.fetchTextContent(forFileID: file.id)
+        let matchingAfterClear = try await database.searchFiles(matching: "searchable")
+        let remainingFiles = try await database.fetchFiles()
+        XCTAssertNil(clearedText)
+        XCTAssertTrue(matchingAfterClear.isEmpty)
+        XCTAssertEqual(remainingFiles.map(\.id), [file.id])
+    }
+
     private func makeFile(
         name: String,
         path: String,

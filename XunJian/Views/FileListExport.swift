@@ -32,13 +32,15 @@ enum FileListExport {
     ///
     /// An explicit multi-selection wins; otherwise this uses the files the
     /// active page last published as visible. Falls back to the raw index
-    /// only before any page has published a target list.
+    /// only before any page has published a target list. An empty published
+    /// list (Settings, category overview) exports nothing rather than the
+    /// whole index.
     @MainActor
     static func currentFiles(from appModel: AppModel) -> [IndexedFile] {
         if appModel.selectedFileIDs.count > 1 {
             return appModel.selectedFiles
         }
-        if !appModel.commandTargetFiles.isEmpty {
+        if appModel.hasPublishedCommandTarget {
             return appModel.commandTargetFiles
         }
         return appModel.files

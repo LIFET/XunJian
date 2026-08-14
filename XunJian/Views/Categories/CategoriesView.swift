@@ -69,10 +69,17 @@ struct CategoriesView: View {
         }
         .onChange(of: selectedCategory?.id) { _, _ in
             categoryQuery = ""
+            selectedKind = nil
             displayedFiles = []
             categoryFileCount = 0
             displayedSignature = nil
             clearSelectionIfHidden()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
+            guard selectedCategory != nil,
+                  let raw = note.object as? String,
+                  let mode = FileBrowseViewMode(rawValue: raw) else { return }
+            viewMode = mode
         }
         .onChange(of: selectedKind) { _, _ in clearSelectionIfHidden() }
         .onChange(of: categoryQuery) { _, _ in clearSelectionIfHidden() }

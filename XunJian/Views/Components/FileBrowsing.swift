@@ -153,6 +153,9 @@ struct FileListKeyboardNavigation: ViewModifier {
 
     let files: [IndexedFile]
     var columnCount: Int = 1
+    /// The main file table owns arrow-key row movement; keep Return / Space /
+    /// Delete / ⌘C even when arrows are left to `Table`.
+    var handlesArrowKeys = true
 
     @AppStorage(FileActivationBehavior.storageKey)
     private var activationBehavior = FileActivationBehavior.open
@@ -176,13 +179,13 @@ struct FileListKeyboardNavigation: ViewModifier {
         let extending = press.modifiers.contains(.shift)
         switch press.key {
         case .upArrow:
-            return move(by: -columnCount, extending: extending)
+            return handlesArrowKeys ? move(by: -columnCount, extending: extending) : .ignored
         case .downArrow:
-            return move(by: columnCount, extending: extending)
+            return handlesArrowKeys ? move(by: columnCount, extending: extending) : .ignored
         case .leftArrow:
-            return move(by: -1, extending: extending)
+            return handlesArrowKeys ? move(by: -1, extending: extending) : .ignored
         case .rightArrow:
-            return move(by: 1, extending: extending)
+            return handlesArrowKeys ? move(by: 1, extending: extending) : .ignored
         case .return:
             guard let file = currentFile else { return .ignored }
             activationBehavior.perform(on: file, using: appModel)
@@ -228,9 +231,14 @@ struct FileListKeyboardNavigation: ViewModifier {
 extension View {
     func fileListKeyboardNavigation(
         files: [IndexedFile],
-        columnCount: Int = 1
+        columnCount: Int = 1,
+        handlesArrowKeys: Bool = true
     ) -> some View {
-        modifier(FileListKeyboardNavigation(files: files, columnCount: columnCount))
+        modifier(FileListKeyboardNavigation(
+            files: files,
+            columnCount: columnCount,
+            handlesArrowKeys: handlesArrowKeys
+        ))
     }
 
 }

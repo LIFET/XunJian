@@ -15,6 +15,7 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var preferenceObservation: AnyCancellable?
+    private var languageObservation: AnyCancellable?
     private var dismissObservation: AnyCancellable?
     private weak var appModel: AppModel?
 
@@ -60,15 +61,19 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
 
         preferenceObservation = NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
-            .map { _ in (
-                Self.isMenuBarSearchEnabled,
-                UserDefaults.standard.string(forKey: AppLanguage.storageKey) ?? AppLanguage.system.rawValue
-            ) }
-            .removeDuplicates { lhs, rhs in
-                lhs.0 == rhs.0 && lhs.1 == rhs.1
+            .map { _ in Self.isMenuBarSearchEnabled }
+            .removeDuplicates()
+            .sink { [weak self] enabled in
+                self?.setMenuBarSearchVisible(enabled)
             }
-            .sink { [weak self] preference in
-                self?.setMenuBarSearchVisible(preference.0)
+        languageObservation = NotificationCenter.default
+            .publisher(for: UserDefaults.didChangeNotification)
+            .map { _ in
+                UserDefaults.standard.string(forKey: AppLanguage.storageKey)
+                    ?? AppLanguage.system.rawValue
+            }
+            .removeDuplicates()
+            .sink { [weak self] _ in
                 self?.refreshMenuBarLocalization()
             }
         dismissObservation = NotificationCenter.default

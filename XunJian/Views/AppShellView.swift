@@ -368,12 +368,15 @@ struct AppShellView: View {
         case .home:
             HomeView(
                 openAllFiles: { kind in
+                    appModel.clearAISearch()
+                    appModel.searchText = ""
+                    appModel.filterMinSizeMB = 0
+                    appModel.filterMinDate = 0
                     appModel.selectedKind = kind
                     selection = .allFiles
                 },
                 searchAllFiles: { query in
-                    appModel.searchText = query
-                    selection = .allFiles
+                    appModel.searchAllFiles(query: query)
                 }
             )
             .disabled(!appModel.isDatabaseAvailable)

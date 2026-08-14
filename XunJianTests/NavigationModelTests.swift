@@ -811,9 +811,9 @@ final class FileSystemChangeEventTests: XCTestCase {
 
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
 
-        let canonicalSourcePath = watchedRoot.resolvingSymlinksInPath()
-            .appendingPathComponent(sourceURL.lastPathComponent)
-            .standardizedFileURL.path
+        let canonicalSourcePath = FilePathCanonicalizer.path(
+            watchedRoot.appendingPathComponent(sourceURL.lastPathComponent)
+        )
         var didObserveMoveOut = false
         for _ in 0..<50 {
             if await probe.containsPath(sourceID: sourceID, path: canonicalSourcePath) {

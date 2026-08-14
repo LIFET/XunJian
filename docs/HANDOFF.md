@@ -13,6 +13,8 @@
 - API Key AI 支持瞬时错误重试与 SSE 流式解释/问答；OAuth 安全回退为完整响应；取消会终止消费与底层流。
 - Services 使用 `public.file-url`；菜单栏搜索改用 NSStatusItem；重复检测覆盖大文件、完整流式哈希且读取失败不返回部分结果；CSV 导出阻断公式注入。
 - 缩略图缓存限额与排队取消、分类标签预构建索引、AI 同数量结果 revision、原生文本 Undo/Select All 快捷键均已修复。
+- 文档包按单文件索引；破坏性操作复验文件身份；正文索引改为元数据先落库、正文后台补齐且可一键清除。
+- 搜索/保存搜索/菜单栏跳转会清理冲突筛选；页面导出不再误用全库；表格键盘动作、分类批量拖放、Inspector 长文本预览和设置权限状态已补齐。
 
 ## 修改文件
 
@@ -21,7 +23,7 @@ App/AppModel、FileIndexCoordinator、AppDelegate；Infrastructure 的索引、�
 ## 验证
 
 - arm64 Debug Build：通过。
-- 全量离线测试：App 232 项执行，230 通过、2 项发布级大数据门禁跳过；OAuth Process 34/34，通过。
+- 全量离线测试：App 237 项执行；初次发现 2 个用例共 3 条断言失败，修复后对应 2/2 定向复跑通过；2 项发布级大数据门禁按设计跳过。OAuth Process 34/34，通过。
 - `git diff --check`、Info.plist、String Catalog：通过。
 - 未运行真实 OAuth、真实 AI、外部网络、签名、公证或 DMG。
 

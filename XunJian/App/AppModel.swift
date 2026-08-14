@@ -172,10 +172,15 @@ final class AppModel: ObservableObject {
     /// this rather than the All Files snapshot, which goes stale after the
     /// user leaves that page.
     @Published var commandTargetFiles: [IndexedFile] = []
+    /// Distinguishes “no page has published yet” from “this page has nothing
+    /// to export”, so Settings cannot silently dump the whole index.
+    @Published private(set) var hasPublishedCommandTarget = false
 
     func updateCommandTargetFiles(_ files: [IndexedFile]) {
-        if commandTargetFiles.map(\.id) == files.map(\.id) { return }
+        let ids = files.map(\.id)
+        if hasPublishedCommandTarget, commandTargetFiles.map(\.id) == ids { return }
         commandTargetFiles = files
+        hasPublishedCommandTarget = true
     }
 
     var filesRevision: UInt64 { index.filesRevision }
@@ -724,18 +729,39 @@ final class AppModel: ObservableObject {
 
     /// A file dropped onto a category row gets that category. Files that are
     /// not indexed yet show an error instead of failing silently.
-    func assignDroppedFile(url: URL, to category: FileCategory) {
-        let path = FilePathCanonicalizer.path(url)
-        guard let file = index.files.first(where: {
-            FilePathCanonicalizer.path($0.url) == path
-        }) else {
-            errorMessage = AppLanguage.localized(
-                "这个文件尚未建立索引，请先在设置中添加它所在的文件夹。",
-                english: "This file is not indexed yet. Add its folder in Settings first."
-            )
-            return
+    @discardableResult
+    func assignDroppedFiles(urls: [URL], to category: FileCategory) -> Bool {
+        var assigned: [IndexedFile] = []
+        var skippedNames: [String] = []
+        for url in urls {
+            let path = FilePathCanonicalizer.path(url)
+            if let file = index.files.first(where: {
+                FilePathCanonicalizer.path($0.url) == path
+            }) {
+                assigned.append(file)
+            } else {
+                skippedNames.append(url.lastPathComponent)
+            }
         }
-        index.addCategory(category, toFiles: [file])
+        if !assigned.isEmpty {
+            index.addCategory(category, toFiles: assigned)
+        }
+        if !skippedNames.isEmpty {
+            errorMessage = assigned.isEmpty
+                ? AppLanguage.localized(
+                    "这些文件尚未建立索引，请先在设置中添加它们所在的文件夹。",
+                    english: "These files are not indexed yet. Add their folders in Settings first."
+                )
+                : AppLanguage.localized(
+                    "已添加 \(assigned.count) 个文件；有 \(skippedNames.count) 个还不在索引中。",
+                    english: "Added \(assigned.count) file(s); \(skippedNames.count) are not indexed yet."
+                )
+        }
+        return !assigned.isEmpty
+    }
+
+    func assignDroppedFile(url: URL, to category: FileCategory) {
+        _ = assignDroppedFiles(urls: [url], to: category)
     }
 
     /// A path received from another app via the Services menu (N14).
@@ -925,14 +951,29 @@ final class AppModel: ObservableObject {
 
     /// Applies a saved search: restores the query plus manual filters (N07).
     func applySavedSearch(_ search: SavedSearch) {
+        clearAISearch()
+        selectedKind = nil
         searchText = search.query
         applyManualFilter(minSizeBytes: search.minSizeBytes, minDate: search.minDate)
+    }
+
+    /// Keyword search from Home, the palette, or the menu bar: drop type and
+    /// AI narrowing so the query is what the user actually sees.
+    func searchAllFiles(query: String) {
+        clearAISearch()
+        selectedKind = nil
+        searchText = query
+        NotificationCenter.default.post(name: .xunJianRevealInAllFiles, object: nil)
     }
 
     /// Selects a file (or group) and asks the shell to show All Files.
     func revealInAllFiles(_ files: [IndexedFile]) {
         guard !files.isEmpty else { return }
+        clearAISearch()
         selectedKind = nil
+        searchText = ""
+        filterMinSizeMB = 0
+        filterMinDate = 0
         if files.count == 1, let file = files.first {
             selectedFileID = file.id
         } else {

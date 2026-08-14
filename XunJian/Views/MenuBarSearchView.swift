@@ -114,12 +114,19 @@ struct MenuBarSearchView: View {
     }
 
     private var emptyMessage: String {
-        query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? AppLanguage.localized(
-                "还没有索引任何文件。",
-                english: "No files have been indexed yet."
-            )
-            : AppLanguage.localized("没有匹配的文件", english: "No matching files")
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return appModel.files.isEmpty
+                ? AppLanguage.localized(
+                    "还没有索引任何文件。",
+                    english: "No files have been indexed yet."
+                )
+                : AppLanguage.localized(
+                    "输入关键词搜索文件",
+                    english: "Type a keyword to search files"
+                )
+        }
+        return AppLanguage.localized("没有匹配的文件", english: "No matching files")
     }
 
     private var resultList: some View {
@@ -210,8 +217,7 @@ struct MenuBarSearchView: View {
 
     private func revealRemainingInAllFiles() {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        appModel.searchText = trimmed
-        NotificationCenter.default.post(name: .xunJianRevealInAllFiles, object: nil)
+        appModel.searchAllFiles(query: trimmed)
         activateMainWindow()
         NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
         query = ""

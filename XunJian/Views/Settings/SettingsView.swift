@@ -6,6 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var oauth: OAuthCoordinator
     @EnvironmentObject private var ai: AISessionCoordinator
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
     @AppStorage(MenuBarSearchPreference.storageKey) private var showsMenuBarSearch = true
@@ -198,7 +199,7 @@ struct SettingsView: View {
                     }
                 }
                 .dropDestination(for: URL.self) { urls, _ in
-                    // Drop a folder here to authorise it (F06).
+                    var added = false
                     for url in urls {
                         var isDirectory: ObjCBool = false
                         guard FileManager.default.fileExists(
@@ -206,8 +207,15 @@ struct SettingsView: View {
                             isDirectory: &isDirectory
                         ), isDirectory.boolValue else { continue }
                         appModel.addFolderDropped(url: url)
+                        added = true
                     }
-                    return true
+                    if !added {
+                        appModel.errorMessage = AppLanguage.localized(
+                            "请拖入文件夹。",
+                            english: "Drop a folder."
+                        )
+                    }
+                    return added
                 } isTargeted: { isTargeted in
                     droppedFolderTargeted = isTargeted
                 }
@@ -423,6 +431,10 @@ struct SettingsView: View {
             appModel.updateCommandTargetFiles([])
         }
         .task { await refreshNotificationAuthorization() }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await refreshNotificationAuthorization() }
+        }
         .confirmationDialog(
             AppLanguage.localized("移除文件夹授权？", english: "Remove Folder Access?"),
             isPresented: Binding(

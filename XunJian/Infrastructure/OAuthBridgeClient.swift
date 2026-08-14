@@ -19,7 +19,7 @@ enum OAuthBridgeClientError: LocalizedError, Equatable, Sendable {
         case .invalidRequest:
             AppLanguage.localized("OAuth 伴随服务请求参数无效。", english: "The OAuth helper request is invalid.")
         case .requestTimedOut:
-            AppLanguage.localized("OAuth 伴随服务响应超时。", english: "The OAuth helper timed out.")
+            AppLanguage.localized("OAuth 伴随服务响应超时。", english: "The OAuth companion service timed out.")
         case .invalidResponse:
             AppLanguage.localized("OAuth 伴随服务返回了无法识别的响应。", english: "The OAuth helper returned an unrecognized response.")
         case .protocolMismatch:

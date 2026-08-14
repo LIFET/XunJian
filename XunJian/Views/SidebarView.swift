@@ -8,7 +8,7 @@ struct SidebarView: View {
 
     @State private var searchToRename: SavedSearch?
     @State private var renameDraft = ""
-    @State private var dropTargetCategoryID: UUID?
+    @State private var dropTargetCategoryIDs: Set<UUID> = []
 
     var body: some View {
         List(selection: $selection) {
@@ -99,15 +99,16 @@ struct SidebarView: View {
                     )
                     // Drop a file onto a category to file it there (F06).
                     .dropDestination(for: URL.self) { urls, _ in
-                        for url in urls {
-                            appModel.assignDroppedFile(url: url, to: category)
-                        }
-                        return true
+                        appModel.assignDroppedFiles(urls: urls, to: category)
                     } isTargeted: { targeted in
-                        dropTargetCategoryID = targeted ? category.id : nil
+                        if targeted {
+                            dropTargetCategoryIDs.insert(category.id)
+                        } else {
+                            dropTargetCategoryIDs.remove(category.id)
+                        }
                     }
                     .listRowBackground(
-                        dropTargetCategoryID == category.id
+                        dropTargetCategoryIDs.contains(category.id)
                             ? XunJianUI.Fill.selectedSoft
                             : Color.clear
                     )
@@ -167,12 +168,14 @@ struct SidebarView: View {
     }
 
     private func isCurrentSavedSearch(_ search: SavedSearch) -> Bool {
-        search.matches(
-            query: appModel.searchText,
-            minSizeBytes: Int64(appModel.filterMinSizeMB * 1_024 * 1_024),
-            minDate: appModel.filterMinDate > 0
-                ? Date(timeIntervalSince1970: appModel.filterMinDate)
-                : nil
-        )
+        appModel.selectedKind == nil
+            && appModel.aiSearchResults == nil
+            && search.matches(
+                query: appModel.searchText,
+                minSizeBytes: Int64(appModel.filterMinSizeMB * 1_024 * 1_024),
+                minDate: appModel.filterMinDate > 0
+                    ? Date(timeIntervalSince1970: appModel.filterMinDate)
+                    : nil
+            )
     }
 }

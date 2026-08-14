@@ -12,7 +12,7 @@ enum ScanExclusions {
     /// browser should surface, and excluding them keeps scans fast.
     static let builtIn: Set<String> = [
         ".git", "node_modules", "deriveddata", "caches", ".cache",
-        ".trash", "tmp", "temp"
+        ".trash"
     ]
 
     static func current(defaults: UserDefaults = .standard) -> [String] {

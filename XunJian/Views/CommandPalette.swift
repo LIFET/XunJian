@@ -271,7 +271,7 @@ struct CommandPaletteView: View {
             symbolName: "ellipsis.circle",
             group: .file
         ) {
-            appModel.searchText = query
+            appModel.searchAllFiles(query: query)
             selection = .allFiles
         }
     }

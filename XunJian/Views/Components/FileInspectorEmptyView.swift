@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct FileInspectorView: View {
+    private static let maximumInlinePreviewCharacters = 20_000
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
     @ScaledMetric(relativeTo: .body) private var actionIconSide: CGFloat = 18
@@ -287,14 +288,30 @@ struct FileInspectorView: View {
                                             alignment: .leading
                                         )
 
-                                    if previewText.count > previewLimit {
+                                    if previewText.count > previewLimit,
+                                       previewLimit < Self.maximumInlinePreviewCharacters {
                                         Button(
                                             AppLanguage.localized(
                                                 "显示更多",
                                                 english: "Show More"
                                             )
                                         ) {
-                                            previewLimit += 2_000
+                                            previewLimit = min(
+                                                previewLimit + 2_000,
+                                                Self.maximumInlinePreviewCharacters
+                                            )
+                                        }
+                                        .buttonStyle(.link)
+                                        .controlSize(.small)
+                                    } else if previewText.count > Self.maximumInlinePreviewCharacters {
+                                        Button(AppLanguage.localized(
+                                            "打开完整文本预览",
+                                            english: "Open Full Text Preview"
+                                        )) {
+                                            NotificationCenter.default.post(
+                                                name: .xunJianShowTextPreview,
+                                                object: nil
+                                            )
                                         }
                                         .buttonStyle(.link)
                                         .controlSize(.small)
