@@ -61,7 +61,10 @@ enum DuplicateFileFinder {
                 let digest = try await hash(fileAt: file.url)
                 byHash[digest, default: []].append(file)
                 hashedCount += 1
-                progress(hashedCount, totalToHash)
+                let progressStride = max(totalToHash / 100, 1)
+                if hashedCount == totalToHash || hashedCount.isMultiple(of: progressStride) {
+                    progress(hashedCount, totalToHash)
+                }
             }
         }
 
