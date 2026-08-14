@@ -15,9 +15,9 @@
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
-	<string>1.0</string>
+	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>NSServices</key>
 	<array>
 		<dict>
@@ -30,7 +30,7 @@
 			<string>openPathsService</string>
 			<key>NSSendTypes</key>
 			<array>
-				<string>NSFilenamesPboardType</string>
+				<string>public.file-url</string>
 			</array>
 		</dict>
 	</array>

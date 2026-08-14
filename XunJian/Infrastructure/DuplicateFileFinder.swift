@@ -9,22 +9,39 @@ struct DuplicateGroup: Identifiable, Sendable {
     var files: [IndexedFile]
 }
 
+/// Chooses which duplicate to keep when the user asks to trash the rest.
+enum DuplicateCleanup {
+    static func fileToKeep(in files: [IndexedFile]) -> IndexedFile? {
+        files.max { lhs, rhs in
+            let left = lhs.modifiedAt ?? lhs.createdAt ?? .distantPast
+            let right = rhs.modifiedAt ?? rhs.createdAt ?? .distantPast
+            if left != right {
+                return left < right
+            }
+            return lhs.path.localizedStandardCompare(rhs.path) == .orderedDescending
+        }
+    }
+
+    static func filesToTrash(keepingNewestIn files: [IndexedFile]) -> [IndexedFile] {
+        guard let keeper = fileToKeep(in: files) else { return files }
+        return files.filter { $0.id != keeper.id }
+    }
+}
+
 /// Content-hash duplicate detection, approved for use (the "no content
 /// hashing" boundary was lifted for this feature).
 ///
 /// Cost control: files are first grouped by size so hashing only runs inside
-/// groups that can actually match, and files above `maximumHashedBytes` are
-/// skipped (their duplicates would rarely be worth the I/O anyway).
+/// groups that can actually match. Hashing is streamed, so large files do not
+/// need to be loaded into memory and are not silently omitted.
 enum DuplicateFileFinder {
-    static let maximumHashedBytes: Int64 = 128 * 1_024 * 1_024
-
     typealias ProgressHandler = @Sendable (_ hashed: Int, _ total: Int) -> Void
 
     static func find(
         in files: [IndexedFile],
         progress: ProgressHandler = { _, _ in }
-    ) async -> [DuplicateGroup] {
-        let candidates = files.filter { $0.size > 0 && $0.size <= maximumHashedBytes }
+    ) async throws -> [DuplicateGroup] {
+        let candidates = files.filter { $0.size > 0 }
         var bySize: [Int64: [IndexedFile]] = [:]
         for file in candidates {
             bySize[file.size, default: []].append(file)
@@ -40,10 +57,9 @@ enum DuplicateFileFinder {
         var byHash: [String: [IndexedFile]] = [:]
         for group in groupsToHash {
             for file in group {
-                guard !Task.isCancelled else { return [] }
-                if let digest = hash(fileAt: file.url) {
-                    byHash[digest, default: []].append(file)
-                }
+                try Task.checkCancellation()
+                let digest = try await hash(fileAt: file.url)
+                byHash[digest, default: []].append(file)
                 hashedCount += 1
                 progress(hashedCount, totalToHash)
             }
@@ -64,12 +80,16 @@ enum DuplicateFileFinder {
 
     /// Streams the file in 1MB chunks so multi-hundred-MB files don't get
     /// loaded into memory at once.
-    private static func hash(fileAt url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
+    static func hash(fileAt url: URL) async throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
 
         var hasher = SHA256()
-        while let chunk = try? handle.read(upToCount: 1 << 20), !chunk.isEmpty {
+        while true {
+            try Task.checkCancellation()
+            guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else {
+                break
+            }
             hasher.update(data: chunk)
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()

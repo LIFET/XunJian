@@ -42,6 +42,13 @@ enum AIProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
 enum AIAuthenticationMode: String, Codable, Equatable, Sendable {
     case apiKey
     case oauth
+
+    var localizedTitle: String {
+        switch self {
+        case .apiKey: AppLanguage.localized("API 密钥", english: "API Key")
+        case .oauth: "OAuth"
+        }
+    }
 }
 
 struct AIProviderSettings: Identifiable, Equatable, Sendable {
@@ -62,11 +69,11 @@ enum AIConnectionState: Equatable, Sendable {
 
     var title: String {
         switch self {
-        case .notConfigured: "未配置"
-        case .saved: "密钥已保存"
-        case .testing: "正在验证"
-        case .verified: "连接已验证"
-        case .failed: "验证失败"
+        case .notConfigured: AppLanguage.localized("未配置", english: "Not Configured")
+        case .saved: AppLanguage.localized("密钥已保存", english: "Key Saved")
+        case .testing: AppLanguage.localized("正在验证", english: "Testing")
+        case .verified: AppLanguage.localized("连接已验证", english: "Connection Verified")
+        case .failed: AppLanguage.localized("验证失败", english: "Verification Failed")
         }
     }
 }
@@ -79,11 +86,17 @@ enum LocalCredentialStoreError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case .invalidSecret:
-            "API Key 不能为空。"
+            AppLanguage.localized("API Key 不能为空。", english: "The API key cannot be empty.")
         case .invalidData:
-            "本地 API Key 文件内容无效。原文件已保留，请恢复有效文件后重试。"
+            AppLanguage.localized(
+                "本地 API Key 文件内容无效。原文件已保留，请恢复有效文件后重试。",
+                english: "The local API key file is invalid. The original file was preserved; restore a valid file and try again."
+            )
         case .unavailable:
-            "无法安全访问本地 API Key 文件。原文件已保留，请检查文件所有权与权限后重试。"
+            AppLanguage.localized(
+                "无法安全访问本地 API Key 文件。原文件已保留，请检查文件所有权与权限后重试。",
+                english: "The local API key file cannot be accessed safely. Check its ownership and permissions, then try again."
+            )
         }
     }
 }
@@ -394,10 +407,33 @@ struct AIMessage: Codable, Equatable, Sendable {
 protocol AIProvider: Sendable {
     var kind: AIProviderKind { get }
     func chat(_ messages: [AIMessage]) async throws -> String
+    func chatStream(
+        _ messages: [AIMessage]
+    ) async throws -> AsyncThrowingStream<String, any Error>
+}
+
+extension AIProvider {
+    /// Providers without a streaming wire protocol (the embedded OAuth
+    /// runtimes) still conform by yielding their verified complete reply once.
+    func chatStream(
+        _ messages: [AIMessage]
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        let response = try await chat(messages)
+        return AsyncThrowingStream { continuation in
+            continuation.yield(response)
+            continuation.finish()
+        }
+    }
 }
 
 protocol AIHTTPTransport: Sendable {
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse)
+}
+
+protocol AIStreamingHTTPTransport: AIHTTPTransport {
+    func lines(
+        for request: URLRequest
+    ) async throws -> (AsyncThrowingStream<String, any Error>, HTTPURLResponse)
 }
 
 struct URLSessionAITransport: AIHTTPTransport {
@@ -424,6 +460,34 @@ struct URLSessionAITransport: AIHTTPTransport {
     }
 }
 
+extension URLSessionAITransport: AIStreamingHTTPTransport {
+    func lines(
+        for request: URLRequest
+    ) async throws -> (AsyncThrowingStream<String, any Error>, HTTPURLResponse) {
+        let (bytes, response) = try await session.bytes(for: request)
+        guard let response = response as? HTTPURLResponse else {
+            throw AIServiceError.invalidResponse
+        }
+        let stream = AsyncThrowingStream<String, any Error> { continuation in
+            let producer = Task {
+                do {
+                    for try await line in bytes.lines {
+                        try Task.checkCancellation()
+                        continuation.yield(line)
+                    }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in producer.cancel() }
+        }
+        return (stream, response)
+    }
+}
+
 enum AIServiceError: LocalizedError, Sendable {
     case notConfigured
     case invalidBaseURL
@@ -439,17 +503,17 @@ enum AIServiceError: LocalizedError, Sendable {
 
     var errorDescription: String? {
         switch self {
-        case .notConfigured: "请先登录 OAuth 或保存 API Key，并设为当前 AI。"
-        case .invalidBaseURL: "Base URL 必须是有效的 HTTPS 地址。"
-        case .invalidModel: "模型名称不能为空。"
-        case .invalidResponse: "AI 返回了无法识别的响应。"
-        case let .requestFailed(message): "AI 请求失败：\(message)"
-        case .missingFileText: "这个文件没有可供 AI 阅读的文本内容。"
-        case .invalidQuestion: "请输入要询问的问题。"
-        case .invalidSearchQuery: "请输入要查找的文件描述。"
-        case .invalidSelection: "请选择 1 到 8 个文件。"
-        case .invalidConversation: "AI 请求必须包含一条系统指令和一条用户消息。"
-        case .noCategories: "请先创建至少一个分类，再使用 AI 分类。"
+        case .notConfigured: AppLanguage.localized("请先登录 OAuth 或保存 API Key，并设为当前 AI。", english: "Sign in with OAuth or save an API key, then set it as the current AI.")
+        case .invalidBaseURL: AppLanguage.localized("Base URL 必须是有效的 HTTPS 地址。", english: "The Base URL must be a valid HTTPS address.")
+        case .invalidModel: AppLanguage.localized("模型名称不能为空。", english: "The model name cannot be empty.")
+        case .invalidResponse: AppLanguage.localized("AI 返回了无法识别的响应。", english: "The AI returned an unrecognized response.")
+        case let .requestFailed(message): AppLanguage.localized("AI 请求失败：\(message)", english: "AI request failed: \(message)")
+        case .missingFileText: AppLanguage.localized("这个文件没有可供 AI 阅读的文本内容。", english: "This file has no text that the AI can read.")
+        case .invalidQuestion: AppLanguage.localized("请输入要询问的问题。", english: "Enter a question.")
+        case .invalidSearchQuery: AppLanguage.localized("请输入要查找的文件描述。", english: "Describe the files you want to find.")
+        case .invalidSelection: AppLanguage.localized("请选择 1 到 8 个文件。", english: "Select 1 to 8 files.")
+        case .invalidConversation: AppLanguage.localized("AI 请求必须包含一条系统指令和一条用户消息。", english: "An AI request must contain one system instruction and one user message.")
+        case .noCategories: AppLanguage.localized("请先创建至少一个分类，再使用 AI 分类。", english: "Create at least one category before using AI classification.")
         }
     }
 }
@@ -503,7 +567,7 @@ private struct OpenAICompatibleProvider: Sendable {
             } catch is CancellationError {
                 throw CancellationError()
             } catch let error as AIServiceError {
-                guard isTransient(error) else { throw error }
+                guard Self.isTransient(error) else { throw error }
                 if attempt >= Self.maxRetries { throw error }
                 attempt += 1
                 try await Task.sleep(for: Self.retryDelays[attempt - 1])
@@ -518,9 +582,96 @@ private struct OpenAICompatibleProvider: Sendable {
         }
     }
 
+    func chatStream(
+        _ messages: [AIMessage]
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        guard let streamingTransport = transport as? any AIStreamingHTTPTransport else {
+            let response = try await chat(messages)
+            return AsyncThrowingStream { continuation in
+                continuation.yield(response)
+                continuation.finish()
+            }
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 90
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = try JSONEncoder().encode(
+            ChatCompletionRequest(model: model, messages: messages, stream: true)
+        )
+
+        var connectionAttempt = 0
+        var openedLines: AsyncThrowingStream<String, any Error>?
+        while openedLines == nil {
+            do {
+                let (lines, response) = try await streamingTransport.lines(for: request)
+                guard (200..<300).contains(response.statusCode) else {
+                    throw AIServiceError.requestFailed(
+                        "\(response.statusCode) \(HTTPURLResponse.localizedString(forStatusCode: response.statusCode))"
+                    )
+                }
+                openedLines = lines
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as AIServiceError {
+                guard Self.isTransient(error), connectionAttempt < Self.maxRetries else {
+                    throw error
+                }
+                connectionAttempt += 1
+                try await Task.sleep(for: Self.retryDelays[connectionAttempt - 1])
+            } catch {
+                guard connectionAttempt < Self.maxRetries else { throw error }
+                connectionAttempt += 1
+                try await Task.sleep(for: Self.retryDelays[connectionAttempt - 1])
+            }
+        }
+        guard let lines = openedLines else { throw AIServiceError.invalidResponse }
+
+        return AsyncThrowingStream { continuation in
+            let parser = Task {
+                var receivedContent = false
+                do {
+                    for try await line in lines {
+                        try Task.checkCancellation()
+                        switch try AIStreamParser.event(from: line) {
+                        case .none:
+                            continue
+                        case .done:
+                            guard receivedContent else {
+                                throw AIServiceError.invalidResponse
+                            }
+                            continuation.finish()
+                            return
+                        case let .content(content):
+                            receivedContent = true
+                            continuation.yield(content)
+                        }
+                    }
+                    guard receivedContent else { throw AIServiceError.invalidResponse }
+                    continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish(throwing: CancellationError())
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in parser.cancel() }
+        }
+    }
+
+    private var endpoint: URL {
+        if baseURL.path.hasSuffix("/chat/completions") {
+            return baseURL
+        }
+        return baseURL.appending(path: "chat/completions")
+    }
+
     /// Errors worth retrying: rate limits and server faults. 4xx client
     /// errors (bad key, bad model, bad request) fail fast instead.
-    private func isTransient(_ error: AIServiceError) -> Bool {
+    private static func isTransient(_ error: AIServiceError) -> Bool {
         guard case let .requestFailed(message) = error else { return false }
         let lowercased = message.lowercased()
         return lowercased.contains("429")
@@ -557,6 +708,41 @@ private struct ChatCompletionResponse: Decodable {
     let choices: [Choice]
 }
 
+private struct ChatCompletionStreamChunk: Decodable {
+    struct Choice: Decodable {
+        struct Delta: Decodable {
+            let content: String?
+        }
+
+        let delta: Delta
+    }
+
+    let choices: [Choice]
+}
+
+enum AIStreamEvent: Equatable {
+    case content(String)
+    case done
+}
+
+enum AIStreamParser {
+    static func event(from line: String) throws -> AIStreamEvent? {
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.hasPrefix(":") else { return nil }
+        guard trimmed.hasPrefix("data:") else { return nil }
+        let payload = trimmed.dropFirst(5).trimmingCharacters(in: .whitespaces)
+        if payload == "[DONE]" { return .done }
+        guard let data = payload.data(using: .utf8) else {
+            throw AIServiceError.invalidResponse
+        }
+        let chunk = try JSONDecoder().decode(ChatCompletionStreamChunk.self, from: data)
+        guard let content = chunk.choices.first?.delta.content, !content.isEmpty else {
+            return nil
+        }
+        return .content(content)
+    }
+}
+
 private struct APIErrorEnvelope: Decodable {
     struct APIError: Decodable {
         let message: String
@@ -586,6 +772,12 @@ struct OpenAICompatibleAIProvider: AIProvider {
 
     func chat(_ messages: [AIMessage]) async throws -> String {
         try await provider.chat(messages)
+    }
+
+    func chatStream(
+        _ messages: [AIMessage]
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        try await provider.chatStream(messages)
     }
 }
 
@@ -908,12 +1100,50 @@ struct AIService: Sendable {
         ])
     }
 
+    func explainStream(
+        file: IndexedFile
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        let usesEnglish = AppLanguage.selected.usesEnglish
+        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
+        return try await provider.chatStream([
+            AIMessage(
+                role: .system,
+                content: usesEnglish
+                    ? "Briefly explain what the file is, its main content, and likely use in English. Do not perform file operations or invent missing information."
+                    : "用简体中文简短说明文件是什么、主要内容和可能用途。不要执行文件操作，不要虚构缺失信息。"
+            ),
+            AIMessage(role: .user, content: context.promptText)
+        ])
+    }
+
     func answer(question: String, about file: IndexedFile) async throws -> String {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { throw AIServiceError.invalidQuestion }
         let usesEnglish = AppLanguage.selected.usesEnglish
         let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
         return try await provider.chat([
+            AIMessage(
+                role: .system,
+                content: usesEnglish
+                    ? "Answer in English using only the provided file content. If the answer is not supported, say that the file contains no relevant information. Do not perform file operations."
+                    : "只能根据提供的当前文件内容回答。找不到依据时明确说文件中没有相关信息；不要执行文件操作。"
+            ),
+            AIMessage(
+                role: .user,
+                content: "\(context.promptText)\n\n\(usesEnglish ? "Question" : "问题")：\(String(question.prefix(1_000)))"
+            )
+        ])
+    }
+
+    func answerStream(
+        question: String,
+        about file: IndexedFile
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !question.isEmpty else { throw AIServiceError.invalidQuestion }
+        let usesEnglish = AppLanguage.selected.usesEnglish
+        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
+        return try await provider.chatStream([
             AIMessage(
                 role: .system,
                 content: usesEnglish

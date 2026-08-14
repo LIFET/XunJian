@@ -13,21 +13,38 @@ enum OAuthBridgeClientError: LocalizedError, Equatable, Sendable {
     var errorDescription: String? {
         switch self {
         case let .connectionFailed(code):
-            "OAuth 伴随服务连接失败（错误码 \(code)）。"
+            AppLanguage.localized("OAuth 伴随服务连接失败（错误码 \(code)）。", english: "Could not connect to the OAuth helper (error \(code)).")
         case .signingRequirementUnavailable:
-            "无法验证 OAuth 伴随服务签名。"
+            AppLanguage.localized("无法验证 OAuth 伴随服务签名。", english: "The OAuth helper signature could not be verified.")
         case .invalidRequest:
-            "OAuth 伴随服务请求参数无效。"
+            AppLanguage.localized("OAuth 伴随服务请求参数无效。", english: "The OAuth helper request is invalid.")
         case .requestTimedOut:
-            "OAuth 伴随服务响应超时。"
+            AppLanguage.localized("OAuth 伴随服务响应超时。", english: "The OAuth helper timed out.")
         case .invalidResponse:
-            "OAuth 伴随服务返回了无法识别的响应。"
+            AppLanguage.localized("OAuth 伴随服务返回了无法识别的响应。", english: "The OAuth helper returned an unrecognized response.")
         case .protocolMismatch:
-            "OAuth 伴随服务版本不兼容，请更新寻简。"
+            AppLanguage.localized("OAuth 伴随服务版本不兼容，请更新寻简。", english: "The OAuth helper is incompatible. Update XunJian.")
         case .requestMismatch:
-            "OAuth 伴随服务响应与请求不匹配。"
+            AppLanguage.localized("OAuth 伴随服务响应与请求不匹配。", english: "The OAuth helper response does not match the request.")
         case let .service(error):
-            error.message
+            Self.localizedServiceMessage(error)
+        }
+    }
+
+    private static func localizedServiceMessage(_ error: OAuthBridgeErrorPayload) -> String {
+        guard AppLanguage.selected.usesEnglish else { return error.message }
+        return switch error.code {
+        case .malformedRequest, .invalidArguments: "The OAuth request is invalid."
+        case .payloadTooLarge: "The OAuth request is too large."
+        case .protocolMismatch: "The OAuth helper is incompatible. Update XunJian."
+        case .unsupportedOperation: "This OAuth operation is not supported."
+        case .cliUnavailable: "The embedded OAuth runtime is unavailable."
+        case .loginAlreadyInProgress: "A sign-in is already in progress."
+        case .loginAttemptMismatch: "The sign-in attempt no longer matches the active request."
+        case .safeVerificationUnavailable: "Safe connection verification is unavailable."
+        case .authenticationFailed: "Authentication failed."
+        case .generationFailed: "The AI request failed."
+        case .internalFailure: "The OAuth helper encountered an internal error."
         }
     }
 }

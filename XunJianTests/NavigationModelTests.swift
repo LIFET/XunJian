@@ -5,6 +5,16 @@ import XCTest
 
 final class NavigationModelTests: XCTestCase {
     @MainActor
+    func testAISearchRevisionChangesEvenWhenResultCountCanStayTheSame() {
+        let model = AppModel()
+        let initialRevision = model.aiSearchRevision
+
+        model.clearAISearch()
+
+        XCTAssertGreaterThan(model.aiSearchRevision, initialRevision)
+    }
+
+    @MainActor
     func testCollapsedProviderStatusUsesCurrentAPIKeyModeInsteadOfOAuthState() {
         let status = AIProviderCollapsedStatusPresentation.make(
             supportsOAuth: true,
@@ -329,6 +339,7 @@ final class NavigationModelTests: XCTestCase {
         XCTAssertTrue(FileKind.allCases.allSatisfy { !$0.title.isEmpty && !$0.symbolName.isEmpty })
     }
 
+    @MainActor
     func testDeletedCurrentCategoryReturnsToCategoryOverview() {
         let categoryID = UUID()
         XCTAssertEqual(
@@ -354,6 +365,7 @@ final class NavigationModelTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testRelevanceSortOnlyAppearsDuringSearch() {
         XCTAssertFalse(AllFilesView.availableSortOrders(hasActiveSearch: false).contains(.relevance))
         XCTAssertTrue(AllFilesView.availableSortOrders(hasActiveSearch: true).contains(.relevance))
@@ -371,6 +383,7 @@ final class NavigationModelTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testSearchAndBrowseSortContextsRemainIndependent() {
         XCTAssertEqual(
             AllFilesView.selectedSortOrder(
@@ -500,6 +513,11 @@ final class BookmarkManagerTests: XCTestCase {
 }
 
 final class FileScannerTests: XCTestCase {
+    func testSkippedDirectoryMakesSnapshotIncomplete() {
+        XCTAssertTrue(FileScanner.isComplete(skippedPaths: []))
+        XCTAssertFalse(FileScanner.isComplete(skippedPaths: ["/private/unreadable"]))
+    }
+
     func testScannerIndexesRegularFilesAndSkipsExcludedDirectories() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -696,6 +714,22 @@ final class FileScannerTests: XCTestCase {
 }
 
 final class FileSystemChangeEventTests: XCTestCase {
+    func testCanonicalizesUnicodePathComposition() {
+        let composedPath = "/tmp/监听/移出.txt"
+        let decomposedPath = composedPath.decomposedStringWithCanonicalMapping
+        let event = FileSystemChangeEvent(
+            path: decomposedPath,
+            kinds: [.modified],
+            isDirectory: false
+        )
+        let expectedPath = URL(fileURLWithPath: composedPath)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL.path
+            .precomposedStringWithCanonicalMapping
+
+        XCTAssertEqual(event.path, expectedPath)
+    }
+
     func testClassifiesItemEventsAndRecoveryFlags() {
         let itemEvent = FileSystemChangeEvent(
             path: "/tmp/报告.md",
@@ -777,19 +811,22 @@ final class FileSystemChangeEventTests: XCTestCase {
 
         try FileManager.default.moveItem(at: sourceURL, to: destinationURL)
 
-        var didObserveRename = false
+        let canonicalSourcePath = watchedRoot.resolvingSymlinksInPath()
+            .appendingPathComponent(sourceURL.lastPathComponent)
+            .standardizedFileURL.path
+        var didObserveMoveOut = false
         for _ in 0..<50 {
-            if await probe.containsRename(sourceID: sourceID) {
-                didObserveRename = true
+            if await probe.containsPath(sourceID: sourceID, path: canonicalSourcePath) {
+                didObserveMoveOut = true
                 break
             }
             try await Task.sleep(for: .milliseconds(100))
         }
         let reportedPaths = await probe.paths(sourceID: sourceID)
-        XCTAssertTrue(didObserveRename, "收到的路径：\(reportedPaths)")
-        let canonicalSourcePath = watchedRoot.resolvingSymlinksInPath()
-            .appendingPathComponent(sourceURL.lastPathComponent)
-            .standardizedFileURL.path
+        // FSEvents does not guarantee a rename/removal flag for a move across
+        // the watched-root boundary. The production reconciler handles any
+        // event for this now-missing path, so path delivery is the contract.
+        XCTAssertTrue(didObserveMoveOut, "收到的路径：\(reportedPaths)")
         XCTAssertTrue(
             reportedPaths.contains(canonicalSourcePath),
             "收到的路径：\(reportedPaths)"
@@ -852,6 +889,19 @@ final class TextExtractionServiceTests: XCTestCase {
 }
 
 final class FileOperationServiceTests: XCTestCase {
+    @MainActor
+    func testServicesPasteboardReadsDeclaredFileURLType() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("service.txt")
+        try Data("service".utf8).write(to: fileURL)
+        let pasteboard = NSPasteboard(name: .init("XunJianServicesTest"))
+        pasteboard.clearContents()
+        XCTAssertTrue(pasteboard.writeObjects([fileURL as NSURL]))
+
+        XCTAssertEqual(XunJianAppDelegate.fileURLs(from: pasteboard), [fileURL])
+    }
+
     func testRenameAndMoveOperateOnRealTemporaryFiles() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -893,6 +943,26 @@ final class FileOperationServiceTests: XCTestCase {
 
         XCTAssertEqual(try String(contentsOf: source, encoding: .utf8), "source")
         XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "existing")
+    }
+
+    func testFileIdentityRejectsReplacementAtTheSamePath() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("same-path.txt")
+        try Data("original".utf8).write(to: url)
+
+        let service = FileOperationService()
+        let identity = try await service.identity(of: url)
+        try FileManager.default.removeItem(at: url)
+        try Data("replacement".utf8).write(to: url)
+
+        do {
+            try await service.requireIdentity(identity, at: url)
+            XCTFail("同路径替代文件不得通过撤销身份复验")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .fileIdentityChanged)
+        }
+        XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "replacement")
     }
 }
 
@@ -1886,6 +1956,44 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertEqual(payload["model"] as? String, "deepseek-v4-flash")
     }
 
+    func testOpenAICompatibleProviderStreamsSSEContent() async throws {
+        let transport = StreamingAITransport(lines: [
+            #"data: {"choices":[{"delta":{"content":"你"}}]}"#,
+            #"data: {"choices":[{"delta":{"content":"好"}}]}"#,
+            "data: [DONE]"
+        ])
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: transport
+        )
+
+        let stream = try await provider.chatStream([
+            AIMessage(role: .user, content: "问候")
+        ])
+        var response = ""
+        for try await chunk in stream { response += chunk }
+
+        let recordedRequest = await transport.lastRequest()
+        let request = try XCTUnwrap(recordedRequest)
+        let body = try XCTUnwrap(request.httpBody)
+        let payload = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: body) as? [String: Any]
+        )
+        XCTAssertEqual(response, "你好")
+        XCTAssertEqual(payload["stream"] as? Bool, true)
+        XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+    }
+
+    func testAIStreamParserIgnoresMetadataAndRejectsMalformedJSON() throws {
+        XCTAssertNil(try AIStreamParser.event(from: "event: message"))
+        XCTAssertNil(try AIStreamParser.event(from: ": keep-alive"))
+        XCTAssertEqual(try AIStreamParser.event(from: "data: [DONE]"), .done)
+        XCTAssertThrowsError(try AIStreamParser.event(from: "data: not-json"))
+    }
+
     func testSearchPlanFiltersOnlyLocalFilesByKindAndDate() {
         let sourceID = UUID()
         let files = [
@@ -2081,6 +2189,42 @@ private actor RecordingAITransport: AIHTTPTransport {
     }
 }
 
+private actor StreamingAITransport: AIStreamingHTTPTransport {
+    private let responseLines: [String]
+    private var request: URLRequest?
+
+    init(lines: [String]) {
+        responseLines = lines
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        fatalError("Streaming test must not use the buffered transport")
+    }
+
+    func lines(
+        for request: URLRequest
+    ) async throws -> (AsyncThrowingStream<String, any Error>, HTTPURLResponse) {
+        self.request = request
+        let responseLines = self.responseLines
+        let stream = AsyncThrowingStream<String, any Error> {
+            (continuation: AsyncThrowingStream<String, any Error>.Continuation) in
+            for line in responseLines { continuation.yield(line) }
+            continuation.finish()
+        }
+        return (
+            stream,
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+        )
+    }
+
+    func lastRequest() -> URLRequest? { request }
+}
+
 private actor ScriptedAIProvider: AIProvider {
     nonisolated let kind = AIProviderKind.deepSeek
     private let response: String
@@ -2114,8 +2258,8 @@ private actor FileEventProbe {
     }
 
 
-    func containsRename(sourceID: UUID) -> Bool {
-        eventsBySourceID[sourceID, default: []].contains { $0.kinds.contains(.renamed) }
+    func containsPath(sourceID: UUID, path: String) -> Bool {
+        eventsBySourceID[sourceID, default: []].contains { $0.path == path }
     }
 
     func paths(sourceID: UUID) -> [String] {

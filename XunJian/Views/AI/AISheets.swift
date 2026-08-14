@@ -119,6 +119,7 @@ struct AIExplainSheet: View {
     @State private var failure: String?
     @State private var operationTask: Task<Void, Never>?
     @State private var hasStarted = false
+    @State private var isWorking = false
 
     var body: some View {
         AITextResultSheet(
@@ -126,7 +127,7 @@ struct AIExplainSheet: View {
             subtitle: file.name,
             output: output,
             failure: failure,
-            isWorking: hasStarted && output.isEmpty && failure == nil,
+            isWorking: isWorking,
             showsStart: !hasStarted,
             start: startAnalysis,
             dismiss: {
@@ -140,17 +141,22 @@ struct AIExplainSheet: View {
     private func startAnalysis() {
         guard !hasStarted else { return }
         hasStarted = true
+        isWorking = true
         operationTask = Task {
             do {
-                let result = try await appModel.explainWithAI(file)
-                try Task.checkCancellation()
-                output = result
+                let stream = try await appModel.explainWithAIStream(file)
+                for try await chunk in stream {
+                    try Task.checkCancellation()
+                    output += chunk
+                }
             } catch is CancellationError {
+                isWorking = false
                 return
             } catch {
                 guard !Task.isCancelled else { return }
                 failure = error.localizedDescription
             }
+            isWorking = false
         }
     }
 }
@@ -187,7 +193,17 @@ struct AIQuestionSheet: View {
                 .onSubmit(ask)
 
             Group {
-                if isWorking {
+                if !output.isEmpty {
+                    ScrollView {
+                        Text(output)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                } else if isWorking {
                     ProgressView(
                         AppLanguage.localized(
                             "正在阅读当前文件…",
@@ -197,12 +213,6 @@ struct AIQuestionSheet: View {
                 } else if let failure {
                     Text(AppLanguage.localizedRuntimeMessage(failure))
                         .foregroundStyle(XunJianUI.Semantic.danger)
-                } else if !output.isEmpty {
-                    ScrollView {
-                        Text(output)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
                 } else {
                     Text(
                         AppLanguage.localized(
@@ -253,10 +263,13 @@ struct AIQuestionSheet: View {
         operationTask?.cancel()
         operationTask = Task {
             do {
-                let result = try await appModel.askAI(question, about: file)
-                try Task.checkCancellation()
-                output = result
+                let stream = try await appModel.askAIStream(question, about: file)
+                for try await chunk in stream {
+                    try Task.checkCancellation()
+                    output += chunk
+                }
             } catch is CancellationError {
+                isWorking = false
                 return
             } catch {
                 guard !Task.isCancelled else { return }
@@ -287,7 +300,17 @@ struct AITextResultSheet: View {
                 .lineLimit(2)
 
             Group {
-                if isWorking {
+                if !output.isEmpty {
+                    ScrollView {
+                        Text(output)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if isWorking {
+                        ProgressView()
+                            .controlSize(.small)
+                    }
+                } else if isWorking {
                     ProgressView(
                         AppLanguage.localized(
                             "正在读取必要文本…",
@@ -325,7 +348,13 @@ struct AITextResultSheet: View {
 
             HStack {
                 Spacer()
-                Button(AppLanguage.localized("关闭", english: "Close"), action: dismiss)
+                Button(
+                    AppLanguage.localized(
+                        isWorking ? "停止" : "关闭",
+                        english: isWorking ? "Stop" : "Close"
+                    ),
+                    action: dismiss
+                )
                     .keyboardShortcut(.cancelAction)
                 if showsStart {
                     Button(

@@ -2,38 +2,29 @@
 
 ## 当前项目状态
 
-Phase 7G、文件浏览与最终逻辑修复已完成。Codex 0.147.0、Grok 1.0.0 随 Universal XPC 分发；新 DMG 已提交 Apple 公证。
+审查报告 F01–F24、21 项增强功能及复审发现的 P1/P2/P3 已完成源码闭环。当前仅为开发工作区，未生成、签名、提交或公证新 DMG。
 
 ## 已完成内容
 
-- AI 文件正文按需读取；中英文指令随界面语言；关闭 AI 弹窗会取消请求并拒绝迟到回写。
-- AI 搜索与普通搜索可叠加本地筛选；AI 分类支持本地找文件、已选置顶、逐条移除建议、事务性应用与一次撤销。
-- 扫描以 generation、当前来源和待扫描集合隔离；删除来源及旧任务收尾不会覆盖新状态。
-- 删除分类恢复分类总览；筛选隐藏文件清理选择，移动/重命名后按新路径恢复选中。
-- API Key 保存失败保留输入，成功明确提示；配置变化后必须保存并重新验证，旧请求不能迟到转绿。
-- 数据库不可用时持续提示、暂停文件/索引操作并提供重试；授权失效、无分类和类型空结果均有恢复入口。
-- 默认跳过点号隐藏文件，设置可开启并触发重扫；文件单击立即选择，类型/排序/升降序/显示方式会持久记忆。
-- 新增完整 macOS AppIcon 资产，Finder、Dock 与应用包使用统一寻简图标。
-- 设置页不再被全局搜索打断；分类详情有明确返回、管理与无分类新建入口，分类图标具备独立 VoiceOver 语义。
-- 仅验证成功的 API Key/OAuth 可设为当前 AI；未验证配置重启后也不会继续作为当前 AI。
-- 文件页相关度仅在搜索期间可选；空结果、数据库故障与首次快照均提供真实恢复或加载状态。
-- AI 文件分析改为用户显式启动；首页单击、Inspector 路径与危险操作文案已统一，编辑弹窗默认聚焦。
-- OAuth/API Key 继续独立；凭据仅保存于当前用户 Application Support。
-- Grok ACP 验证精确兼容官方两种 `session_notification` 命名，并在受监督 Runtime 启动时固定请求 `grok-4.5/high`；远端模型目录变化不再让安全验证误判或静默换模。
-- 主窗口每次新建或重新启动时左侧导航默认展开、右侧 Inspector 默认关闭；本次运行中仍可手动开关，手动状态不写入下次启动。
-- 普通搜索支持总数与分批加载，不再把前 500 项冒充全部；搜索与浏览排序、方向、列布局、列表/网格位置分别记忆，搜索期间不先清空结果或选中。
-- 全量/增量扫描遇读取失败均 fail closed，旧索引与分类保持；数据库故障会释放旧实例并可真正重开，FSEvent 全量恢复扫描不会取消用户手动扫描。
-- 重叠授权来源会在写入前被拒绝；App 内跨授权来源移动会事务性迁移分类与 FTS；过期文件操作会同步清理失效索引。
-- 应用固定为单主窗口；OAuth 轮询由应用生命周期管理，API Key 测试可停止且单飞，已验证配置指纹与安全凭据版本绑定后可跨重启恢复。
+- 动效遵循 Reduce Motion；语义色、Material、响应式断点、Dynamic Type、日期格式和可访问语义统一。
+- AppModel 已拆为文件索引、AI 会话与 OAuth 协调器；AI 弹窗、文件工具栏和 Provider 设置卡片独立。
+- 文件列表支持 640pt 可横向滚动的完整表格、多选、批量分类/废纸篓、拖入拖出、键盘操作、保存搜索、历史、过滤、导出与滚动/列偏好恢复。
+- 全量/增量扫描读取失败 fail closed；数据库可重建，重叠来源拒绝，跨来源移动保留分类，文件撤销以设备/ inode/类型复验防止误操作替换文件。
+- API Key AI 支持瞬时错误重试与 SSE 流式解释/问答；OAuth 安全回退为完整响应；取消会终止消费与底层流。
+- Services 使用 `public.file-url`；菜单栏搜索改用 NSStatusItem；重复检测覆盖大文件、完整流式哈希且读取失败不返回部分结果；CSV 导出阻断公式注入。
+- 缩略图缓存限额与排队取消、分类标签预构建索引、AI 同数量结果 revision、原生文本 Undo/Select All 快捷键均已修复。
 
 ## 修改文件
 
-AppModel、文件索引/AI 基础设施、AppShell、设置/文件/分类/首页视图、AppIcon 资产、导航与 AI 测试、计划文档。
+App/AppModel、FileIndexCoordinator、AppDelegate；Infrastructure 的索引、文件操作、AI、重复检测；文件/分类/首页/设置/菜单栏/命令与共享组件；导航、OAuth 与审查回归测试；XcodeGen 配置。
 
 ## 验证
 
-Swift 全量语法检查、Debug 与 Universal Developer ID Release 构建通过；App 测试 183 项执行（181 通过、2 项发布级大数据门禁按设计跳过），Process 34/34 通过。Release App/XPC 均为 arm64+x86_64、带 Hardened Runtime 与安全时间戳；本轮未执行真实 OAuth、网络或计费请求。
+- arm64 Debug Build：通过。
+- 全量离线测试：App 232 项执行，230 通过、2 项发布级大数据门禁跳过；OAuth Process 34/34，通过。
+- `git diff --check`、Info.plist、String Catalog：通过。
+- 未运行真实 OAuth、真实 AI、外部网络、签名、公证或 DMG。
 
 ## 已知问题与下一步
 
-当前源码对应的新包 `Release/寻简-0.1.0-macOS-current.dmg` 已通过 `hdiutil verify`，Apple 公证任务 `82295e7c-e477-45c8-875a-b68451aa1968` 正在处理。Accepted 后仍须 staple/validate、Gatekeeper、最终 SHA-256，并将其原子改名为正式 DMG；旧 ZIP/旧 DMG 不交付。
+代码层无已知 P0/P1/P2/P3 阻断。发布前仍需人工验收拖拽、Services、菜单栏窗、VoiceOver、放大字号/Reduce Motion 和 360/640/1200pt 布局；确认源码冻结后再单独执行 Universal Release、签名、公证与 DMG。

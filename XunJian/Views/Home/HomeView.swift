@@ -4,9 +4,12 @@ struct HomeView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
     let openAllFiles: (FileKind?) -> Void
+    let searchAllFiles: (String) -> Void
 
     @State private var hoveredFileKind: FileKind?
     @State private var hoveredRecentFileID: String?
+    @State private var homeQuery = ""
+    @State private var sourcePendingRemoval: FileSource?
 
     // Fixed sizes that still need to grow with the user's text size setting.
     @ScaledMetric(relativeTo: .body) private var kindIconSize: CGFloat = 15
@@ -32,6 +35,17 @@ struct HomeView: View {
                             english: "Browse, find, and understand important files on your Mac."
                         )
                     )
+                    SearchField(
+                        text: $homeQuery,
+                        onHistorySelect: { query in
+                            searchAllFiles(query)
+                        }
+                    )
+                        .onSubmit {
+                            let trimmed = homeQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+                            guard !trimmed.isEmpty else { return }
+                            searchAllFiles(trimmed)
+                        }
                     recentFiles
                     fileKinds
                     scanLocations
@@ -41,6 +55,42 @@ struct HomeView: View {
             }
         }
         .navigationTitle(AppLanguage.localized("首页", english: "Home"))
+        .onAppear {
+            appModel.updateCommandTargetFiles(appModel.recentFiles)
+        }
+        .onChange(of: appModel.recentFiles.map(\.id)) { _, _ in
+            appModel.updateCommandTargetFiles(appModel.recentFiles)
+        }
+        .confirmationDialog(
+            AppLanguage.localized("移除文件夹授权？", english: "Remove Folder Access?"),
+            isPresented: Binding(
+                get: { sourcePendingRemoval != nil },
+                set: { if !$0 { sourcePendingRemoval = nil } }
+            ),
+            titleVisibility: .visible,
+            presenting: sourcePendingRemoval
+        ) { source in
+            Button(
+                AppLanguage.localized(
+                    "移除“\(source.displayName)”",
+                    english: "Remove “\(source.displayName)”"
+                ),
+                role: .destructive
+            ) {
+                appModel.removeSource(source)
+                sourcePendingRemoval = nil
+            }
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
+                sourcePendingRemoval = nil
+            }
+        } message: { _ in
+            Text(
+                AppLanguage.localized(
+                    "只会移除寻简保存的授权与本地索引，不会删除原文件夹或其中的文件。",
+                    english: "This removes XunJian’s saved access and local index. The original folder and its files stay on disk."
+                )
+            )
+        }
     }
 
     private var recentFiles: some View {
@@ -167,7 +217,10 @@ struct HomeView: View {
                         hoveredFileKind = isHovering ? kind : nil
                     }
                     .accessibilityLabel(
-                        "\(kind.localizedTitle)，\(AppLanguage.fileCount(appModel.fileCount(for: kind)))"
+                        AppLanguage.joinedForAccessibility([
+                            kind.localizedTitle,
+                            AppLanguage.fileCount(appModel.fileCount(for: kind))
+                        ])
                     )
                 }
             }
@@ -199,33 +252,16 @@ struct HomeView: View {
                 GroupedSurface(padding: 10) {
                     VStack(spacing: 0) {
                         ForEach(Array(appModel.sources.enumerated()), id: \.element.id) { index, source in
-                            HStack(spacing: 12) {
-                                Image(systemName: source.accessState == .available
-                                      ? "folder.fill"
-                                      : "folder.badge.exclamationmark")
-                                    .font(.system(size: sourceIconSize, weight: .medium))
-                                    .foregroundStyle(
-                                        source.accessState == .available
-                                            ? Color(nsColor: .secondaryLabelColor)
-                                            : XunJianUI.Semantic.warning
-                                    )
-                                    .frame(width: 22)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(source.displayName)
-                                        .font(.body.weight(.medium))
-                                        .lineLimit(1)
-                                    Text(source.path)
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                        .truncationMode(.middle)
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 12) {
+                                    sourceIdentity(source)
+                                    Spacer(minLength: 0)
+                                    sourceActions(source, compact: false)
                                 }
-                                Spacer(minLength: 0)
-                                if source.accessState != .available {
-                                    Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
-                                        appModel.reauthorizeSource(source)
-                                    }
-                                    .controlSize(.small)
+
+                                VStack(alignment: .leading, spacing: 8) {
+                                    sourceIdentity(source)
+                                    sourceActions(source, compact: true)
                                 }
                             }
                             .padding(.vertical, 8)
@@ -248,6 +284,90 @@ struct HomeView: View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             SectionHeader(title: title)
             content()
+        }
+    }
+
+    private func sourceIdentity(_ source: FileSource) -> some View {
+        HStack(spacing: 12) {
+            Image(systemName: source.accessState == .available
+                  ? "folder.fill"
+                  : "folder.badge.exclamationmark")
+                .font(.system(size: sourceIconSize, weight: .medium))
+                .foregroundStyle(
+                    source.accessState == .available
+                        ? Color(nsColor: .secondaryLabelColor)
+                        : XunJianUI.Semantic.warning
+                )
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(source.displayName)
+                    .font(.body.weight(.medium))
+                    .lineLimit(1)
+                Text(source.path)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func sourceActions(_ source: FileSource, compact: Bool) -> some View {
+        HStack(spacing: 8) {
+            if source.accessState != .available {
+                Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
+                    appModel.reauthorizeSource(source)
+                }
+                .controlSize(.small)
+            }
+            Toggle(
+                AppLanguage.localized(
+                    source.enabled ? "索引中" : "已暂停",
+                    english: source.enabled ? "Indexing" : "Paused"
+                ),
+                isOn: Binding(
+                    get: { source.enabled },
+                    set: { appModel.setSourceEnabled(source, enabled: $0) }
+                )
+            )
+            .toggleStyle(.switch)
+            .controlSize(.small)
+            .labelsHidden()
+            .help(
+                AppLanguage.localized(
+                    source.enabled ? "暂停索引" : "恢复索引",
+                    english: source.enabled ? "Pause indexing" : "Resume indexing"
+                )
+            )
+            .disabled(!appModel.isDatabaseAvailable)
+            if compact {
+                Menu {
+                    Button(
+                        AppLanguage.localized("移除…", english: "Remove…"),
+                        role: .destructive
+                    ) {
+                        sourcePendingRemoval = source
+                    }
+                } label: {
+                    Label(
+                        AppLanguage.localized("更多", english: "More"),
+                        systemImage: "ellipsis.circle"
+                    )
+                    .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .disabled(!appModel.isDatabaseAvailable)
+            } else {
+                Button(
+                    AppLanguage.localized("移除…", english: "Remove…"),
+                    role: .destructive
+                ) {
+                    sourcePendingRemoval = source
+                }
+                .controlSize(.small)
+                .disabled(!appModel.isDatabaseAvailable)
+            }
         }
     }
 

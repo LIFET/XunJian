@@ -84,4 +84,8 @@ final class UndoCoordinator: ObservableObject {
     static var batchCategoryTitle: String {
         AppLanguage.localized("撤销批量分类", english: "Undo Category Change")
     }
+
+    static var deleteCategoryTitle: String {
+        AppLanguage.localized("撤销删除分类", english: "Undo Delete Category")
+    }
 }

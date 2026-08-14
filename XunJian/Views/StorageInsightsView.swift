@@ -150,15 +150,23 @@ struct StorageInsightsView: View {
                 }
             }
         }
-        .frame(minWidth: 460, idealWidth: 620, minHeight: 420, idealHeight: 640)
+        .frame(minWidth: 360, idealWidth: 620, minHeight: 420, idealHeight: 640)
         // Keyed on the index revision so figures stay correct if a scan
         // finishes while the panel is open.
         .task(id: appModel.filesRevision) {
+            duplicateSearchTask?.cancel()
+            duplicateSearchTask = nil
+            duplicateGroups = []
+            hasSearchedDuplicates = false
+            isFindingDuplicates = false
             hasComputed = true
-            snapshot = StorageInsightsSnapshot.make(
-                files: appModel.files,
-                sources: appModel.sources
-            )
+            let files = appModel.files
+            let sources = appModel.sources
+            let computed = await Task.detached(priority: .userInitiated) {
+                StorageInsightsSnapshot.make(files: files, sources: sources)
+            }.value
+            guard !Task.isCancelled else { return }
+            snapshot = computed
         }
         .onDisappear {
             duplicateSearchTask?.cancel()
@@ -308,10 +316,11 @@ struct StorageInsightsView: View {
             .frame(height: 5)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-            "\(title)，\(AppLanguage.fileCount(count))，\(Self.sizeText(size))",
-            english: "\(title), \(AppLanguage.fileCount(count)), \(Self.sizeText(size))"
-        )))
+        .accessibilityLabel(Text(verbatim: AppLanguage.joinedForAccessibility([
+            title,
+            AppLanguage.fileCount(count),
+            Self.sizeText(size)
+        ])))
     }
 
     private var largestSection: some View {
@@ -393,6 +402,13 @@ struct StorageInsightsView: View {
                                     .truncationMode(.middle)
                                 Spacer()
                                 Button {
+                                    reveal(file)
+                                } label: {
+                                    Image(systemName: "arrow.forward.circle")
+                                }
+                                .buttonStyle(.plain)
+                                .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
+                                Button {
                                     appModel.quickLook(file)
                                 } label: {
                                     Image(systemName: "eye")
@@ -402,6 +418,21 @@ struct StorageInsightsView: View {
                             }
                             .font(.caption)
                         }
+                        HStack(spacing: 12) {
+                            Button(AppLanguage.localized("在列表中显示", english: "Show in List")) {
+                                reveal(group.files)
+                            }
+                            .buttonStyle(.link)
+                            Button(AppLanguage.localized(
+                                "保留最新，其余进废纸篓",
+                                english: "Keep Newest, Trash Others"
+                            )) {
+                                trashDuplicates(keepingNewestIn: group)
+                            }
+                            .buttonStyle(.link)
+                            .foregroundStyle(.red)
+                        }
+                        .font(.caption)
                     }
                     .padding(10)
                     .background(
@@ -423,16 +454,46 @@ struct StorageInsightsView: View {
         hasSearchedDuplicates = false
         duplicateProgress = (0, 0)
         let files = appModel.files
+        let revision = appModel.filesRevision
         duplicateSearchTask = Task {
-            let groups = await DuplicateFileFinder.find(in: files) { hashed, total in
-                Task { @MainActor in
-                    duplicateProgress = (hashed, total)
+            do {
+                let groups = try await DuplicateFileFinder.find(in: files) { hashed, total in
+                    Task { @MainActor in
+                        duplicateProgress = (hashed, total)
+                    }
                 }
+                try Task.checkCancellation()
+                guard revision == appModel.filesRevision else { return }
+                duplicateGroups = groups
+                hasSearchedDuplicates = true
+            } catch is CancellationError {
+                // Stopping an on-demand scan is not an error.
+            } catch {
+                guard !Task.isCancelled else { return }
+                appModel.errorMessage = AppLanguage.localized(
+                    "重复文件检测失败：\(error.localizedDescription)",
+                    english: "Duplicate detection failed: \(error.localizedDescription)"
+                )
             }
-            guard !Task.isCancelled else { return }
-            duplicateGroups = groups
-            hasSearchedDuplicates = true
             isFindingDuplicates = false
+        }
+    }
+
+    private func reveal(_ file: IndexedFile) {
+        reveal([file])
+    }
+
+    private func reveal(_ files: [IndexedFile]) {
+        dismiss()
+        appModel.revealInAllFiles(files)
+    }
+
+    private func trashDuplicates(keepingNewestIn group: DuplicateGroup) {
+        let files = DuplicateCleanup.filesToTrash(keepingNewestIn: group.files)
+        guard !files.isEmpty else { return }
+        dismiss()
+        Task { @MainActor in
+            appModel.requestBatchTrash(files)
         }
     }
 
@@ -444,8 +505,7 @@ struct StorageInsightsView: View {
             VStack(spacing: 0) {
                 ForEach(files) { file in
                     Button {
-                        appModel.selectedFileID = file.id
-                        appModel.showInFinder(file)
+                        reveal(file)
                     } label: {
                         HStack(spacing: 10) {
                             FileThumbnail(file: file, size: 24)
@@ -468,8 +528,14 @@ struct StorageInsightsView: View {
                         .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .help(AppLanguage.localized("在访达中显示", english: "Show in Finder"))
+                    .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
                     .contextMenu {
+                        Button(AppLanguage.localized("在列表中显示", english: "Show in List")) {
+                            reveal(file)
+                        }
+                        Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
+                            appModel.showInFinder(file)
+                        }
                         FileContextMenu(file: file)
                     }
 

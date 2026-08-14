@@ -466,9 +466,9 @@ final class OAuthCoordinator: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .providerMismatch:
-                "OAuth 伴随服务返回了不匹配的 AI 提供商。"
+                AppLanguage.localized("OAuth 伴随服务返回了不匹配的 AI 提供商。", english: "The OAuth helper returned a different AI provider.")
             case .invalidLoginPresentation:
-                "OAuth 伴随服务返回了无效的登录信息。"
+                AppLanguage.localized("OAuth 伴随服务返回了无效的登录信息。", english: "The OAuth helper returned invalid sign-in information.")
             }
         }
     }

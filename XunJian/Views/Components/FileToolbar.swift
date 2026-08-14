@@ -21,7 +21,36 @@ enum FileToolbarMetrics {
     static let viewModeItemWidth: CGFloat = 35
     static let cornerRadius: CGFloat = 6
     static let innerCornerRadius: CGFloat = 5
-    static let controlFill = Color.primary.opacity(0.065)
+    static let controlFill = XunJianUI.Fill.control
+}
+
+private struct FileToolbarSurface: ViewModifier {
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(
+                isHovered ? XunJianUI.Fill.hover : FileToolbarMetrics.controlFill,
+                in: RoundedRectangle(
+                    cornerRadius: FileToolbarMetrics.cornerRadius,
+                    style: .continuous
+                )
+            )
+            .overlay {
+                RoundedRectangle(
+                    cornerRadius: FileToolbarMetrics.cornerRadius,
+                    style: .continuous
+                )
+                .strokeBorder(isHovered ? XunJianUI.Fill.stroke : .clear)
+            }
+            .onHover { isHovered = $0 }
+    }
+}
+
+extension View {
+    func fileToolbarSurface() -> some View {
+        modifier(FileToolbarSurface())
+    }
 }
 
 struct FileToolbarIconLabel: View {
@@ -34,13 +63,7 @@ struct FileToolbarIconLabel: View {
         Image(systemName: systemName)
             .font(.system(size: symbolSize, weight: .medium))
             .frame(width: side, height: side)
-            .background(
-                FileToolbarMetrics.controlFill,
-                in: RoundedRectangle(
-                    cornerRadius: FileToolbarMetrics.cornerRadius,
-                    style: .continuous
-                )
-            )
+            .fileToolbarSurface()
             .contentShape(Rectangle())
     }
 }
@@ -62,13 +85,7 @@ struct FileToolbarMenuLabel: View {
         }
         .padding(.horizontal, 10)
         .frame(height: controlHeight)
-        .background(
-            FileToolbarMetrics.controlFill,
-            in: RoundedRectangle(
-                cornerRadius: FileToolbarMetrics.cornerRadius,
-                style: .continuous
-            )
-        )
+        .fileToolbarSurface()
         .contentShape(Rectangle())
     }
 }
@@ -90,13 +107,7 @@ struct FileToolbarPopupLabel: View {
         }
         .padding(.horizontal, 10)
         .frame(width: width, height: controlHeight)
-        .background(
-            FileToolbarMetrics.controlFill,
-            in: RoundedRectangle(
-                cornerRadius: FileToolbarMetrics.cornerRadius,
-                style: .continuous
-            )
-        )
+        .fileToolbarSurface()
         .contentShape(Rectangle())
     }
 }

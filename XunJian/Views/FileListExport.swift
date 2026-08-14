@@ -30,17 +30,18 @@ enum FileListExport {
 
     /// The list the user is currently looking at.
     ///
-    /// An explicit multi-selection wins; otherwise this reuses the exact
-    /// snapshot the file list renders, so the export always matches what is
-    /// on screen including search, type, size, and date narrowing. Falls back
-    /// to the raw index only before the first snapshot has been prepared.
+    /// An explicit multi-selection wins; otherwise this uses the files the
+    /// active page last published as visible. Falls back to the raw index
+    /// only before any page has published a target list.
     @MainActor
     static func currentFiles(from appModel: AppModel) -> [IndexedFile] {
         if appModel.selectedFileIDs.count > 1 {
             return appModel.selectedFiles
         }
-        guard appModel.browseSnapshotSignature != nil else { return appModel.files }
-        return appModel.browseSnapshot
+        if !appModel.commandTargetFiles.isEmpty {
+            return appModel.commandTargetFiles
+        }
+        return appModel.files
     }
 
     @MainActor
@@ -149,13 +150,22 @@ enum FileListExport {
     }
 
     /// Quotes any field containing a delimiter, quote, or newline, doubling
-    /// embedded quotes per RFC 4180. File names legitimately contain commas.
+    /// embedded quotes per RFC 4180. A leading spreadsheet formula marker is
+    /// prefixed with an apostrophe so opening an exported list cannot execute
+    /// a formula supplied by a file name, category, or path.
     static func csvField(_ value: String) -> String {
-        guard value.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" })
-        else {
-            return value
+        let safeValue: String
+        let firstMeaningful = value.drop(while: { $0 == " " || $0 == "\t" }).first
+        if let firstMeaningful, "=+-@\r".contains(firstMeaningful) {
+            safeValue = "'" + value
+        } else {
+            safeValue = value
         }
-        return "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+        guard safeValue.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" })
+        else {
+            return safeValue
+        }
+        return "\"\(safeValue.replacingOccurrences(of: "\"", with: "\"\""))\""
     }
 
     private static func markdown(

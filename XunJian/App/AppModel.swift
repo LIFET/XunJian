@@ -46,7 +46,10 @@ final class AppModel: ObservableObject {
     // forwarding section below for the compatible names.
     // AI session state now lives on `ai` (AISessionCoordinator); same deal.
 
-    @Published private(set) var aiSearchResults: [IndexedFile]?
+    @Published private(set) var aiSearchResults: [IndexedFile]? {
+        didSet { aiSearchRevision &+= 1 }
+    }
+    @Published private(set) var aiSearchRevision: UInt64 = 0
     @Published private(set) var aiSearchPlan: AISearchPlan?
     @Published private(set) var aiSearchQuery: String?
     /// Multi-selection in the file table/grid (F05). `selectedFileID` remains
@@ -132,10 +135,9 @@ final class AppModel: ObservableObject {
     private let oauthBridgeService: any OAuthBridgeServicing
 
     /// OAuth state machine, extracted so it can be tested without the rest of
-    /// the app. Its mutations are forwarded below so existing views keep
-    /// observing the same names.
+    /// the app. Settings observes it directly; it is not forwarded through
+    /// `AppModel.objectWillChange`.
     let oauth: OAuthCoordinator
-    private var oauthObservation: AnyCancellable?
 
     /// AI session state machine (settings, verification, active provider),
     /// extracted so it can be tested without the file-index machinery.
@@ -149,7 +151,6 @@ final class AppModel: ObservableObject {
 
     /// General undo stack for reversible actions (N16).
     let undo = UndoCoordinator()
-    private var undoObservation: AnyCancellable?
 
     var canUndo: Bool { undo.canUndo }
 
@@ -167,13 +168,24 @@ final class AppModel: ObservableObject {
     /// showing a spinner.
     @Published var browseSnapshotSignature: Int?
 
+    /// The files currently visible on the active page. Export and ⌘A read
+    /// this rather than the All Files snapshot, which goes stale after the
+    /// user leaves that page.
+    @Published var commandTargetFiles: [IndexedFile] = []
+
+    func updateCommandTargetFiles(_ files: [IndexedFile]) {
+        if commandTargetFiles.map(\.id) == files.map(\.id) { return }
+        commandTargetFiles = files
+    }
+
     var filesRevision: UInt64 { index.filesRevision }
+    var categoryRevision: UInt64 { index.categoryRevision }
 
     /// Selects everything currently visible in the file list, which is what
     /// ⌘A means to the user — not every file in the index.
     func selectAllDisplayedFiles() {
         var next = FileSelection()
-        next.selectAll(orderedIDs: browseSnapshot.map(\.id))
+        next.selectAll(orderedIDs: commandTargetFiles.map(\.id))
         applyFileSelection(next)
     }
 
@@ -353,7 +365,14 @@ final class AppModel: ObservableObject {
             // The candidate order comes from `files` either way, so batching
             // the lookup does not change the result set.
             var candidateByID: [String: IndexedFile] = [:]
-            for file in try await index.searchFiles(matchingAnyOf: plan.keywords, limit: 500) {
+            // AI filters must see the complete local candidate set. Ordinary
+            // search paginates for presentation, but silently truncating this
+            // set would make a valid file impossible for the plan to return.
+            let candidateLimit = max(index.files.count, 1)
+            for file in try await index.searchFiles(
+                matchingAnyOf: plan.keywords,
+                limit: candidateLimit
+            ) {
                 candidateByID[file.id] = file
             }
             candidates = index.files.filter { candidateByID[$0.id] != nil }
@@ -378,8 +397,24 @@ final class AppModel: ObservableObject {
         try await ai.currentService().explain(file: try await fileWithText(file))
     }
 
+    func explainWithAIStream(
+        _ file: IndexedFile
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        try await ai.currentService().explainStream(file: try await fileWithText(file))
+    }
+
     func askAI(_ question: String, about file: IndexedFile) async throws -> String {
         try await ai.currentService().answer(
+            question: question,
+            about: try await fileWithText(file)
+        )
+    }
+
+    func askAIStream(
+        _ question: String,
+        about file: IndexedFile
+    ) async throws -> AsyncThrowingStream<String, any Error> {
+        try await ai.currentService().answerStream(
             question: question,
             about: try await fileWithText(file)
         )
@@ -447,9 +482,8 @@ final class AppModel: ObservableObject {
 
     // MARK: - OAuth forwarding
 
-    /// Connects the OAuth coordinator to the AI layer and re-emits its
-    /// `objectWillChange` so views observing `AppModel` refresh on OAuth
-    /// changes exactly as they did before the extraction.
+    /// Connects the OAuth coordinator to the AI layer. Settings observes
+    /// `oauth` directly, so polling does not redraw the rest of the window.
     private func wireOAuthCoordinator() {
         oauth.onProviderUnavailable = { [weak self] kind, preservingPreference in
             self?.ai.clearActiveOAuthProviderIfNeeded(
@@ -463,9 +497,6 @@ final class AppModel: ObservableObject {
         oauth.onFailure = { [weak self] message in
             self?.errorMessage = message
         }
-        oauthObservation = oauth.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
     }
 
     private func wireAISessionCoordinator() {
@@ -475,16 +506,16 @@ final class AppModel: ObservableObject {
         ai.onActiveProviderChanged = { [weak self] in
             self?.index.scheduleSearch(query: self?.searchText ?? "")
         }
-        aiObservation = ai.objectWillChange.sink { [weak self] _ in
+        // Only the active provider is needed by the file toolbar. OAuth polling
+        // and connection tests stay on the coordinators so they do not redraw
+        // the whole window.
+        aiObservation = ai.$activeProviderKind.sink { [weak self] _ in
             self?.objectWillChange.send()
         }
     }
 
     private func wireIndexCoordinator() {
         index.undoCoordinator = undo
-        undoObservation = undo.objectWillChange.sink { [weak self] _ in
-            self?.objectWillChange.send()
-        }
         index.onError = { [weak self] message in
             self?.errorMessage = message
         }
@@ -501,9 +532,9 @@ final class AppModel: ObservableObject {
         }
         index.onFileResolved = { [weak self] url in
             guard let self else { return }
-            let path = url.standardizedFileURL.path
+            let path = FilePathCanonicalizer.path(url)
             self.selectedFileID = self.index.files.first {
-                $0.url.standardizedFileURL.path == path
+                FilePathCanonicalizer.path($0.url) == path
             }?.id
         }
         indexObservation = index.objectWillChange.sink { [weak self] _ in
@@ -523,6 +554,7 @@ final class AppModel: ObservableObject {
     var searchResults: [IndexedFile]? { index.searchResults }
     var searchResultTotalCount: Int? { index.searchResultTotalCount }
     var isSearching: Bool { index.isSearching }
+    var searchProgressStore: SearchProgressStore { index.searchProgressStore }
     var scanProgressStore: ScanProgressStore { index.scanProgressStore }
     var scanProgress: ScanProgress? { index.scanProgress }
     var isScanning: Bool { index.isScanning }
@@ -589,6 +621,10 @@ final class AppModel: ObservableObject {
         index.setIncludesHiddenFiles(includesHiddenFiles)
     }
 
+    func setIndexesFileContents(_ enabled: Bool) async {
+        await index.setIndexesFileContents(enabled)
+    }
+
     func cancelScan(startsPendingFullRescan: Bool = true) {
         index.cancelScan(startsPendingFullRescan: startsPendingFullRescan)
     }
@@ -640,8 +676,12 @@ final class AppModel: ObservableObject {
     }
 
     func requestBatchTrash() {
-        guard !selectedFiles.isEmpty else { return }
-        batchTrashRequest = selectedFiles
+        requestBatchTrash(selectedFiles)
+    }
+
+    func requestBatchTrash(_ files: [IndexedFile]) {
+        guard !files.isEmpty else { return }
+        batchTrashRequest = files
     }
 
     func confirmBatchTrash() {
@@ -659,6 +699,10 @@ final class AppModel: ObservableObject {
 
     func undoLastTrash() {
         index.undoLastTrash()
+    }
+
+    func dismissTrashUndoBanner() {
+        index.dismissTrashUndoBanner()
     }
 
     func cancelBatchTrash() {
@@ -679,31 +723,50 @@ final class AppModel: ObservableObject {
     }
 
     /// A file dropped onto a category row gets that category. Files that are
-    /// not indexed yet are ignored (scan them first).
+    /// not indexed yet show an error instead of failing silently.
     func assignDroppedFile(url: URL, to category: FileCategory) {
-        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = FilePathCanonicalizer.path(url)
         guard let file = index.files.first(where: {
-            $0.url.standardizedFileURL.path == path
-        }) else { return }
+            FilePathCanonicalizer.path($0.url) == path
+        }) else {
+            errorMessage = AppLanguage.localized(
+                "这个文件尚未建立索引，请先在设置中添加它所在的文件夹。",
+                english: "This file is not indexed yet. Add its folder in Settings first."
+            )
+            return
+        }
         index.addCategory(category, toFiles: [file])
     }
 
     /// A path received from another app via the Services menu (N14).
     /// Selects the file when it is indexed; reveals it in Finder otherwise.
     func handleExternalPath(_ path: String) {
-        let standardized = URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-        if let file = index.files.first(where: {
-            $0.url.standardizedFileURL.path == standardized
-        }) {
-            selectedFileIDs = [file.id]
-            errorMessage = nil
-        } else {
-            NSWorkspace.shared.activateFileViewerSelecting([
-                URL(fileURLWithPath: path)
-            ])
+        handleExternalPaths([path])
+    }
+
+    func handleExternalPaths(_ paths: [String]) {
+        var filesByPath: [String: IndexedFile] = [:]
+        for file in index.files {
+            filesByPath[FilePathCanonicalizer.path(file.url)] = file
+        }
+        var matchedIDs: Set<String> = []
+        var unmatchedURLs: [URL] = []
+        for path in paths {
+            if let file = filesByPath[FilePathCanonicalizer.path(path)] {
+                matchedIDs.insert(file.id)
+            } else {
+                unmatchedURLs.append(URL(fileURLWithPath: path))
+            }
+        }
+        if !matchedIDs.isEmpty {
+            selectedFileIDs = matchedIDs
+            errorMessage = unmatchedURLs.isEmpty ? nil : AppLanguage.localized(
+                "已选择索引中的文件；另有 \(unmatchedURLs.count) 个文件尚未建立索引。",
+                english: "Selected the indexed files; \(unmatchedURLs.count) file(s) are not indexed yet."
+            )
+        }
+        if matchedIDs.isEmpty, !unmatchedURLs.isEmpty {
+            NSWorkspace.shared.activateFileViewerSelecting(unmatchedURLs)
         }
     }
 
@@ -834,6 +897,28 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func renameSavedSearch(_ search: SavedSearch, to name: String) {
+        index.saveSearch(
+            name: name,
+            query: search.query,
+            minSizeBytes: search.minSizeBytes,
+            minDate: search.minDate,
+            id: search.id,
+            createdAt: search.createdAt
+        )
+    }
+
+    func updateSavedSearch(_ search: SavedSearch) {
+        index.saveSearch(
+            name: search.name,
+            query: searchText,
+            minSizeBytes: Int64(filterMinSizeMB * 1_024 * 1_024),
+            minDate: filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil,
+            id: search.id,
+            createdAt: search.createdAt
+        )
+    }
+
     func deleteSearch(id: UUID) {
         index.deleteSearch(id: id)
     }
@@ -842,6 +927,22 @@ final class AppModel: ObservableObject {
     func applySavedSearch(_ search: SavedSearch) {
         searchText = search.query
         applyManualFilter(minSizeBytes: search.minSizeBytes, minDate: search.minDate)
+    }
+
+    /// Selects a file (or group) and asks the shell to show All Files.
+    func revealInAllFiles(_ files: [IndexedFile]) {
+        guard !files.isEmpty else { return }
+        selectedKind = nil
+        if files.count == 1, let file = files.first {
+            selectedFileID = file.id
+        } else {
+            selectedFileIDs = Set(files.map(\.id))
+        }
+        NotificationCenter.default.post(name: .xunJianRevealInAllFiles, object: nil)
+    }
+
+    func revealInAllFiles(_ file: IndexedFile) {
+        revealInAllFiles([file])
     }
 
     func refreshOAuthStatus(

@@ -17,18 +17,24 @@ import UserNotifications
 final class FileIndexCoordinator: ObservableObject {
     @Published private(set) var sources: [FileSource] = []
     @Published private(set) var files: [IndexedFile] = [] {
-        didSet { rebuildDerivedIndexes() }
+        didSet {
+            rebuildFileDerivedIndexes()
+            rebuildCategoryDerivedIndexes()
+        }
     }
     @Published private(set) var categories: [FileCategory] = [] {
-        didSet { rebuildDerivedIndexes() }
+        didSet { rebuildCategoryDerivedIndexes() }
     }
     @Published private(set) var fileCategoryLinks: [String: Set<UUID>] = [:] {
-        didSet { rebuildDerivedIndexes() }
+        didSet { rebuildCategoryDerivedIndexes() }
     }
     @Published private(set) var savedSearches: [SavedSearch] = []
     @Published private(set) var searchResults: [IndexedFile]? = nil
     @Published private(set) var searchResultTotalCount: Int? = nil
-    @Published private(set) var isSearching = false
+    /// High-frequency search flag. Not `@Published` here: forwarding it
+    /// through `AppModel` rebuilt the whole window on every keystroke.
+    let searchProgressStore = SearchProgressStore()
+    var isSearching: Bool { searchProgressStore.isSearching }
     /// High-frequency scan UI. Not `@Published` on this object: forwarding it
     /// through `AppModel` rebuilt the whole window every 100 files.
     let scanProgressStore = ScanProgressStore()
@@ -49,11 +55,18 @@ final class FileIndexCoordinator: ObservableObject {
 
     /// One-hop undo for move-to-Trash (N10).
     struct TrashUndo: Equatable, Sendable {
-        let trashURL: URL
-        let originalURL: URL
+        struct Item: Equatable, Sendable {
+            let trashURL: URL
+            let originalURL: URL
+            let identity: FileSystemObjectIdentity
+        }
+
+        let items: [Item]
         /// The matching entry on the general undo stack, so using the banner
         /// and using ⌘Z cannot both restore the same item.
         var undoEntryID: UUID?
+
+        var fileCount: Int { items.count }
     }
 
     @Published private(set) var lastTrashUndo: TrashUndo?
@@ -153,7 +166,7 @@ final class FileIndexCoordinator: ObservableObject {
         cancelScan(startsPendingFullRescan: false)
         searchTask?.cancel()
         searchTask = nil
-        isSearching = false
+        searchProgressStore.update(false)
         fileChangeTasks.values.forEach { $0.cancel() }
         fileChangeTasks.removeAll()
         pendingFileChanges.removeAll()
@@ -250,7 +263,8 @@ final class FileIndexCoordinator: ObservableObject {
         query: String,
         minSizeBytes: Int64,
         minDate: Date?,
-        id: UUID = UUID()
+        id: UUID = UUID(),
+        createdAt: Date? = nil
     ) {
         guard let database else { return reportDatabaseUnavailable() }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,7 +275,7 @@ final class FileIndexCoordinator: ObservableObject {
             query: query.trimmingCharacters(in: .whitespacesAndNewlines),
             minSizeBytes: minSizeBytes,
             minDate: minDate,
-            createdAt: Date()
+            createdAt: createdAt ?? Date()
         )
         Task { [weak self] in
             do {
@@ -300,12 +314,10 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func categories(for file: IndexedFile) -> [FileCategory] {
-        guard let assignedIDs = fileCategoryLinks[file.id], !assignedIDs.isEmpty else {
+        guard fileCategoryLinks[file.id]?.isEmpty == false else {
             return []
         }
-        // Ordered by the canonical category order rather than set order so the
-        // label text is stable between renders.
-        return categories.filter { assignedIDs.contains($0.id) }
+        return categoriesByFileID[file.id] ?? []
     }
 
     func files(in category: FileCategory) -> [IndexedFile] {
@@ -326,30 +338,26 @@ final class FileIndexCoordinator: ObservableObject {
     /// Same idea for categories: the overview draws one card per category, and
     /// counting by scanning `files` per card was O(categories × files).
     private var fileCountsByCategoryID: [UUID: Int] = [:]
+    /// Canonically ordered labels prepared once per index mutation. Building a
+    /// visible table row no longer scans every category.
+    private var categoriesByFileID: [String: [FileCategory]] = [:]
 
     func fileCount(for kind: FileKind) -> Int {
         fileCountsByKind[kind] ?? 0
     }
 
-    /// Rebuilt once per `files`/`categories` change, not per row.
-    /// Bumped whenever the file set or its category links change. Views use it
-    /// as a cheap cache key instead of comparing the whole `files` array.
+    /// Separate revisions keep a category-only edit from invalidating every
+    /// file-metadata snapshot in the app.
     private(set) var filesRevision: UInt64 = 0
+    private(set) var categoryRevision: UInt64 = 0
 
-    private func rebuildDerivedIndexes() {
+    private func rebuildFileDerivedIndexes() {
         filesRevision &+= 1
         var kindCounts: [FileKind: Int] = [:]
-        var categoryCounts: [UUID: Int] = [:]
         for file in files {
             kindCounts[file.kind, default: 0] += 1
-            if let assigned = fileCategoryLinks[file.id] {
-                for categoryID in assigned {
-                    categoryCounts[categoryID, default: 0] += 1
-                }
-            }
         }
         fileCountsByKind = kindCounts
-        fileCountsByCategoryID = categoryCounts
 
         recentFiles = files
             .filter { $0.modifiedAt != nil }
@@ -358,6 +366,22 @@ final class FileIndexCoordinator: ObservableObject {
             }
             .prefix(Self.recentFileCount)
             .map { $0 }
+    }
+
+    private func rebuildCategoryDerivedIndexes() {
+        categoryRevision &+= 1
+        let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
+        var categoryLists: [String: [FileCategory]] = [:]
+        categoryLists.reserveCapacity(fileCategoryLinks.count)
+        var categoryCounts: [UUID: Int] = [:]
+        for (fileID, assignedIDs) in fileCategoryLinks where !assignedIDs.isEmpty {
+            categoryLists[fileID] = assignedIDs.compactMap { categoryByID[$0] }
+            for categoryID in assignedIDs {
+                categoryCounts[categoryID, default: 0] += 1
+            }
+        }
+        categoriesByFileID = categoryLists
+        fileCountsByCategoryID = categoryCounts
     }
 
     // MARK: - Search
@@ -369,17 +393,17 @@ final class FileIndexCoordinator: ObservableObject {
         guard !query.isEmpty else {
             searchResults = nil
             searchResultTotalCount = nil
-            isSearching = false
+            searchProgressStore.update(false)
             return
         }
         guard let database else {
             searchResults = []
             searchResultTotalCount = 0
-            isSearching = false
+            searchProgressStore.update(false)
             return
         }
 
-        isSearching = true
+        searchProgressStore.update(true)
         let includesHiddenFiles = includesHiddenFiles
         searchTask = Task { [weak self] in
             do {
@@ -393,14 +417,14 @@ final class FileIndexCoordinator: ObservableObject {
                 guard let self else { return }
                 self.searchResults = page.files
                 self.searchResultTotalCount = page.totalCount
-                self.isSearching = false
+                self.searchProgressStore.update(false)
             } catch is CancellationError {
                 // 新输入会替换尚未完成的查询。
             } catch {
                 guard let self else { return }
                 self.searchResults = []
                 self.searchResultTotalCount = 0
-                self.isSearching = false
+                self.searchProgressStore.update(false)
                 self.onError?(Self.message(for: error))
             }
         }
@@ -411,7 +435,7 @@ final class FileIndexCoordinator: ObservableObject {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty, let database else { return }
         let requestedLimit = (searchResults?.count ?? 0) + Self.searchResultBatchSize
-        isSearching = true
+        searchProgressStore.update(true)
         searchTask = Task { [weak self] in
             do {
                 guard let self else { return }
@@ -423,12 +447,12 @@ final class FileIndexCoordinator: ObservableObject {
                 try Task.checkCancellation()
                 self.searchResults = page.files
                 self.searchResultTotalCount = page.totalCount
-                self.isSearching = false
+                self.searchProgressStore.update(false)
             } catch is CancellationError {
                 return
             } catch {
                 guard let self else { return }
-                self.isSearching = false
+                self.searchProgressStore.update(false)
                 self.onError?(Self.message(for: error))
             }
         }
@@ -546,7 +570,10 @@ final class FileIndexCoordinator: ObservableObject {
         failedScanningSourceIDs.removeAll()
         currentScanningSourceID = source.id
         isScanning = true
-        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: source.path))
+        scanProgressStore.update(scopedProgress(
+            ScanProgress(discoveredCount: 0, currentPath: source.path),
+            sourceID: source.id
+        ))
         scanTask = Task { [weak self] in
             await self?.performScan(source, generation: generation)
         }
@@ -561,7 +588,10 @@ final class FileIndexCoordinator: ObservableObject {
         scanningSourceIDs = Set(sourcesToScan.map(\.id))
         failedScanningSourceIDs.removeAll()
         isScanning = true
-        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: sourcesToScan[0].path))
+        scanProgressStore.update(scopedProgress(
+            ScanProgress(discoveredCount: 0, currentPath: sourcesToScan[0].path),
+            sourceID: sourcesToScan[0].id
+        ))
         scanTask = Task { [weak self] in
             guard let self else { return }
             for source in sourcesToScan {
@@ -592,6 +622,21 @@ final class FileIndexCoordinator: ObservableObject {
             onFilesChanged?()
         }
         refreshAllSources()
+    }
+
+    func setIndexesFileContents(_ enabled: Bool) async {
+        UserDefaults.standard.set(enabled, forKey: FileIndexPreferences.indexesFileContentsKey)
+        guard let database else { return reportDatabaseUnavailable() }
+        if enabled {
+            refreshAllSources()
+        } else {
+            cancelScan(startsPendingFullRescan: false)
+            do {
+                try await database.clearTextContents()
+            } catch {
+                onError?(Self.message(for: error))
+            }
+        }
     }
 
     func cancelScan(startsPendingFullRescan: Bool = true) {
@@ -646,13 +691,16 @@ final class FileIndexCoordinator: ObservableObject {
         guard isDatabaseAvailable else {
             throw FileIndexError.database("database unavailable")
         }
+        try await fileOperations.requireIndexedIdentity(file)
         let renamedURL = try await fileOperations.rename(fileAt: file.url, to: newName)
+        let renamedIdentity = try await fileOperations.identity(of: renamedURL)
         await reconcileKnownFileChanges([file.url, renamedURL])
         onFileResolved?(renamedURL)
 
         let originalName = file.name
         undoCoordinator?.record(title: UndoCoordinator.renameTitle) { [weak self] in
             guard let self else { return }
+            try await fileOperations.requireIdentity(renamedIdentity, at: renamedURL)
             let restoredURL = try await fileOperations.rename(
                 fileAt: renamedURL,
                 to: originalName
@@ -698,19 +746,28 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             do {
+                try await fileOperations.requireIndexedIdentity(file)
                 if let trashURL = try await fileOperations.moveToTrash(fileAt: file.url) {
+                    let identity = try await fileOperations.identity(of: trashURL)
                     // Keep one undo hop so an accidental delete can be
                     // reversed without digging through the Trash. Also pushed
                     // onto the general stack so ⌘Z covers it (N16).
                     let entryID = recordTrashUndo(
-                        trashURL: trashURL,
-                        originalURL: file.url
+                        items: [
+                            TrashUndo.Item(
+                                trashURL: trashURL,
+                                originalURL: file.url,
+                                identity: identity
+                            )
+                        ]
                     )
-                    lastTrashUndo = TrashUndo(
-                        trashURL: trashURL,
-                        originalURL: file.url,
-                        undoEntryID: entryID
-                    )
+                    lastTrashUndo = TrashUndo(items: [
+                        TrashUndo.Item(
+                            trashURL: trashURL,
+                            originalURL: file.url,
+                            identity: identity
+                        )
+                    ], undoEntryID: entryID)
                 }
                 onFilesChanged?()
                 await reconcileKnownFileChanges([file.url])
@@ -729,42 +786,47 @@ final class FileIndexCoordinator: ObservableObject {
         undo.undoEntryID.map { undoCoordinator?.remove($0) }
         Task { [weak self] in
             guard let self else { return }
-            do {
-                try await restoreFromTrash(
-                    trashURL: undo.trashURL,
-                    originalURL: undo.originalURL
-                )
-            } catch {
-                onError?(Self.message(for: error))
-            }
-        }
-    }
-
-    private func recordTrashUndo(trashURL: URL, originalURL: URL) -> UUID? {
-        undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
-            guard let self else { return }
-            // Clears the one-hop banner so it cannot restore the same item a
-            // second time after ⌘Z already did.
-            if lastTrashUndo?.trashURL == trashURL {
-                lastTrashUndo = nil
-            }
-            try await restoreFromTrash(trashURL: trashURL, originalURL: originalURL)
-        }
-    }
-
-    /// One stack entry for the whole batch. Individual failures are surfaced
-    /// rather than aborting, so a partially restorable batch still recovers
-    /// everything it can.
-    private func recordBatchTrashUndo(_ trashed: [(trashURL: URL, originalURL: URL)]) {
-        guard !trashed.isEmpty else { return }
-        undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
-            guard let self else { return }
             var failed = 0
-            for item in trashed {
+            for item in undo.items {
                 do {
                     try await restoreFromTrash(
                         trashURL: item.trashURL,
-                        originalURL: item.originalURL
+                        originalURL: item.originalURL,
+                        identity: item.identity
+                    )
+                } catch {
+                    failed += 1
+                }
+            }
+            if failed > 0 {
+                onError?(AppLanguage.localized(
+                    "有 \(failed) 个文件未能从废纸篓恢复。",
+                    english: "\(failed) file(s) couldn’t be restored from the Trash."
+                ))
+            }
+        }
+    }
+
+    func dismissTrashUndoBanner() {
+        lastTrashUndo = nil
+    }
+
+    private func recordTrashUndo(items: [TrashUndo.Item]) -> UUID? {
+        guard !items.isEmpty else { return nil }
+        return undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
+            guard let self else { return }
+            // Clears the one-hop banner so it cannot restore the same items a
+            // second time after ⌘Z already did.
+            if lastTrashUndo?.items == items {
+                lastTrashUndo = nil
+            }
+            var failed = 0
+            for item in items {
+                do {
+                    try await restoreFromTrash(
+                        trashURL: item.trashURL,
+                        originalURL: item.originalURL,
+                        identity: item.identity
                     )
                 } catch {
                     failed += 1
@@ -779,13 +841,40 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
-    private func restoreFromTrash(trashURL: URL, originalURL: URL) async throws {
+    /// One stack entry for the whole batch. Individual failures are surfaced
+    /// rather than aborting, so a partially restorable batch still recovers
+    /// everything it can.
+    private func recordBatchTrashUndo(
+        _ trashed: [(
+            trashURL: URL,
+            originalURL: URL,
+            identity: FileSystemObjectIdentity
+        )]
+    ) {
+        let items = trashed.map {
+            TrashUndo.Item(
+                trashURL: $0.trashURL,
+                originalURL: $0.originalURL,
+                identity: $0.identity
+            )
+        }
+        guard !items.isEmpty else { return }
+        let entryID = recordTrashUndo(items: items)
+        lastTrashUndo = TrashUndo(items: items, undoEntryID: entryID)
+    }
+
+    private func restoreFromTrash(
+        trashURL: URL,
+        originalURL: URL,
+        identity: FileSystemObjectIdentity
+    ) async throws {
         guard FileManager.default.fileExists(atPath: trashURL.path) else {
             throw FileIndexError.database(AppLanguage.localized(
                 "无法从废纸篓恢复：项目已不在废纸篓中。",
                 english: "Cannot restore from the Trash: the item is no longer there."
             ))
         }
+        try await fileOperations.requireIdentity(identity, at: trashURL)
         _ = try await fileOperations.move(
             fileAt: trashURL,
             to: originalURL.deletingLastPathComponent()
@@ -810,14 +899,29 @@ final class FileIndexCoordinator: ObservableObject {
 
     func deleteCategory(_ category: FileCategory) {
         guard let database else { return reportDatabaseUnavailable() }
+        let fileIDs = files(in: category).map(\.id)
         Task { [weak self] in
             do {
                 try await database.deleteCategory(category.id)
                 await self?.reloadIndex()
+                self?.undoCoordinator?.record(
+                    title: UndoCoordinator.deleteCategoryTitle
+                ) { [weak self] in
+                    try await self?.restoreDeletedCategory(category, fileIDs: fileIDs)
+                }
             } catch {
                 self?.onError?(Self.message(for: error))
             }
         }
+    }
+
+    private func restoreDeletedCategory(
+        _ category: FileCategory,
+        fileIDs: [String]
+    ) async throws {
+        guard let database else { throw FileIndexError.database("database unavailable") }
+        try await database.restoreCategory(category, fileIDs: fileIDs)
+        await reloadIndex()
     }
 
     func toggleCategory(_ category: FileCategory, for file: IndexedFile) {
@@ -908,11 +1012,17 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             var failed = 0
-            var trashed: [(trashURL: URL, originalURL: URL)] = []
+            var trashed: [(
+                trashURL: URL,
+                originalURL: URL,
+                identity: FileSystemObjectIdentity
+            )] = []
             for file in files {
                 do {
+                    try await fileOperations.requireIndexedIdentity(file)
                     if let trashURL = try await fileOperations.moveToTrash(fileAt: file.url) {
-                        trashed.append((trashURL, file.url))
+                        let identity = try await fileOperations.identity(of: trashURL)
+                        trashed.append((trashURL, file.url, identity))
                     }
                 } catch {
                     failed += 1
@@ -1025,7 +1135,10 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     private static func canonicalSourceURL(_ url: URL) -> URL {
-        url.resolvingSymlinksInPath().standardizedFileURL
+        let path = url.resolvingSymlinksInPath()
+            .standardizedFileURL.path
+            .precomposedStringWithCanonicalMapping
+        return URL(fileURLWithPath: path, isDirectory: true)
     }
 
     private static func sourceURLsOverlap(_ lhs: URL, _ rhs: URL) -> Bool {
@@ -1078,8 +1191,10 @@ final class FileIndexCoordinator: ObservableObject {
 
         var physicallyMovedURL: URL?
         do {
+            try await fileOperations.requireIndexedIdentity(file)
             let categoryIDs = try await database.fetchCategoryIDs(forFile: file.id)
             let movedURL = try await fileOperations.move(fileAt: file.url, to: destinationURL)
+            let movedIdentity = try await fileOperations.identity(of: movedURL)
             physicallyMovedURL = movedURL
 
             if let destinationSource = indexedSource(containing: movedURL) {
@@ -1094,14 +1209,15 @@ final class FileIndexCoordinator: ObservableObject {
                             isDirectory: false
                         )
                     ],
-                    includesHiddenFiles: includesHiddenFiles
+                    includesHiddenFiles: includesHiddenFiles,
+                    extractsText: FileIndexPreferences.indexesFileContents
                 )
                 if !snapshot.failedScopes.isEmpty {
                     throw FileIndexError.unreadableFolder(movedURL.lastPathComponent)
                 }
 
                 if let movedFile = snapshot.files.first(where: {
-                    $0.url.standardizedFileURL.path == movedURL.standardizedFileURL.path
+                    FilePathCanonicalizer.path($0.url) == FilePathCanonicalizer.path(movedURL)
                 }) {
                     try await database.reconcileMovedFile(
                         fromFile: file.id,
@@ -1117,7 +1233,11 @@ final class FileIndexCoordinator: ObservableObject {
                 await reconcileKnownFileChanges([file.url, movedURL])
             }
             onFileResolved?(movedURL)
-            recordMoveUndo(movedURL: movedURL, originalURL: file.url)
+            recordMoveUndo(
+                movedURL: movedURL,
+                originalURL: file.url,
+                identity: movedIdentity
+            )
         } catch {
             if let physicallyMovedURL {
                 onError?(AppLanguage.localized(
@@ -1133,7 +1253,11 @@ final class FileIndexCoordinator: ObservableObject {
     /// Registers the inverse move. The original folder is inside an authorized
     /// source, so its security scope is already held; the destination scope
     /// came from a one-off panel grant and is not needed to move back out.
-    private func recordMoveUndo(movedURL: URL, originalURL: URL) {
+    private func recordMoveUndo(
+        movedURL: URL,
+        originalURL: URL,
+        identity: FileSystemObjectIdentity
+    ) {
         let originalDirectory = originalURL.deletingLastPathComponent()
         undoCoordinator?.record(title: UndoCoordinator.moveTitle) { [weak self] in
             guard let self else { return }
@@ -1143,6 +1267,7 @@ final class FileIndexCoordinator: ObservableObject {
                     english: "Cannot undo the move: the file is no longer at “\(movedURL.lastPathComponent)”."
                 ))
             }
+            try await fileOperations.requireIdentity(identity, at: movedURL)
             let restoredURL = try await fileOperations.move(
                 fileAt: movedURL,
                 to: originalDirectory
@@ -1160,11 +1285,11 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     private func indexedSource(containing url: URL) -> FileSource? {
-        let path = url.resolvingSymlinksInPath().standardizedFileURL.path
+        let path = FilePathCanonicalizer.path(url)
         return sources
             .filter { source in
                 guard source.accessState == .available else { return false }
-                let rootPath = source.url.resolvingSymlinksInPath().standardizedFileURL.path
+                let rootPath = FilePathCanonicalizer.path(source.url)
                 let candidateComponents = URL(fileURLWithPath: path).pathComponents
                 let rootComponents = URL(fileURLWithPath: rootPath).pathComponents
                 return candidateComponents.count >= rootComponents.count
@@ -1182,7 +1307,10 @@ final class FileIndexCoordinator: ObservableObject {
     ) async {
         guard let database else { return reportDatabaseUnavailable() }
         isScanning = true
-        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: source.path))
+        scanProgressStore.update(scopedProgress(
+            ScanProgress(discoveredCount: 0, currentPath: source.path),
+            sourceID: source.id
+        ))
 
         do {
             let restored = try bookmarkManager.resolveBookmark(source.bookmark)
@@ -1203,14 +1331,18 @@ final class FileIndexCoordinator: ObservableObject {
             }
 
             await syncScanExclusions()
+            let indexesFileContents = FileIndexPreferences.indexesFileContents
             let scannedFiles = try await scanner.scan(
                 sourceID: source.id,
                 rootURL: restored.url,
-                includesHiddenFiles: includesHiddenFiles
+                includesHiddenFiles: includesHiddenFiles,
+                extractsText: false
             ) { [weak self] progress in
                 Task { @MainActor in
                     guard self?.scanGeneration == generation else { return }
-                    self?.scanProgressStore.update(progress)
+                    self?.scanProgressStore.update(
+                        self?.scopedProgress(progress, sourceID: source.id)
+                    )
                 }
             }
             try Task.checkCancellation()
@@ -1223,11 +1355,27 @@ final class FileIndexCoordinator: ObservableObject {
             try await database.replaceFiles(
                 for: source.id,
                 with: scannedFiles,
-                deletesUnscanned: skipped.isEmpty
+                deletesUnscanned: skipped.isEmpty,
+                preservesExistingText: indexesFileContents
             )
             guard scanGeneration == generation else { return }
             skippedScanPaths.append(contentsOf: skipped)
             await reloadIndex()
+
+            if indexesFileContents {
+                let updates = try await scanner.extractTextContents(in: scannedFiles) {
+                    [weak self] progress in
+                    Task { @MainActor in
+                        guard self?.scanGeneration == generation else { return }
+                        self?.scanProgressStore.update(
+                            self?.scopedProgress(progress, sourceID: source.id)
+                        )
+                    }
+                }
+                try Task.checkCancellation()
+                guard scanGeneration == generation else { return }
+                try await database.updateTextContents(updates)
+            }
         } catch is CancellationError {
             // 用户取消扫描时保留上一次完整索引。
         } catch {
@@ -1240,6 +1388,19 @@ final class FileIndexCoordinator: ObservableObject {
         if !keepsScanningState {
             finishScan(generation: generation)
         }
+    }
+
+    private func scopedProgress(
+        _ progress: ScanProgress,
+        sourceID: UUID
+    ) -> ScanProgress {
+        let orderedIDs = sources.map(\.id).filter { scanningSourceIDs.contains($0) }
+        return ScanProgress(
+            discoveredCount: progress.discoveredCount,
+            currentPath: progress.currentPath,
+            sourceIndex: (orderedIDs.firstIndex(of: sourceID) ?? 0) + 1,
+            sourceCount: max(orderedIDs.count, 1)
+        )
     }
 
     private func finishScan(generation: UUID) {
@@ -1394,7 +1555,8 @@ final class FileIndexCoordinator: ObservableObject {
                 sourceID: source.id,
                 rootURL: restored.url,
                 events: events,
-                includesHiddenFiles: includesHiddenFiles
+                includesHiddenFiles: includesHiddenFiles,
+                extractsText: FileIndexPreferences.indexesFileContents
             )
             if !snapshot.scopes.isEmpty {
                 try await database.reconcileFiles(

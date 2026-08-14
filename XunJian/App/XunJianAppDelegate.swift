@@ -15,6 +15,7 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var preferenceObservation: AnyCancellable?
+    private var dismissObservation: AnyCancellable?
     private weak var appModel: AppModel?
 
     @MainActor
@@ -23,7 +24,8 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
         userData: String,
         error: NSErrorPointer
     ) {
-        guard let paths = pboard.propertyList(forType: .fileURL) as? [String] else {
+        let urls = Self.fileURLs(from: pboard)
+        guard !urls.isEmpty else {
             error?.pointee = NSError(
                 domain: "XunJian",
                 code: 1,
@@ -34,12 +36,17 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
         // Bring the app forward: without this the selection changes silently
         // while XunJian is still in the background.
         NSApplication.shared.activate(ignoringOtherApps: true)
-        for path in paths {
-            NotificationCenter.default.post(
-                name: .xunJianOpenExternalPath,
-                object: path
-            )
-        }
+        NotificationCenter.default.post(
+            name: .xunJianOpenExternalPath,
+            object: urls.map(\.path)
+        )
+    }
+
+    static func fileURLs(from pboard: NSPasteboard) -> [URL] {
+        (pboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [NSURL])?.map { $0 as URL } ?? []
     }
 
     // MARK: - Menu bar quick search
@@ -53,10 +60,22 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
 
         preferenceObservation = NotificationCenter.default
             .publisher(for: UserDefaults.didChangeNotification)
-            .map { _ in Self.isMenuBarSearchEnabled }
-            .removeDuplicates()
-            .sink { [weak self] enabled in
-                self?.setMenuBarSearchVisible(enabled)
+            .map { _ in (
+                Self.isMenuBarSearchEnabled,
+                UserDefaults.standard.string(forKey: AppLanguage.storageKey) ?? AppLanguage.system.rawValue
+            ) }
+            .removeDuplicates { lhs, rhs in
+                lhs.0 == rhs.0 && lhs.1 == rhs.1
+            }
+            .sink { [weak self] preference in
+                self?.setMenuBarSearchVisible(preference.0)
+                self?.refreshMenuBarLocalization()
+            }
+        dismissObservation = NotificationCenter.default
+            .publisher(for: .xunJianDismissMenuBarSearch)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.popover?.performClose(nil)
             }
         setMenuBarSearchVisible(Self.isMenuBarSearchEnabled)
     }
@@ -102,6 +121,17 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @MainActor
+    private func refreshMenuBarLocalization() {
+        statusItem?.button?.image = NSImage(
+            systemSymbolName: "magnifyingglass",
+            accessibilityDescription: AppLanguage.localized(
+                "寻简快速搜索",
+                english: "XunJian Quick Search"
+            )
+        )
+    }
+
+    @MainActor
     @objc private func toggleQuickSearch() {
         guard let popover, let button = statusItem?.button else { return }
         if popover.isShown {
@@ -117,5 +147,8 @@ extension Notification.Name {
     /// A path received from another app via the Services menu.
     static let xunJianOpenExternalPath = Notification.Name(
         "xunJianOpenExternalPath"
+    )
+    static let xunJianDismissMenuBarSearch = Notification.Name(
+        "com.xingmingbo.XunJian.dismissMenuBarSearch"
     )
 }

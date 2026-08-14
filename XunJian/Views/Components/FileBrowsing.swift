@@ -36,6 +36,32 @@ enum FileActivationBehavior: String, CaseIterable, Identifiable {
     }
 }
 
+/// Which file-table columns fit the current content width.
+///
+/// The table keeps a readable 640pt canvas. A narrower content area scrolls
+/// horizontally instead of compressing columns below their readable minima.
+enum FileTableLayout {
+    static let readableMinimumWidth: CGFloat = 640
+    static let categoryVisibleWidth: CGFloat = 640
+    static let locationVisibleWidth: CGFloat = 720
+
+    static func showsCategory(contentWidth: CGFloat) -> Bool {
+        contentWidth >= categoryVisibleWidth
+    }
+
+    static func showsLocation(contentWidth: CGFloat) -> Bool {
+        contentWidth >= locationVisibleWidth
+    }
+
+    static func minimumWidth(contentWidth: CGFloat) -> CGFloat {
+        max(contentWidth, readableMinimumWidth)
+    }
+
+    static func needsHorizontalScroll(contentWidth: CGFloat) -> Bool {
+        contentWidth < readableMinimumWidth
+    }
+}
+
 enum FileBrowseViewMode: String, CaseIterable, Identifiable {
     case list
     case grid
@@ -93,7 +119,10 @@ struct FileGridCard: View {
         .buttonStyle(SoftCardButtonStyle())
         .simultaneousGesture(TapGesture(count: 2).onEnded(onOpen))
         .onHover(perform: onHover)
-        .accessibilityLabel(Text(verbatim: "\(file.name)，\(Self.sizeText(file))"))
+        .accessibilityLabel(Text(verbatim: AppLanguage.joinedForAccessibility([
+            file.name,
+            Self.sizeText(file)
+        ])))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     }
 
@@ -219,6 +248,11 @@ struct FileBrowseToolbar: View {
     @Binding var sortAscending: Bool
     @Binding var viewMode: FileBrowseViewMode
 
+    @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 12
+    @ScaledMetric(relativeTo: .body) private var directionSide: CGFloat = 26
+    @ScaledMetric(relativeTo: .body) private var viewModeItemWidth: CGFloat = 30
+    @ScaledMetric(relativeTo: .body) private var viewModeItemHeight: CGFloat = 24
+
     /// Relevance only makes sense while a search is scoring results.
     private var sortOrders: [FileSortOrder] {
         FileSortOrder.allCases.filter { $0 != .relevance }
@@ -321,8 +355,8 @@ struct FileBrowseToolbar: View {
             sortAscending.toggle()
         } label: {
             Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-                .font(.system(size: 12, weight: .semibold))
-                .frame(width: 26, height: 26)
+                .font(.system(size: symbolSize, weight: .semibold))
+                .frame(width: directionSide, height: directionSide)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -338,9 +372,9 @@ struct FileBrowseToolbar: View {
                     viewMode = mode
                 } label: {
                     Image(systemName: mode.symbolName)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: symbolSize, weight: .medium))
                         .foregroundStyle(viewMode == mode ? Color.accentColor : Color.primary)
-                        .frame(width: 30, height: 24)
+                        .frame(width: viewModeItemWidth, height: viewModeItemHeight)
                         .background {
                             RoundedRectangle(cornerRadius: 5, style: .continuous)
                                 .fill(
@@ -361,5 +395,69 @@ struct FileBrowseToolbar: View {
             XunJianUI.Fill.control,
             in: RoundedRectangle(cornerRadius: 6, style: .continuous)
         )
+    }
+}
+
+/// Shared multi-select bar for All Files and category pages.
+struct FileBatchActionBar: View {
+    @EnvironmentObject private var appModel: AppModel
+    var contentWidth: CGFloat? = nil
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Label(
+                AppLanguage.localized(
+                    "已选择 \(appModel.selectedFileIDs.count) 项",
+                    english: "\(appModel.selectedFileIDs.count) selected"
+                ),
+                systemImage: "checkmark.circle.fill"
+            )
+            Spacer(minLength: 8)
+            Menu {
+                if appModel.categories.isEmpty {
+                    Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
+                } else {
+                    ForEach(appModel.categories) { category in
+                        Button {
+                            appModel.assignSelectedFiles(to: category)
+                        } label: {
+                            Label(category.localizedDisplayName, systemImage: category.symbolName)
+                        }
+                    }
+                }
+            } label: {
+                Label(
+                    AppLanguage.localized("批量加分类", english: "Add to Category"),
+                    systemImage: "folder.badge.plus"
+                )
+            }
+            .fixedSize()
+            Button(role: .destructive) {
+                appModel.requestBatchTrash()
+            } label: {
+                Label(
+                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                    systemImage: "trash"
+                )
+            }
+            Button {
+                appModel.selectedFileIDs = []
+            } label: {
+                Label(
+                    AppLanguage.localized("取消选择", english: "Clear Selection"),
+                    systemImage: "xmark"
+                )
+            }
+        }
+        .font(.caption)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            XunJianUI.Fill.selectedSoft,
+            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.chip, style: .continuous)
+        )
+        .padding(.horizontal, contentWidth.map { XunJianUI.pagePadding(for: $0) } ?? 0)
+        .padding(.bottom, 10)
+        .xunjianAnimation(value: appModel.selectedFileIDs.count > 1)
     }
 }

@@ -136,6 +136,13 @@ extension View {
 
 struct SearchField: View {
     @Binding var text: String
+    /// Overrides the default "search local files" prompt when the field is
+    /// scoped (category page) rather than global.
+    var prompt: String? = nil
+    var accessibilityHint: String? = nil
+    /// Called when a recent-search chip is chosen. Home uses this to jump to
+    /// All Files; other pages just fill the field via `text`.
+    var onHistorySelect: ((String) -> Void)? = nil
     @FocusState private var isFocused: Bool
 
     /// Shared so the field can offer recent searches without every call site
@@ -160,11 +167,12 @@ struct SearchField: View {
     }
 
     var body: some View {
+        let historyOffset = fieldHeight + 6
         searchRow
             .overlay(alignment: .topLeading) {
                 if showsHistory {
                     historyPanel
-                        .alignmentGuide(.top) { _ in -(fieldHeight + 6) }
+                        .alignmentGuide(.top) { _ in -historyOffset }
                 }
             }
             // Lifts the field above the content below it in the shell's VStack
@@ -200,7 +208,7 @@ struct SearchField: View {
             TextField(
                 "",
                 text: $text,
-                prompt: Text(verbatim: AppLanguage.localized(
+                prompt: Text(verbatim: prompt ?? AppLanguage.localized(
                     "搜索本地文件…",
                     english: "Search local files…"
                 ))
@@ -212,6 +220,10 @@ struct SearchField: View {
             .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                 "搜索文件",
                 english: "Search Files"
+            )))
+            .accessibilityHint(Text(verbatim: accessibilityHint ?? AppLanguage.localized(
+                "搜索已索引的本地文件",
+                english: "Searches indexed local files"
             )))
 
             if !text.isEmpty {
@@ -294,6 +306,7 @@ struct SearchField: View {
                 text = entry
                 history.record(entry)
                 dismissedHistoryForCurrentFocus = true
+                onHistorySelect?(entry)
             } label: {
                 HStack(spacing: 8) {
                     Image(systemName: "clock.arrow.circlepath")

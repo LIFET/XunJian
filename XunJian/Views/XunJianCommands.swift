@@ -11,6 +11,9 @@ extension Notification.Name {
     static let xunJianToggleInspector = Notification.Name(
         "com.xingmingbo.XunJian.toggleInspector"
     )
+    static let xunJianRevealInAllFiles = Notification.Name(
+        "com.xingmingbo.XunJian.revealInAllFiles"
+    )
 }
 
 /// The app's menu bar.
@@ -24,6 +27,7 @@ extension Notification.Name {
 /// past what the type checker could resolve.
 struct XunJianCommands: Commands {
     @ObservedObject var appModel: AppModel
+    @ObservedObject var undo: UndoCoordinator
 
     @AppStorage("allFiles.viewMode") private var viewMode = FileBrowseViewMode.list
 
@@ -109,14 +113,14 @@ struct XunJianCommands: Commands {
 
     @CommandsBuilder
     private var editCommands: some Commands {
-        // Replaces the system Undo item, which targets the responder chain and
-        // would otherwise sit disabled while our own stack has entries.
-        CommandGroup(replacing: .undoRedo) {
-            Button(appModel.undoTitle) {
+        // Keep the native responder-chain Undo/Redo items intact for text
+        // fields. File-operation undo uses a separate shortcut and label.
+        CommandGroup(after: .undoRedo) {
+            Button(undo.nextTitle ?? AppLanguage.localized("撤销", english: "Undo")) {
                 appModel.performUndo()
             }
-            .keyboardShortcut("z", modifiers: .command)
-            .disabled(!appModel.canUndo)
+            .keyboardShortcut("z", modifiers: [.command, .option])
+            .disabled(!undo.canUndo)
         }
 
         CommandGroup(after: .pasteboard) {
@@ -128,11 +132,11 @@ struct XunJianCommands: Commands {
 
             Divider()
 
-            Button(AppLanguage.localized("全选", english: "Select All")) {
+            Button(AppLanguage.localized("全选文件", english: "Select All Files")) {
                 appModel.selectAllDisplayedFiles()
             }
-            .keyboardShortcut("a", modifiers: .command)
-            .disabled(appModel.browseSnapshot.isEmpty)
+            .keyboardShortcut("a", modifiers: [.command, .option])
+            .disabled(appModel.commandTargetFiles.isEmpty)
 
             Button(AppLanguage.localized("取消选择", english: "Deselect All")) {
                 appModel.selectedFileIDs = []

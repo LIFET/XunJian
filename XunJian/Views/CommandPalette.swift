@@ -37,12 +37,18 @@ struct PaletteCommand: Identifiable {
 /// opening the palette never touches the database.
 struct CommandPaletteView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.openSettings) private var openSettings
     @Binding var isPresented: Bool
     @Binding var selection: NavigationDestination?
 
     @State private var query = ""
     @State private var highlightedIndex = 0
+    @State private var displayedCommands: [PaletteCommand] = []
+    @State private var filterTask: Task<Void, Never>?
     @FocusState private var isFieldFocused: Bool
+
+    @ScaledMetric(relativeTo: .body) private var commandIconSize: CGFloat = 14
+    @ScaledMetric(relativeTo: .body) private var rowIconSize: CGFloat = 13
 
     private static let maximumFileResults = 8
 
@@ -63,14 +69,20 @@ struct CommandPaletteView: View {
                 .padding(.horizontal, 24)
         }
         .onExitCommand(perform: dismiss)
-        .onAppear { isFieldFocused = true }
+        .onAppear {
+            isFieldFocused = true
+            scheduleCommandFilter(immediate: true)
+        }
+        .onDisappear { filterTask?.cancel() }
     }
 
+    @ViewBuilder
     private var panel: some View {
+        let visibleCommands = displayedCommands
         VStack(spacing: 0) {
             queryField
 
-            if commands.isEmpty {
+            if visibleCommands.isEmpty {
                 Text(verbatim: AppLanguage.localized(
                     "没有匹配的命令或文件",
                     english: "No matching commands or files"
@@ -82,7 +94,7 @@ struct CommandPaletteView: View {
                 .padding(.vertical, 18)
             } else {
                 Divider()
-                resultList
+                resultList(visibleCommands)
             }
         }
         .background {
@@ -104,7 +116,7 @@ struct CommandPaletteView: View {
     private var queryField: some View {
         HStack(spacing: 10) {
             Image(systemName: "command")
-                .font(.system(size: 14, weight: .medium))
+                .font(.system(size: commandIconSize, weight: .medium))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
 
@@ -120,7 +132,10 @@ struct CommandPaletteView: View {
             .font(.title3)
             .focused($isFieldFocused)
             .onSubmit(runHighlighted)
-            .onChange(of: query) { _, _ in highlightedIndex = 0 }
+            .onChange(of: query) { _, _ in
+                highlightedIndex = 0
+                scheduleCommandFilter(immediate: false)
+            }
             .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                 "命令面板搜索",
                 english: "Command Palette Search"
@@ -138,12 +153,12 @@ struct CommandPaletteView: View {
         }
     }
 
-    private var resultList: some View {
+    private func resultList(_ visibleCommands: [PaletteCommand]) -> some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(commands.enumerated()), id: \.element.id) { index, command in
-                        if shouldShowGroupHeader(at: index) {
+                    ForEach(Array(visibleCommands.enumerated()), id: \.element.id) { index, command in
+                        if shouldShowGroupHeader(at: index, in: visibleCommands) {
                             Text(verbatim: command.group.localizedTitle)
                                 .font(.caption.weight(.semibold))
                                 .foregroundStyle(.tertiary)
@@ -172,7 +187,7 @@ struct CommandPaletteView: View {
         } label: {
             HStack(spacing: 10) {
                 Image(systemName: command.symbolName)
-                    .font(.system(size: 13, weight: .medium))
+                    .font(.system(size: rowIconSize, weight: .medium))
                     .foregroundStyle(isHighlighted ? Color.accentColor : .secondary)
                     .frame(width: 20)
 
@@ -201,26 +216,64 @@ struct CommandPaletteView: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 6)
         .accessibilityLabel(Text(verbatim: command.subtitle.map {
-            "\(command.title)，\($0)"
+            AppLanguage.joinedForAccessibility([command.title, $0])
         } ?? command.title))
         .accessibilityAddTraits(isHighlighted ? [.isButton, .isSelected] : .isButton)
     }
 
     // MARK: - Commands
 
-    private var commands: [PaletteCommand] {
+    private func scheduleCommandFilter(immediate: Bool) {
+        filterTask?.cancel()
+        filterTask = Task {
+            if !immediate {
+                try? await Task.sleep(for: .milliseconds(120))
+            }
+            guard !Task.isCancelled else { return }
+            await rebuildCommands()
+        }
+    }
+
+    @MainActor
+    private func rebuildCommands() async {
         let all = navigationCommands + actionCommands
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-
         guard !trimmed.isEmpty else {
-            return all + fileCommands(from: appModel.recentFiles)
+            displayedCommands = all + fileCommands(from: appModel.recentFiles)
+            return
         }
 
-        let matched = all.filter { Self.matches($0.title, query: trimmed) }
+        let matched = all.filter { QuickSearchMatching.matches($0.title, query: trimmed) }
         let files = appModel.files
-            .filter { Self.matches($0.name, query: trimmed) }
-            .prefix(Self.maximumFileResults)
-        return matched + fileCommands(from: Array(files))
+        let limit = Self.maximumFileResults
+        let result = await Task.detached(priority: .userInitiated) {
+            QuickSearchMatching.prefixMatches(
+                in: files,
+                query: trimmed,
+                limit: limit
+            )
+        }.value
+        guard !Task.isCancelled else { return }
+        var commands = matched + fileCommands(from: result.files)
+        if result.remainingCount > 0 {
+            commands.append(moreFilesCommand(remaining: result.remainingCount, query: trimmed))
+        }
+        displayedCommands = commands
+    }
+
+    private func moreFilesCommand(remaining: Int, query: String) -> PaletteCommand {
+        PaletteCommand(
+            id: "files-more",
+            title: AppLanguage.localized(
+                "在所有文件中查看其余 \(remaining) 条",
+                english: "See remaining \(remaining) in All Files"
+            ),
+            symbolName: "ellipsis.circle",
+            group: .file
+        ) {
+            appModel.searchText = query
+            selection = .allFiles
+        }
     }
 
     private var navigationCommands: [PaletteCommand] {
@@ -236,11 +289,12 @@ struct CommandPaletteView: View {
                 title: AppLanguage.localized("分类", english: "Categories"),
                 symbol: "folder"
             ),
-            navigationCommand(
-                .settings,
+            PaletteCommand(
+                id: "navigation-settings-window",
                 title: AppLanguage.localized("设置", english: "Settings"),
-                symbol: "gearshape"
-            )
+                symbolName: "gearshape",
+                group: .navigation
+            ) { openSettings() }
         ]
         items += appModel.categories.map { category in
             navigationCommand(
@@ -336,17 +390,23 @@ struct CommandPaletteView: View {
     }
 
     private func fileCommands(from files: [IndexedFile]) -> [PaletteCommand] {
-        files.map { file in
-            PaletteCommand(
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        return files.map { file in
+            let pathOnly = !trimmed.isEmpty
+                && QuickSearchMatching.matchedPathOnly(file: file, query: trimmed)
+            return PaletteCommand(
                 id: "file-\(file.id)",
                 title: file.name,
-                subtitle: file.parentPath,
+                subtitle: pathOnly
+                    ? AppLanguage.localized(
+                        "路径 · \(file.parentPath)",
+                        english: "Path · \(file.parentPath)"
+                    )
+                    : file.parentPath,
                 symbolName: file.kind.symbolName,
                 group: .file
             ) {
-                appModel.selectedFileID = file.id
-                // Reveal in the file list rather than launching the file:
-                // the palette is a finder, and ⌘↓ / double-click still open.
+                appModel.revealInAllFiles(file)
                 selection = .allFiles
             }
         }
@@ -354,30 +414,23 @@ struct CommandPaletteView: View {
 
     // MARK: - Behaviour
 
-    /// Case- and diacritic-insensitive substring match. Deliberately not a
-    /// fuzzy subsequence match: with file names in the list, subsequence
-    /// matching produces too many irrelevant hits to scan quickly.
-    static func matches(_ candidate: String, query: String) -> Bool {
-        candidate.range(
-            of: query,
-            options: [.caseInsensitive, .diacriticInsensitive]
-        ) != nil
-    }
-
-    private func shouldShowGroupHeader(at index: Int) -> Bool {
+    private func shouldShowGroupHeader(
+        at index: Int,
+        in visibleCommands: [PaletteCommand]
+    ) -> Bool {
         guard index > 0 else { return true }
-        return commands[index].group != commands[index - 1].group
+        return visibleCommands[index].group != visibleCommands[index - 1].group
     }
 
     private func moveHighlight(by offset: Int) {
-        guard !commands.isEmpty else { return }
+        guard !displayedCommands.isEmpty else { return }
         let next = highlightedIndex + offset
-        highlightedIndex = min(max(next, 0), commands.count - 1)
+        highlightedIndex = min(max(next, 0), displayedCommands.count - 1)
     }
 
     private func runHighlighted() {
-        guard commands.indices.contains(highlightedIndex) else { return }
-        run(commands[highlightedIndex])
+        guard displayedCommands.indices.contains(highlightedIndex) else { return }
+        run(displayedCommands[highlightedIndex])
     }
 
     private func run(_ command: PaletteCommand) {

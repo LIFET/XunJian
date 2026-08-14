@@ -15,3 +15,15 @@ final class ScanProgressStore: ObservableObject {
         self.progress = progress
     }
 }
+
+/// Search-in-progress flag, kept off `FileIndexCoordinator` so typing into
+/// search does not redraw the sidebar, inspector, and overlay pages.
+@MainActor
+final class SearchProgressStore: ObservableObject {
+    @Published private(set) var isSearching = false
+
+    func update(_ isSearching: Bool) {
+        guard self.isSearching != isSearching else { return }
+        self.isSearching = isSearching
+    }
+}

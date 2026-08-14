@@ -1704,8 +1704,8 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(pendingCalls, [.start(.codex, .browser)])
 
         await gate.open()
-        await pendingLogin.value
-        await model.beginOAuthLogin(for: .codex)
+        _ = await pendingLogin.value
+        _ = await model.beginOAuthLogin(for: .codex)
         let completedCalls = await fake.calls()
         XCTAssertEqual(completedCalls, [.start(.codex, .browser)])
         XCTAssertEqual(
@@ -1741,7 +1741,7 @@ final class OAuthBridgeTests: XCTestCase {
         await waitForCallCount(1, fake: fake)
         await model.disconnectOAuthProvider(.grok)
         await gate.open()
-        await pendingLogin.value
+        _ = await pendingLogin.value
 
         XCTAssertEqual(model.aiOAuthStates[.grok], .disconnected)
         let calls = await fake.calls()

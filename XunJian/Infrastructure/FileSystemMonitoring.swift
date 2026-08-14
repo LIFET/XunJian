@@ -70,6 +70,7 @@ struct FileSystemChangeEvent: Hashable, Sendable {
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
+            .precomposedStringWithCanonicalMapping
     }
 }
 
@@ -254,5 +255,6 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
             .resolvingSymlinksInPath()
             .standardizedFileURL
             .path
+            .precomposedStringWithCanonicalMapping
     }
 }

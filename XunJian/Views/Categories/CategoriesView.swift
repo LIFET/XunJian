@@ -12,6 +12,10 @@ struct CategoriesView: View {
     @State private var categoryToDelete: FileCategory?
     @State private var hoveredCategoryID: UUID?
     @State private var hoveredFileID: String?
+    @State private var categoryQuery = ""
+    @State private var displayedFiles: [IndexedFile] = []
+    @State private var categoryFileCount = 0
+    @State private var displayedSignature: Int?
 
     // Browsing preferences for the category detail page (N05). Persisted so
     // they survive page switches and relaunches, matching "All Files".
@@ -60,10 +64,18 @@ struct CategoriesView: View {
                 ?? AppLanguage.localized("分类", english: "Categories")
         )
         .onAppear { clearSelectionIfHidden() }
-        // Keyed on the things that can actually hide a file, rather than on a
-        // freshly built ID array (which allocated and compared on every render).
-        .onChange(of: selectedCategory?.id) { _, _ in clearSelectionIfHidden() }
+        .task(id: categoryFilesRefreshKey) {
+            await refreshCategoryFilesSnapshot()
+        }
+        .onChange(of: selectedCategory?.id) { _, _ in
+            categoryQuery = ""
+            displayedFiles = []
+            categoryFileCount = 0
+            displayedSignature = nil
+            clearSelectionIfHidden()
+        }
         .onChange(of: selectedKind) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: categoryQuery) { _, _ in clearSelectionIfHidden() }
         .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
         .sheet(isPresented: $showsNewCategory) {
             CategoryEditorSheet(
@@ -254,7 +266,10 @@ struct CategoriesView: View {
                         hoveredCategoryID = isHovering ? category.id : nil
                     }
                     .accessibilityLabel(
-                        "\(category.localizedDisplayName)，\(AppLanguage.fileCount(appModel.fileCount(in: category)))"
+                        AppLanguage.joinedForAccessibility([
+                            category.localizedDisplayName,
+                            AppLanguage.fileCount(appModel.fileCount(in: category))
+                        ])
                     )
                     .contextMenu {
                         Button(AppLanguage.localized("修改名称…", english: "Rename…")) {
@@ -276,17 +291,19 @@ struct CategoriesView: View {
         _ category: FileCategory,
         contentWidth: CGFloat
     ) -> some View {
-        // Scanned and sorted once per render. Previously this ran three times
-        // (empty check, list, and selection cleanup), each a full filter+sort.
-        let allFiles = appModel.files(in: category)
-        let files = Self.displayed(
-            allFiles,
-            kind: selectedKind,
-            sortOrder: sortOrder,
-            ascending: sortAscending
-        )
+        let files = displayedFiles
 
-        if allFiles.isEmpty {
+        if displayedSignature == nil {
+            ProgressView()
+                .controlSize(.small)
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
+                )
+                .accessibilityLabel(
+                    AppLanguage.localized("正在准备文件列表", english: "Preparing file list")
+                )
+        } else if categoryFileCount == 0 {
             ContentUnavailableView(
                 AppLanguage.localized(
                     "这个分类里还没有文件",
@@ -310,12 +327,26 @@ struct CategoriesView: View {
             )
         } else {
             VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+                SearchField(
+                    text: $categoryQuery,
+                    prompt: AppLanguage.localized(
+                        "在此分类中搜索…",
+                        english: "Search in this category…"
+                    ),
+                    accessibilityHint: AppLanguage.localized(
+                        "只搜索当前分类中的文件",
+                        english: "Searches only files in this category"
+                    )
+                )
                 FileBrowseToolbar(
                     selectedKind: $selectedKind,
                     sortOrder: $sortOrder,
                     sortAscending: $sortAscending,
                     viewMode: $viewMode
                 )
+                if appModel.selectedFileIDs.count > 1 {
+                    FileBatchActionBar(contentWidth: contentWidth)
+                }
 
                 if files.isEmpty {
                     kindFilterEmptyState
@@ -344,12 +375,13 @@ struct CategoriesView: View {
             )
         } description: {
             Text(verbatim: AppLanguage.localized(
-                "这个分类里没有该类型的文件。",
-                english: "This category has no files of that type."
+                "没有符合当前搜索或类型筛选的文件。",
+                english: "No files match the current search or type filter."
             ))
         } actions: {
-            Button(AppLanguage.localized("显示所有类型", english: "Show All Types")) {
+            Button(AppLanguage.localized("显示全部", english: "Show All")) {
                 selectedKind = nil
+                categoryQuery = ""
             }
         }
         .frame(
@@ -447,15 +479,21 @@ struct CategoriesView: View {
     }
 
     /// Applies the page's type filter and sort order.
-    static func displayed(
+    nonisolated static func displayed(
         _ files: [IndexedFile],
         kind: FileKind?,
+        query: String = "",
         sortOrder: FileSortOrder,
         ascending: Bool
     ) -> [IndexedFile] {
-        let filtered = kind.map { kind in
-            files.filter { $0.kind == kind }
-        } ?? files
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = files.filter { file in
+            if let kind, file.kind != kind { return false }
+            if !trimmed.isEmpty, !QuickSearchMatching.matches(file: file, query: trimmed) {
+                return false
+            }
+            return true
+        }
         return sortOrder.sorted(filtered, ascending: ascending)
     }
 
@@ -472,9 +510,67 @@ struct CategoriesView: View {
         var visible = Set<String>()
         for file in appModel.files(in: selectedCategory)
         where selectedKind == nil || file.kind == selectedKind {
-            visible.insert(file.id)
+            if categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || QuickSearchMatching.matches(file: file, query: categoryQuery) {
+                visible.insert(file.id)
+            }
         }
         appModel.clearSelectionIfHidden(from: visible)
+    }
+
+    private var categoryFilesRefreshKey: CategoryFilesRefreshKey {
+        CategoryFilesRefreshKey(
+            filesRevision: appModel.filesRevision,
+            categoryRevision: appModel.categoryRevision,
+            categoryID: selectedCategory?.id,
+            kind: selectedKind,
+            query: categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines),
+            sortOrder: sortOrder,
+            ascending: sortAscending
+        )
+    }
+
+    private func refreshCategoryFilesSnapshot() async {
+        guard let selectedCategory else {
+            appModel.updateCommandTargetFiles([])
+            displayedFiles = []
+            categoryFileCount = 0
+            displayedSignature = nil
+            return
+        }
+
+        let signature = categoryFilesRefreshKey.signature
+        guard displayedSignature != signature else {
+            appModel.updateCommandTargetFiles(displayedFiles)
+            return
+        }
+
+        let allFiles = appModel.files
+        let links = appModel.fileCategoryLinks
+        let categoryID = selectedCategory.id
+        let kind = selectedKind
+        let query = categoryQuery
+        let order = sortOrder
+        let ascending = sortAscending
+        let result = await Task.detached(priority: .userInitiated) {
+            let inCategory = allFiles.filter { file in
+                links[file.id]?.contains(categoryID) == true
+            }
+            let displayed = CategoriesView.displayed(
+                inCategory,
+                kind: kind,
+                query: query,
+                sortOrder: order,
+                ascending: ascending
+            )
+            return (inCategory.count, displayed)
+        }.value
+        guard !Task.isCancelled else { return }
+        categoryFileCount = result.0
+        displayedFiles = result.1
+        displayedSignature = signature
+        appModel.updateCommandTargetFiles(result.1)
+        clearSelectionIfHidden()
     }
 
     private var deleteMessage: String {
@@ -491,6 +587,28 @@ struct CategoriesView: View {
             return XunJianUI.Fill.selectedSoft
         }
         return hoveredFileID == file.id ? XunJianUI.Fill.hover : .clear
+    }
+}
+
+private struct CategoryFilesRefreshKey: Equatable {
+    let filesRevision: UInt64
+    let categoryRevision: UInt64
+    let categoryID: UUID?
+    let kind: FileKind?
+    let query: String
+    let sortOrder: FileSortOrder
+    let ascending: Bool
+
+    var signature: Int {
+        var hasher = Hasher()
+        hasher.combine(filesRevision)
+        hasher.combine(categoryRevision)
+        hasher.combine(categoryID)
+        hasher.combine(kind)
+        hasher.combine(query)
+        hasher.combine(sortOrder)
+        hasher.combine(ascending)
+        return hasher.finalize()
     }
 }
 

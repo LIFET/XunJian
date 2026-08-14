@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import Quartz
 import QuickLookThumbnailing
@@ -9,22 +10,33 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     case invalidName
     case notWritable
     case destinationExists(String)
+    case fileIdentityChanged
     case operationFailed(String)
 
     var errorDescription: String? {
         switch self {
         case .fileNotFound:
-            "文件已经不存在，索引将在重新扫描后更新。"
+            AppLanguage.localized("文件已经不存在，索引将在重新扫描后更新。", english: "The file no longer exists. The index will update after a rescan.")
         case .invalidName:
-            "文件名不能为空，也不能包含“/”或“:”。"
+            AppLanguage.localized("文件名不能为空，也不能包含“/”或“:”。", english: "The file name cannot be empty or contain “/” or “:”.")
         case .notWritable:
-            "当前位置不可写，无法完成这个文件操作。"
+            AppLanguage.localized("当前位置不可写，无法完成这个文件操作。", english: "This location is not writable.")
         case let .destinationExists(name):
-            "目标位置已经存在“\(name)”，请换一个名称或位置。"
+            AppLanguage.localized("目标位置已经存在“\(name)”，请换一个名称或位置。", english: "“\(name)” already exists at the destination. Choose another name or location.")
+        case .fileIdentityChanged:
+            AppLanguage.localized("文件已经被其他操作替换，已停止操作以避免修改错误的文件。", english: "The file was replaced by another process. The operation was stopped to avoid modifying the wrong file.")
         case let .operationFailed(message):
-            "文件操作失败：\(message)"
+            AppLanguage.localized("文件操作失败：\(message)", english: "File operation failed: \(message)")
         }
     }
+}
+
+/// Stable identity of one filesystem object. Paths alone are insufficient for
+/// undo because another process can replace the item at the same path.
+struct FileSystemObjectIdentity: Equatable, Sendable {
+    let device: UInt64
+    let inode: UInt64
+    let fileType: UInt32
 }
 
 actor FileOperationService {
@@ -32,6 +44,48 @@ actor FileOperationService {
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+    }
+
+    func identity(of url: URL) throws -> FileSystemObjectIdentity {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else {
+            throw FileOperationError.fileNotFound
+        }
+        return FileSystemObjectIdentity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino),
+            fileType: UInt32(metadata.st_mode) & UInt32(S_IFMT)
+        )
+    }
+
+    func requireIdentity(
+        _ expected: FileSystemObjectIdentity,
+        at url: URL
+    ) throws {
+        guard try identity(of: url) == expected else {
+            throw FileOperationError.fileIdentityChanged
+        }
+    }
+
+    /// Revalidates the object that was present when the index row was built.
+    /// A path alone is not sufficient because another process can replace its
+    /// contents between scanning and a destructive action.
+    func requireIndexedIdentity(_ file: IndexedFile) throws {
+        let values: URLResourceValues
+        do {
+            values = try file.url.resourceValues(forKeys: IndexedFileIdentity.resourceKeys)
+        } catch {
+            throw FileOperationError.fileNotFound
+        }
+        let currentID = IndexedFileIdentity.id(
+            sourceID: file.sourceID,
+            url: file.url,
+            values: values,
+            fileManager: fileManager
+        )
+        guard currentID == file.id else {
+            throw FileOperationError.fileIdentityChanged
+        }
     }
 
     func rename(fileAt sourceURL: URL, to proposedName: String) throws -> URL {
@@ -154,7 +208,12 @@ actor ThumbnailService {
     }()
 
     private var running = 0
-    private var waiters: [CheckedContinuation<Void, Never>] = []
+    private struct Waiter {
+        let id: UUID
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private var waiters: [Waiter] = []
 
     /// Approximate backing-store cost in bytes, used to bound the cache by memory
     /// rather than by entry count alone (a 512pt @2x thumbnail costs ~4MB).
@@ -170,7 +229,7 @@ actor ThumbnailService {
             return cached
         }
 
-        await acquire()
+        guard await acquire() else { return nil }
         defer { release() }
         guard !Task.isCancelled else { return nil }
 
@@ -197,14 +256,29 @@ actor ThumbnailService {
         }
     }
 
-    private func acquire() async {
+    private func acquire() async -> Bool {
         if running < Self.maxConcurrent {
             running += 1
-            return
+            return true
         }
-        await withCheckedContinuation { continuation in
-            waiters.append(continuation)
+        let waiterID = UUID()
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                if Task.isCancelled {
+                    continuation.resume(returning: false)
+                } else {
+                    waiters.append(Waiter(id: waiterID, continuation: continuation))
+                }
+            }
+        } onCancel: {
+            Task { await self.cancelWaiter(waiterID) }
         }
+    }
+
+    private func cancelWaiter(_ id: UUID) {
+        guard let index = waiters.firstIndex(where: { $0.id == id }) else { return }
+        let waiter = waiters.remove(at: index)
+        waiter.continuation.resume(returning: false)
     }
 
     private func release() {
@@ -212,7 +286,7 @@ actor ThumbnailService {
             running -= 1
             return
         }
-        waiters.removeFirst().resume()
+        waiters.removeFirst().continuation.resume(returning: true)
     }
 }
 

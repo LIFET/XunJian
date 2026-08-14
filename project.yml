@@ -38,12 +38,14 @@ targets:
     info:
       path: XunJian/Info.plist
       properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSServices:
           - NSMenuItem:
               default: 用寻简打开
             NSMessage: openPathsService
             NSSendTypes:
-              - NSFilenamesPboardType
+              - public.file-url
     entitlements:
       path: XunJian/XunJian.entitlements
       properties:

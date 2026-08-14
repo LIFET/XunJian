@@ -11,7 +11,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
 
     static var selected: AppLanguage {
         UserDefaults.standard.string(forKey: storageKey)
-            .flatMap(AppLanguage.init(rawValue:)) ?? .simplifiedChinese
+            .flatMap(AppLanguage.init(rawValue:)) ?? .system
     }
 
     var locale: Locale {
@@ -51,6 +51,15 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     static func fileCount(_ count: Int) -> String {
         guard selected.usesEnglish else { return "\(count) 个文件" }
         return count == 1 ? "1 file" : "\(count) files"
+    }
+
+    /// VoiceOver list separator. English uses a comma; Chinese uses a dunhao.
+    static var listSeparator: String {
+        selected.usesEnglish ? ", " : "、"
+    }
+
+    static func joinedForAccessibility(_ parts: [String]) -> String {
+        parts.filter { !$0.isEmpty }.joined(separator: listSeparator)
     }
 
     static func localizedRuntimeMessage(_ message: String) -> String {
@@ -545,7 +554,7 @@ struct XunJianApp: App {
     @StateObject private var appModel = AppModel()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
-    @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.simplifiedChinese.rawValue
+    @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
     // Menu bar quick search is an `NSStatusItem` owned by the app delegate
     // rather than a `MenuBarExtra` scene, which hangs the XCTest runner.
     var body: some Scene {
@@ -557,12 +566,14 @@ struct XunJianApp: App {
         Window(AppLanguage.localized("寻简", english: "XunJian"), id: "main") {
             AppShellView()
                 .environmentObject(appModel)
+                .environmentObject(appModel.oauth)
+                .environmentObject(appModel.ai)
                 .preferredColorScheme(
                     AppAppearance(rawValue: appearance)?.colorScheme
                 )
                 .environment(
                     \.locale,
-                    AppLanguage(rawValue: language)?.locale ?? Locale(identifier: "zh_CN")
+                    AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
                 )
                 .frame(minWidth: 360, minHeight: 600)
                 .task { appDelegate.attachMenuBarSearch(appModel: appModel) }
@@ -583,7 +594,7 @@ struct XunJianApp: App {
             SidebarCommands()
             // `XunJianCommands` supplies its own `.newItem` group; replacing it
             // here as well would drop those items.
-            XunJianCommands(appModel: appModel)
+            XunJianCommands(appModel: appModel, undo: appModel.undo)
         }
     }
 
@@ -591,10 +602,12 @@ struct XunJianApp: App {
         Settings {
             SettingsView()
                 .environmentObject(appModel)
+                .environmentObject(appModel.oauth)
+                .environmentObject(appModel.ai)
                 .preferredColorScheme(AppAppearance(rawValue: appearance)?.colorScheme)
                 .environment(
                     \.locale,
-                    AppLanguage(rawValue: language)?.locale ?? Locale(identifier: "zh_CN")
+                    AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
                 )
                 .frame(minWidth: 360, minHeight: 520)
         }

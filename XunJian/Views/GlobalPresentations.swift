@@ -35,6 +35,7 @@ struct GlobalPresentations: ViewModifier {
 
 private struct CommandPalettePresentation: ViewModifier {
     @Environment(\.locale) private var locale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: NavigationDestination?
     @Binding var isPresented: Bool
 
@@ -47,12 +48,16 @@ private struct CommandPalettePresentation: ViewModifier {
                 if isPresented {
                     CommandPaletteView(isPresented: $isPresented, selection: $selection)
                         .environment(\.locale, locale)
-                        .transition(
-                            .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
-                        )
+                        .transition(paletteTransition)
                 }
             }
             .xunjianAnimation(XunJianUI.overlayAnimation, value: isPresented)
+    }
+
+    private var paletteTransition: AnyTransition {
+        reduceMotion
+            ? .opacity
+            : .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
     }
 }
 

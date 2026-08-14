@@ -48,7 +48,8 @@ struct AppShellView: View {
 
                     TrashUndoBanner(
                         undo: appModel.lastTrashUndo,
-                        onUndo: { appModel.undoLastTrash() }
+                        onUndo: { appModel.undoLastTrash() },
+                        onDismiss: { appModel.dismissTrashUndoBanner() }
                     )
 
                     DatabaseUnavailableBanner(
@@ -98,7 +99,16 @@ struct AppShellView: View {
             }
         }
         return navigation
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianRevealInAllFiles)) { _ in
+                selection = .allFiles
+            }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearch)) { _ in
+                // Category detail already has its own field; jumping to All
+                // Files made ⌘F feel like it abandoned the page.
+                if case .category = selection {
+                    NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
+                    return
+                }
                 selection = .allFiles
                 Task { @MainActor in
                     NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
@@ -124,9 +134,16 @@ struct AppShellView: View {
                 showsGlobalNewCategory = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianOpenExternalPath)) { notification in
-                guard let path = notification.object as? String else { return }
+                let paths: [String]
+                if let batch = notification.object as? [String] {
+                    paths = batch
+                } else if let path = notification.object as? String {
+                    paths = [path]
+                } else {
+                    return
+                }
                 selection = .allFiles
-                appModel.handleExternalPath(path)
+                appModel.handleExternalPaths(paths)
             }
             .modifier(GlobalPresentations(selection: $selection))
             .alert(
@@ -322,7 +339,12 @@ struct AppShellView: View {
             // Keep the file list mounted. Recreating the table on every
             // sidebar click was the remaining page-switch hitch after the
             // global selection animation was removed.
-            AllFilesView(windowWidth: windowWidth, contentWidth: contentWidth)
+            AllFilesView(
+                windowWidth: windowWidth,
+                contentWidth: contentWidth,
+                isVisible: showsAllFiles
+            )
+                .environmentObject(appModel.searchProgressStore)
                 .disabled(!showsAllFiles || !appModel.isDatabaseAvailable)
                 .opacity(showsAllFiles ? 1 : 0)
                 .allowsHitTesting(showsAllFiles)
@@ -344,10 +366,16 @@ struct AppShellView: View {
     ) -> some View {
         switch current {
         case .home:
-            HomeView { kind in
-                appModel.selectedKind = kind
-                selection = .allFiles
-            }
+            HomeView(
+                openAllFiles: { kind in
+                    appModel.selectedKind = kind
+                    selection = .allFiles
+                },
+                searchAllFiles: { query in
+                    appModel.searchText = query
+                    selection = .allFiles
+                }
+            )
             .disabled(!appModel.isDatabaseAvailable)
         case .allFiles:
             EmptyView()
@@ -462,6 +490,7 @@ private struct ScanStatusBanner: View {
 private struct TrashUndoBanner: View {
     let undo: FileIndexCoordinator.TrashUndo?
     let onUndo: () -> Void
+    let onDismiss: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
@@ -469,15 +498,25 @@ private struct TrashUndoBanner: View {
             if let undo {
                 HStack(spacing: 8) {
                     Label(
-                        AppLanguage.localized(
-                            "“\(undo.originalURL.lastPathComponent)”已移到废纸篓。",
-                            english: "“\(undo.originalURL.lastPathComponent)” was moved to the Trash."
-                        ),
+                        undo.fileCount == 1
+                            ? AppLanguage.localized(
+                                "“\(undo.items[0].originalURL.lastPathComponent)”已移到废纸篓。",
+                                english: "“\(undo.items[0].originalURL.lastPathComponent)” was moved to the Trash."
+                            )
+                            : AppLanguage.localized(
+                                "\(undo.fileCount) 个文件已移到废纸篓。",
+                                english: "\(undo.fileCount) files were moved to the Trash."
+                            ),
                         systemImage: "arrow.uturn.backward.circle"
                     )
                     Spacer(minLength: 8)
                     Button(AppLanguage.localized("撤销", english: "Undo"), action: onUndo)
                         .controlSize(.small)
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                    }
+                    .buttonStyle(.borderless)
+                    .accessibilityLabel(AppLanguage.localized("关闭", english: "Dismiss"))
                 }
                 .font(.caption)
                 .padding(.horizontal, XunJianUI.Spacing.page)
@@ -488,6 +527,12 @@ private struct TrashUndoBanner: View {
             }
         }
         .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: undo != nil)
+        .task(id: undo) {
+            guard undo != nil else { return }
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled else { return }
+            onDismiss()
+        }
     }
 }
 
@@ -556,8 +601,12 @@ private struct ScanStatusView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(
                     AppLanguage.localized(
-                        "正在建立文件索引… 已发现 \(AppLanguage.fileCount(progress.discoveredCount))",
-                        english: "Building file index… Found \(AppLanguage.fileCount(progress.discoveredCount))"
+                        progress.sourceCount > 1
+                            ? "正在建立文件索引（\(progress.sourceIndex)/\(progress.sourceCount)）… 已发现 \(AppLanguage.fileCount(progress.discoveredCount))"
+                            : "正在建立文件索引… 已发现 \(AppLanguage.fileCount(progress.discoveredCount))",
+                        english: progress.sourceCount > 1
+                            ? "Building file index (\(progress.sourceIndex)/\(progress.sourceCount))… Found \(AppLanguage.fileCount(progress.discoveredCount))"
+                            : "Building file index… Found \(AppLanguage.fileCount(progress.discoveredCount))"
                     )
                 )
                 .font(.caption.weight(.medium))

@@ -3,12 +3,15 @@ import SwiftUI
 struct FileInspectorView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
+    @ScaledMetric(relativeTo: .body) private var actionIconSide: CGFloat = 18
     let file: IndexedFile?
 
     // Inline text preview (N08).
     @State private var previewText: String?
     @State private var previewLimit = 2_000
     @State private var isLoadingPreview = false
+    @State private var previewFailed = false
+    @State private var previewRetry = 0
     // Read-only Finder tags, fetched live rather than indexed (N11).
     @State private var finderTags: [String] = []
 
@@ -56,7 +59,7 @@ struct FileInspectorView: View {
                                 appModel.quickLook(file)
                             } label: {
                                 Image(systemName: "eye")
-                                    .frame(width: 18, height: 18)
+                                    .frame(width: actionIconSide, height: actionIconSide)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.bordered)
@@ -66,38 +69,44 @@ struct FileInspectorView: View {
                                 appModel.showInFinder(file)
                             } label: {
                                 Image(systemName: "finder")
-                                    .frame(width: 18, height: 18)
+                                    .frame(width: actionIconSide, height: actionIconSide)
                                     .contentShape(Rectangle())
                             }
                             .buttonStyle(.bordered)
                             .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
                             .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
 
-                            // AI entry points (N04): analyse the file right
-                            // from the inspector instead of going back to the
-                            // toolbar in All Files.
+                            // Keep secondary AI actions in one stable control
+                            // so the inspector's 260 pt minimum width never
+                            // forces the primary action row to overflow.
                             if appModel.activeAIProviderKind != nil {
-                                Button {
-                                    appModel.aiSheetRequest = .explain(file)
+                                Menu {
+                                    Button {
+                                        appModel.aiSheetRequest = .explain(file)
+                                    } label: {
+                                        Label(
+                                            AppLanguage.localized("用 AI 解释", english: "Explain with AI"),
+                                            systemImage: "doc.text.magnifyingglass"
+                                        )
+                                    }
+                                    Button {
+                                        appModel.aiSheetRequest = .ask(file)
+                                    } label: {
+                                        Label(
+                                            AppLanguage.localized("向 AI 提问", english: "Ask AI About File"),
+                                            systemImage: "bubble.left.and.text.bubble.right"
+                                        )
+                                    }
                                 } label: {
-                                    Image(systemName: "doc.text.magnifyingglass")
-                                        .frame(width: 18, height: 18)
+                                    Image(systemName: "sparkles")
+                                        .frame(width: actionIconSide, height: actionIconSide)
                                         .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.bordered)
-                                .help(AppLanguage.localized("用 AI 解释这个文件", english: "Explain with AI"))
-                                .accessibilityLabel(AppLanguage.localized("用 AI 解释这个文件", english: "Explain with AI"))
-
-                                Button {
-                                    appModel.aiSheetRequest = .ask(file)
-                                } label: {
-                                    Image(systemName: "bubble.left.and.text.bubble.right")
-                                        .frame(width: 18, height: 18)
-                                        .contentShape(Rectangle())
-                                }
-                                .buttonStyle(.bordered)
-                                .help(AppLanguage.localized("用 AI 提问这个文件", english: "Ask AI About File"))
-                                .accessibilityLabel(AppLanguage.localized("用 AI 提问这个文件", english: "Ask AI About File"))
+                                .menuStyle(.borderlessButton)
+                                .menuIndicator(.hidden)
+                                .fixedSize()
+                                .help(AppLanguage.localized("AI 文件操作", english: "AI File Actions"))
+                                .accessibilityLabel(AppLanguage.localized("AI 文件操作", english: "AI File Actions"))
                             }
                         }
                         .frame(maxWidth: .infinity)
@@ -220,9 +229,7 @@ struct FileInspectorView: View {
                             if !finderTags.isEmpty {
                                 detail(
                                     AppLanguage.localized("Finder 标签", english: "Finder Tags"),
-                                    value: finderTags.joined(
-                                        separator: AppLanguage.selected.usesEnglish ? ", " : "、"
-                                    )
+                                    value: finderTags.joined(separator: AppLanguage.listSeparator)
                                 )
                             }
                         }
@@ -239,7 +246,7 @@ struct FileInspectorView: View {
                         // N08: inline text preview with search-term
                         // highlighting, so the user can confirm a match
                         // without leaving the app.
-                        if previewText != nil || isLoadingPreview {
+                        if file.kind.supportsTextExtraction {
                             Divider()
                             VStack(alignment: .leading, spacing: 10) {
                                 Text(
@@ -251,11 +258,26 @@ struct FileInspectorView: View {
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.secondary)
 
-                                if let previewText {
-                                    // Actually truncate. Rendering the full
-                                    // body made "Show More" a no-op and pushed
-                                    // up to 200k characters through the
-                                    // inspector's layout.
+                                if isLoadingPreview {
+                                    ProgressView()
+                                        .controlSize(.small)
+                                        .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                                            "正在载入正文",
+                                            english: "Loading text"
+                                        )))
+                                } else if previewFailed {
+                                    Text(verbatim: AppLanguage.localized(
+                                        "无法读取正文。",
+                                        english: "Couldn’t load the text."
+                                    ))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    Button(AppLanguage.localized("重试", english: "Retry")) {
+                                        previewRetry += 1
+                                    }
+                                    .buttonStyle(.link)
+                                    .controlSize(.small)
+                                } else if let previewText, !previewText.isEmpty {
                                     Text(highlightedPreview(String(previewText.prefix(previewLimit))))
                                         .font(.caption)
                                         .lineSpacing(3)
@@ -278,8 +300,12 @@ struct FileInspectorView: View {
                                         .controlSize(.small)
                                     }
                                 } else {
-                                    ProgressView()
-                                        .controlSize(.small)
+                                    Text(verbatim: AppLanguage.localized(
+                                        "没有可提取的文本。",
+                                        english: "No extractable text."
+                                    ))
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
                                 }
                             }
                             .padding(14)
@@ -309,10 +335,11 @@ struct FileInspectorView: View {
             }
         }
         .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
-        .task(id: file?.id) {
+        .task(id: "\(file?.id ?? "")-\(previewRetry)") {
             // N08: load text content on demand for the inline preview.
             previewText = nil
             previewLimit = 2_000
+            previewFailed = false
             finderTags = []
             guard let file else { return }
 
@@ -325,10 +352,13 @@ struct FileInspectorView: View {
             guard file.kind.supportsTextExtraction else { return }
             isLoadingPreview = true
             defer { isLoadingPreview = false }
-            guard let text = try? await appModel.fetchTextContent(
-                forFileID: file.id
-            ), !(text ?? "").isEmpty else { return }
-            previewText = text
+            do {
+                let text = try await appModel.fetchTextContent(forFileID: file.id)
+                let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                previewText = trimmed.isEmpty ? nil : text
+            } catch {
+                previewFailed = true
+            }
         }
     }
 
@@ -392,6 +422,6 @@ struct FileInspectorView: View {
         guard !names.isEmpty else {
             return AppLanguage.localized("添加分类", english: "Add Category")
         }
-        return names.joined(separator: AppLanguage.selected.usesEnglish ? ", " : "、")
+        return names.joined(separator: AppLanguage.listSeparator)
     }
 }

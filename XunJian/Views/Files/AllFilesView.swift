@@ -6,10 +6,12 @@ struct AllFilesView: View {
     typealias ViewMode = FileBrowseViewMode
 
     @EnvironmentObject private var appModel: AppModel
+    @EnvironmentObject private var searchProgressStore: SearchProgressStore
     @Environment(\.locale) private var locale
 
     let windowWidth: CGFloat
     let contentWidth: CGFloat
+    var isVisible = true
 
     @AppStorage("allFiles.viewMode") private var viewMode = ViewMode.list
     @AppStorage(FileActivationBehavior.storageKey)
@@ -38,9 +40,10 @@ struct AllFilesView: View {
         FinderDateFormatting.formatter(for: locale)
     }
 
-    init(windowWidth: CGFloat, contentWidth: CGFloat) {
+    init(windowWidth: CGFloat, contentWidth: CGFloat, isVisible: Bool = true) {
         self.windowWidth = windowWidth
         self.contentWidth = contentWidth
+        self.isVisible = isVisible
     }
 
     var body: some View {
@@ -56,7 +59,13 @@ struct AllFilesView: View {
         }
         return content
             .task(id: displayedFilesRefreshKey) {
+                guard isVisible else { return }
                 await refreshDisplayedFilesSnapshot()
+            }
+            .onChange(of: isVisible) { _, visible in
+                guard visible else { return }
+                appModel.updateCommandTargetFiles(appModel.browseSnapshot)
+                Task { await refreshDisplayedFilesSnapshot() }
             }
             .onChange(of: appModel.selectedFileID) { _, id in
                 guard let id else { return }
@@ -72,7 +81,7 @@ struct AllFilesView: View {
     private func fileHeader(filesSnapshot: [IndexedFile]) -> some View {
         header(resultCount: filesSnapshot.count)
         if appModel.selectedFileIDs.count > 1 {
-            batchActionBar
+            FileBatchActionBar(contentWidth: contentWidth)
         }
         if let plan = appModel.aiSearchPlan {
             HStack(spacing: 8) {
@@ -98,73 +107,18 @@ struct AllFilesView: View {
         }
     }
 
-    /// Batch operations bar, shown while multiple files are selected (F05).
-    private var batchActionBar: some View {
-        HStack(spacing: 8) {
-            Label(
-                AppLanguage.localized(
-                    "已选择 \(appModel.selectedFileIDs.count) 项",
-                    english: "\(appModel.selectedFileIDs.count) selected"
-                ),
-                systemImage: "checkmark.circle.fill"
-            )
-            Spacer(minLength: 8)
-            Menu {
-                if appModel.categories.isEmpty {
-                    Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
-                } else {
-                    ForEach(appModel.categories) { category in
-                        Button {
-                            appModel.assignSelectedFiles(to: category)
-                        } label: {
-                            Label(category.localizedDisplayName, systemImage: category.symbolName)
-                        }
-                    }
-                }
-            } label: {
-                Label(
-                    AppLanguage.localized("批量加分类", english: "Add to Category"),
-                    systemImage: "folder.badge.plus"
-                )
-            }
-            .fixedSize()
-            Button(role: .destructive) {
-                appModel.requestBatchTrash()
-            } label: {
-                Label(
-                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
-                    systemImage: "trash"
-                )
-            }
-            Button {
-                appModel.selectedFileIDs = []
-            } label: {
-                Label(
-                    AppLanguage.localized("取消选择", english: "Clear Selection"),
-                    systemImage: "xmark"
-                )
-            }
-        }
-        .font(.caption)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            XunJianUI.Fill.selectedSoft,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.chip, style: .continuous)
-        )
-        .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
-        .padding(.bottom, 10)
-        .xunjianAnimation(value: appModel.selectedFileIDs.count > 1)
-    }
-
     private func header(resultCount: Int) -> some View {
-        HStack(spacing: 12) {
-            headerSummary(resultCount: resultCount)
-                .layoutPriority(1)
-            Spacer(minLength: 8)
-            searchProgress
-            filterButton
-            responsiveFileToolbar
+        VStack(alignment: .trailing, spacing: 6) {
+            HStack(spacing: 12) {
+                headerSummary(resultCount: resultCount)
+                    .layoutPriority(1)
+                Spacer(minLength: 8)
+                filterButton
+                responsiveFileToolbar
+            }
+            if searchProgressStore.isSearching || appModel.hasMoreSearchResults {
+                searchProgress
+            }
         }
         .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
         .padding(.vertical, 14)
@@ -216,7 +170,7 @@ struct AllFilesView: View {
                         .frame(width: 160)
                     } else {
                         Button(AppLanguage.localized("不限日期", english: "Any date")) {
-                            appModel.filterMinDate = Date().timeIntervalSince1970
+                            appModel.filterMinDate = 0
                         }
                     }
                 }
@@ -276,7 +230,7 @@ struct AllFilesView: View {
 
     @ViewBuilder
     private var searchProgress: some View {
-        if appModel.isSearching {
+        if searchProgressStore.isSearching {
             ProgressView()
                 .controlSize(.small)
                 .accessibilityLabel(AppLanguage.localized("正在搜索", english: "Searching"))
@@ -344,7 +298,8 @@ struct AllFilesView: View {
                 FileToolbarIconLabel(systemName: "sparkles")
             } else {
                 FileToolbarMenuLabel(
-                    title: appModel.activeAIProviderKind?.title ?? "AI",
+                    title: appModel.activeAIProviderKind?.title
+                        ?? AppLanguage.localized("AI", english: "AI"),
                     systemName: "sparkles"
                 )
             }
@@ -356,7 +311,7 @@ struct AllFilesView: View {
             height: toolbarControlHeight
         )
         .fixedSize()
-        .accessibilityLabel("AI")
+        .accessibilityLabel(AppLanguage.localized("AI 功能", english: "AI Actions"))
     }
 
     private var usesCompactHeader: Bool {
@@ -553,13 +508,7 @@ struct AllFilesView: View {
             width: FileToolbarMetrics.viewModeWidth,
             height: toolbarControlHeight
         )
-        .background(
-            FileToolbarMetrics.controlFill,
-            in: RoundedRectangle(
-                cornerRadius: FileToolbarMetrics.cornerRadius,
-                style: .continuous
-            )
-        )
+        .fileToolbarSurface()
         .fixedSize()
     }
 
@@ -678,8 +627,29 @@ struct AllFilesView: View {
                     .accessibilityLabel(
                         AppLanguage.localized("正在准备文件列表", english: "Preparing file list")
                     )
+            } else if searchProgressStore.isSearching, files.isEmpty {
+                ProgressView()
+                    .controlSize(.small)
+                    .accessibilityLabel(
+                        AppLanguage.localized("正在搜索", english: "Searching")
+                    )
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewMode == .list, !files.isEmpty {
-                fileTable(files: files)
+                VStack(alignment: .leading, spacing: 6) {
+                    if FileTableLayout.needsHorizontalScroll(contentWidth: contentWidth) {
+                        Text(verbatim: AppLanguage.localized(
+                            "窗口较窄，可左右滑动查看全部列。",
+                            english: "Window is narrow — swipe sideways to see every column."
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
+                    }
+                    ScrollView(.horizontal) {
+                        fileTable(files: files)
+                    }
+                    .scrollIndicators(.automatic)
+                }
             } else if viewMode == .grid, !files.isEmpty {
                 fileGrid(files: files)
             } else {
@@ -762,7 +732,7 @@ struct AllFilesView: View {
     }
 
     private func aiSearchDescription(for plan: AISearchPlan) -> String {
-        let separator = AppLanguage.selected.usesEnglish ? ", " : "、"
+        let separator = AppLanguage.listSeparator
         let keywords = plan.keywords.isEmpty
             ? AppLanguage.localized("无关键词限制", english: "No keyword limit")
             : plan.keywords.joined(separator: separator)
@@ -950,7 +920,8 @@ struct AllFilesView: View {
             filesRevision: appModel.filesRevision,
             searchResultCount: appModel.searchResults?.count,
             aiSearchResultCount: appModel.aiSearchResults?.count,
-            isSearching: appModel.isSearching,
+            aiSearchRevision: appModel.aiSearchRevision,
+            isSearching: searchProgressStore.isSearching,
             query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
             selectedKind: appModel.selectedKind,
             sortOrder: activeSortOrder,
@@ -977,7 +948,12 @@ struct AllFilesView: View {
         let signature = displayedFilesRefreshKey.signature
         // Returning to this page with unchanged inputs reuses the cached list
         // instead of re-sorting and flashing a placeholder.
-        guard appModel.browseSnapshotSignature != signature else { return }
+        guard appModel.browseSnapshotSignature != signature else {
+            if isVisible {
+                appModel.updateCommandTargetFiles(appModel.browseSnapshot)
+            }
+            return
+        }
 
         let sourceFiles = sourceFilesForDisplay
         let selectedKind = appModel.selectedKind
@@ -999,6 +975,9 @@ struct AllFilesView: View {
         guard !Task.isCancelled else { return }
         appModel.browseSnapshot = result
         appModel.browseSnapshotSignature = signature
+        if isVisible {
+            appModel.updateCommandTargetFiles(result)
+        }
         appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
     }
 
@@ -1032,9 +1011,7 @@ struct AllFilesView: View {
                     Text(
                         categoryNames.isEmpty
                             ? "—"
-                            : categoryNames.joined(
-                                separator: AppLanguage.selected.usesEnglish ? ", " : "、"
-                            )
+                            : categoryNames.joined(separator: AppLanguage.listSeparator)
                     )
                         .lineLimit(1)
                 }
@@ -1109,7 +1086,10 @@ struct AllFilesView: View {
             .customizationID("location")
         }
         .scrollPosition(id: listScrollPositionBinding)
-        .frame(minWidth: Self.tableMinimumWidth, alignment: .leading)
+        .frame(
+            minWidth: FileTableLayout.minimumWidth(contentWidth: contentWidth),
+            alignment: .leading
+        )
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
         .fileListKeyboardNavigation(files: [])
@@ -1146,10 +1126,6 @@ struct AllFilesView: View {
             .draggable(file.url)
     }
 
-    /// Sum of every column's minimum width. The table must never be squeezed
-    /// below this, otherwise trailing columns get clipped instead of scrolled.
-    static let tableMinimumWidth: CGFloat = 565
-
     /// Spoken summary of a table row: name, kind, size, and modification date.
     private func rowAccessibilityLabel(for file: IndexedFile) -> String {
         var parts = [
@@ -1162,9 +1138,9 @@ struct AllFilesView: View {
         }
         let categoryNames = appModel.categories(for: file).map(\.localizedDisplayName)
         if !categoryNames.isEmpty {
-            parts.append(categoryNames.joined(separator: AppLanguage.selected.usesEnglish ? ", " : "、"))
+            parts.append(categoryNames.joined(separator: AppLanguage.listSeparator))
         }
-        return parts.joined(separator: AppLanguage.selected.usesEnglish ? ", " : "，")
+        return AppLanguage.joinedForAccessibility(parts)
     }
 
     private var tableColumnCompression: CGFloat {
@@ -1248,6 +1224,7 @@ private struct DisplayedFilesRefreshKey: Equatable {
     let filesRevision: UInt64
     let searchResultCount: Int?
     let aiSearchResultCount: Int?
+    let aiSearchRevision: UInt64
     let isSearching: Bool
     let query: String
     let selectedKind: FileKind?
@@ -1261,6 +1238,7 @@ private struct DisplayedFilesRefreshKey: Equatable {
         hasher.combine(filesRevision)
         hasher.combine(searchResultCount)
         hasher.combine(aiSearchResultCount)
+        hasher.combine(aiSearchRevision)
         hasher.combine(isSearching)
         hasher.combine(query)
         hasher.combine(selectedKind)

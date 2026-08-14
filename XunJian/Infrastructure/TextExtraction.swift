@@ -19,9 +19,14 @@ struct TextExtractionService: Sendable {
         self.maxCharacterCount = maxCharacterCount
     }
 
+    func supports(_ url: URL) -> Bool {
+        let fileExtension = url.pathExtension.lowercased()
+        return fileExtension == "pdf" || Self.supportedTextExtensions.contains(fileExtension)
+    }
+
     func extractText(from url: URL) -> String? {
         let fileExtension = url.pathExtension.lowercased()
-        guard fileExtension == "pdf" || Self.supportedTextExtensions.contains(fileExtension),
+        guard supports(url),
               let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
               let fileSize = values.fileSize,
               fileSize > 0,
@@ -74,13 +79,6 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
 
     var id: String { rawValue }
 
-    private static let kindSortRanks: [FileKind: Int] = Dictionary(
-        uniqueKeysWithValues: FileKind.allCases
-            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
-            .enumerated()
-            .map { ($0.element, $0.offset) }
-    )
-
     var title: String {
         switch self {
         case .relevance: "相关度"
@@ -95,8 +93,23 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
     func sorted(_ files: [IndexedFile], ascending: Bool) -> [IndexedFile] {
         guard self != .relevance else { return files }
 
+        let kindSortRanks: [FileKind: Int]
+        if self == .kind {
+            kindSortRanks = Dictionary(
+                uniqueKeysWithValues: FileKind.allCases
+                    .sorted {
+                        $0.localizedTitle.localizedStandardCompare($1.localizedTitle)
+                            == .orderedAscending
+                    }
+                    .enumerated()
+                    .map { ($0.element, $0.offset) }
+            )
+        } else {
+            kindSortRanks = [:]
+        }
+
         return files.sorted { lhs, rhs in
-            let result = comparison(lhs, rhs)
+            let result = comparison(lhs, rhs, kindSortRanks: kindSortRanks)
             if result == .orderedSame {
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
@@ -104,7 +117,11 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
-    private func comparison(_ lhs: IndexedFile, _ rhs: IndexedFile) -> ComparisonResult {
+    private func comparison(
+        _ lhs: IndexedFile,
+        _ rhs: IndexedFile,
+        kindSortRanks: [FileKind: Int]
+    ) -> ComparisonResult {
         switch self {
         case .relevance:
             return .orderedSame
@@ -118,8 +135,8 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
             return compare(lhs.size, rhs.size)
         case .kind:
             return compare(
-                Self.kindSortRanks[lhs.kind] ?? Int.max,
-                Self.kindSortRanks[rhs.kind] ?? Int.max
+                kindSortRanks[lhs.kind] ?? Int.max,
+                kindSortRanks[rhs.kind] ?? Int.max
             )
         }
     }

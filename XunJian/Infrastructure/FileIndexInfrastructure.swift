@@ -2,6 +2,47 @@ import Foundation
 import SQLite3
 import UniformTypeIdentifiers
 
+enum FilePathCanonicalizer {
+    static func path(_ url: URL) -> String {
+        url.resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+            .precomposedStringWithCanonicalMapping
+    }
+
+    static func path(_ path: String) -> String {
+        self.path(URL(fileURLWithPath: path))
+    }
+}
+
+enum IndexedFileIdentity {
+    static let resourceKeys: Set<URLResourceKey> = [
+        .fileResourceIdentifierKey,
+        .volumeIdentifierKey
+    ]
+
+    static func id(
+        sourceID: UUID,
+        url: URL,
+        values: URLResourceValues,
+        fileManager: FileManager = .default
+    ) -> String {
+        let resourceIdentifier: String
+        if let identifier = values.fileResourceIdentifier {
+            resourceIdentifier = String(describing: identifier)
+        } else if let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+                  let device = attributes[.systemNumber] as? NSNumber,
+                  let inode = attributes[.systemFileNumber] as? NSNumber {
+            resourceIdentifier = "inode:\(device):\(inode)"
+        } else {
+            resourceIdentifier = "path:\(FilePathCanonicalizer.path(url))"
+        }
+        let volumeIdentifier = values.volumeIdentifier
+            .map { String(describing: $0) } ?? "volume"
+        return "\(sourceID.uuidString):\(volumeIdentifier):\(resourceIdentifier)"
+    }
+}
+
 struct IndexedFile: Identifiable, Hashable, Sendable {
     let id: String
     let sourceID: UUID
@@ -59,8 +100,20 @@ struct FileSearchPage: Equatable, Sendable {
     var hasMore: Bool { files.count < totalCount }
 }
 
+struct FileTextContentUpdate: Sendable {
+    let fileID: String
+    let textContent: String?
+}
+
 enum FileIndexPreferences {
     static let includesHiddenFilesKey = "fileIndex.includesDotPrefixedFiles"
+    static let indexesFileContentsKey = "fileIndex.indexesFileContents"
+
+    static var indexesFileContents: Bool {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: indexesFileContentsKey) != nil else { return true }
+        return defaults.bool(forKey: indexesFileContentsKey)
+    }
 }
 
 enum SourceAccessState: String, Sendable {
@@ -84,6 +137,8 @@ struct FileSource: Identifiable, Hashable, Sendable {
 struct ScanProgress: Equatable, Sendable {
     let discoveredCount: Int
     let currentPath: String
+    var sourceIndex: Int = 1
+    var sourceCount: Int = 1
 }
 
 /// A persisted search (N07): query text plus the manual filter values, so a
@@ -95,6 +150,53 @@ struct SavedSearch: Identifiable, Hashable, Sendable {
     var minSizeBytes: Int64
     var minDate: Date?
     let createdAt: Date
+
+    /// One-line description of the stored query and filters, shown under the
+    /// name in the sidebar so a saved search is recognisable without opening it.
+    func conditionSummary(usesEnglish: Bool) -> String {
+        var parts: [String] = []
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedQuery.isEmpty {
+            parts.append(usesEnglish ? "Any name" : "不限名称")
+        } else {
+            parts.append(trimmedQuery)
+        }
+        if minSizeBytes > 0 {
+            let size = ByteCountFormatter.string(fromByteCount: minSizeBytes, countStyle: .file)
+            parts.append("≥ \(size)")
+        }
+        if let minDate {
+            let formatted = Self.summaryDateFormatter.string(from: minDate)
+            parts.append(usesEnglish ? "Since \(formatted)" : "不早于 \(formatted)")
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    /// True when this saved search is the same query and filters the user is
+    /// looking at now, so the sidebar can mark it as current.
+    func matches(query: String, minSizeBytes: Int64, minDate: Date?) -> Bool {
+        let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ownQuery = self.query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard normalizedQuery == ownQuery, minSizeBytes == self.minSizeBytes else {
+            return false
+        }
+        switch (minDate, self.minDate) {
+        case (nil, nil):
+            return true
+        case let (lhs?, rhs?):
+            return abs(lhs.timeIntervalSince1970 - rhs.timeIntervalSince1970) < 1
+        default:
+            return false
+        }
+    }
+
+    private static let summaryDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        return formatter
+    }()
 }
 
 struct ResolvedBookmark: Sendable {
@@ -114,22 +216,22 @@ enum FileIndexError: LocalizedError, Sendable {
     var errorDescription: String? {
         switch self {
         case let .database(message):
-            "无法访问本地文件索引：\(message)"
+            AppLanguage.localized("无法访问本地文件索引：\(message)", english: "The local file index could not be accessed: \(message)")
         case .bookmarkCreation:
-            "无法保存这个文件夹的访问权限，请重新选择。"
+            AppLanguage.localized("无法保存这个文件夹的访问权限，请重新选择。", english: "Access to this folder could not be saved. Select it again.")
         case .bookmarkResolution:
-            "macOS 已取消这个文件夹的访问权限，请重新授权。"
+            AppLanguage.localized("macOS 已取消这个文件夹的访问权限，请重新授权。", english: "macOS revoked access to this folder. Authorize it again.")
         case let .unreadableFolder(name):
-            "无法读取文件夹“\(name)”，请检查它是否存在以及当前权限。"
+            AppLanguage.localized("无法读取文件夹“\(name)”，请检查它是否存在以及当前权限。", english: "The folder “\(name)” could not be read. Check that it exists and that access is allowed.")
         case let .overlappingSource(existingName):
             AppLanguage.localized(
                 "无法添加这个文件夹，因为它与已授权文件夹“\(existingName)”重叠。请选择现有索引范围之外的文件夹。",
                 english: "Cannot add this folder because it overlaps the authorized folder \(existingName). Choose a folder outside the existing indexed folders."
             )
         case .invalidCategoryName:
-            "分类名称不能为空，且最多使用 80 个字符。"
+            AppLanguage.localized("分类名称不能为空，且最多使用 80 个字符。", english: "A category name is required and cannot exceed 80 characters.")
         case .categoryExists:
-            "已经存在同名分类，请换一个名称。"
+            AppLanguage.localized("已经存在同名分类，请换一个名称。", english: "A category with this name already exists.")
         }
     }
 }
@@ -195,6 +297,10 @@ actor FileScanner {
         .volumeIdentifierKey
     ]
 
+    static func isComplete(skippedPaths: [String]) -> Bool {
+        skippedPaths.isEmpty
+    }
+
     init(
         fileManager: FileManager = .default,
         textExtractor: TextExtractionService = TextExtractionService(),
@@ -216,6 +322,7 @@ actor FileScanner {
         sourceID: UUID,
         rootURL: URL,
         includesHiddenFiles: Bool = false,
+        extractsText: Bool = true,
         progress: ProgressHandler? = nil
     ) async throws -> [IndexedFile] {
         lastScanSkippedPaths = []
@@ -223,15 +330,47 @@ actor FileScanner {
             sourceID: sourceID,
             rootURL: rootURL,
             includesHiddenFiles: includesHiddenFiles,
+            extractsText: extractsText,
             progress: progress
         )
+    }
+
+    /// Content extraction is deliberately separate from metadata discovery.
+    /// The coordinator can publish the usable file list first, then enrich
+    /// FTS in one bounded, cancellable pass.
+    func extractTextContents(
+        in files: [IndexedFile],
+        progress: ProgressHandler? = nil
+    ) throws -> [FileTextContentUpdate] {
+        let candidates = files.filter { textExtractor.supports($0.url) }
+        var updates: [FileTextContentUpdate] = []
+        updates.reserveCapacity(candidates.count)
+        for (offset, file) in candidates.enumerated() {
+            try Task.checkCancellation()
+            updates.append(
+                FileTextContentUpdate(
+                    fileID: file.id,
+                    textContent: textExtractor.extractText(from: file.url)
+                )
+            )
+            if offset.isMultiple(of: 25) {
+                progress?(
+                    ScanProgress(
+                        discoveredCount: files.count,
+                        currentPath: file.path
+                    )
+                )
+            }
+        }
+        return updates
     }
 
     func scanChanges(
         sourceID: UUID,
         rootURL: URL,
         events: [FileSystemChangeEvent],
-        includesHiddenFiles: Bool = false
+        includesHiddenFiles: Bool = false,
+        extractsText: Bool = true
     ) async throws -> IncrementalScanSnapshot {
         lastScanSkippedPaths = []
         let canonicalRootPath = canonicalPath(rootURL.path)
@@ -268,13 +407,38 @@ actor FileScanner {
                 continue
             }
 
-            if scope.includesDescendants || isDirectory.boolValue {
+            let directoryValues: URLResourceValues?
+            if isDirectory.boolValue {
+                do {
+                    directoryValues = try resourceValuesLoader(url, Set(Self.resourceKeys))
+                } catch {
+                    failedScopes.insert(scope)
+                    continue
+                }
+            } else {
+                directoryValues = nil
+            }
+
+            if let directoryValues,
+               Self.isDocumentPackage(url, values: directoryValues) {
+                successfulScopes.insert(scope)
+                if let file = indexedFile(
+                    at: url,
+                    values: directoryValues,
+                    sourceID: sourceID,
+                    indexedAt: indexedAt,
+                    extractsText: extractsText
+                ) {
+                    filesByID[file.id] = file
+                }
+            } else if scope.includesDescendants || isDirectory.boolValue {
                 let scannedFiles: [IndexedFile]
                 do {
                     scannedFiles = try enumerate(
                         sourceID: sourceID,
                         rootURL: url,
                         includesHiddenFiles: includesHiddenFiles,
+                        extractsText: extractsText,
                         progress: nil
                     )
                 } catch is CancellationError {
@@ -300,7 +464,8 @@ actor FileScanner {
                         at: url,
                         values: values,
                         sourceID: sourceID,
-                        indexedAt: indexedAt
+                        indexedAt: indexedAt,
+                        extractsText: extractsText
                       ) {
                     filesByID[file.id] = file
                 }
@@ -324,6 +489,7 @@ actor FileScanner {
         sourceID: UUID,
         rootURL: URL,
         includesHiddenFiles: Bool,
+        extractsText: Bool,
         progress: ProgressHandler?
     ) throws -> [IndexedFile] {
         var isDirectory: ObjCBool = false
@@ -341,9 +507,6 @@ actor FileScanner {
             includingPropertiesForKeys: Self.resourceKeys,
             options: [.skipsPackageDescendants],
             errorHandler: { url, _ in
-                // Returning false would abort the entire scan, so one
-                // permission-denied subfolder would discard every other file.
-                // Skip the item and continue; the caller reports the summary.
                 skippedPaths.append(url.path)
                 return true
             }
@@ -366,7 +529,7 @@ actor FileScanner {
                 throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
             }
 
-            if values.isDirectory == true {
+            if values.isDirectory == true, !Self.isDocumentPackage(fileURL, values: values) {
                 if (!includesHiddenFiles && fileURL.lastPathComponent.hasPrefix("."))
                     || shouldExcludeDirectory(fileURL.lastPathComponent)
                     || values.isSymbolicLink == true {
@@ -383,7 +546,8 @@ actor FileScanner {
                 at: fileURL,
                 values: values,
                 sourceID: sourceID,
-                indexedAt: indexedAt
+                indexedAt: indexedAt,
+                extractsText: extractsText
             ) else { continue }
             files.append(file)
 
@@ -395,6 +559,12 @@ actor FileScanner {
         }
 
         lastScanSkippedPaths.append(contentsOf: skippedPaths)
+        guard Self.isComplete(skippedPaths: skippedPaths) else {
+            // Never return a partial directory snapshot. A full scan keeps its
+            // previous index, while an incremental scan marks this scope as
+            // failed and therefore excludes it from reconciliation.
+            throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
+        }
 
         progress?(
             ScanProgress(discoveredCount: files.count, currentPath: rootURL.path)
@@ -421,47 +591,50 @@ actor FileScanner {
         at fileURL: URL,
         values: URLResourceValues,
         sourceID: UUID,
-        indexedAt: Date
+        indexedAt: Date,
+        extractsText: Bool
     ) -> IndexedFile? {
-        guard values.isRegularFile == true, values.isSymbolicLink != true else {
+        guard (values.isRegularFile == true || Self.isDocumentPackage(fileURL, values: values)),
+              values.isSymbolicLink != true else {
             return nil
         }
 
-        let name = values.name ?? fileURL.lastPathComponent
+        let name = (values.name ?? fileURL.lastPathComponent)
+            .precomposedStringWithCanonicalMapping
+        let storedPath = canonicalPath(fileURL.path)
         let fileExtension = fileURL.pathExtension.lowercased()
-        let resourceIdentifier: String
-        if let identifier = values.fileResourceIdentifier {
-            resourceIdentifier = String(describing: identifier)
-        } else if let attributes = try? fileManager.attributesOfItem(atPath: fileURL.path),
-                  let device = attributes[.systemNumber] as? NSNumber,
-                  let inode = attributes[.systemFileNumber] as? NSNumber {
-            resourceIdentifier = "inode:\(device):\(inode)"
-        } else {
-            resourceIdentifier = "path:\(canonicalPath(fileURL.path))"
-        }
-        let volumeIdentifier = values.volumeIdentifier
-            .map { String(describing: $0) } ?? "volume"
-
         return IndexedFile(
-            id: "\(sourceID.uuidString):\(volumeIdentifier):\(resourceIdentifier)",
+            id: IndexedFileIdentity.id(
+                sourceID: sourceID,
+                url: fileURL,
+                values: values,
+                fileManager: fileManager
+            ),
             sourceID: sourceID,
             name: name,
-            path: fileURL.path,
+            path: storedPath,
             fileExtension: fileExtension,
             kind: Self.fileKind(contentType: values.contentType, fileExtension: fileExtension),
             size: Int64(values.fileSize ?? 0),
             createdAt: values.creationDate,
             modifiedAt: values.contentModificationDate,
             indexedAt: indexedAt,
-            textContent: textExtractor.extractText(from: fileURL)
+            textContent: extractsText ? textExtractor.extractText(from: fileURL) : nil
         )
     }
 
     private func canonicalPath(_ path: String) -> String {
-        URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
+        FilePathCanonicalizer.path(path)
+    }
+
+    private static func isDocumentPackage(_ url: URL, values: URLResourceValues) -> Bool {
+        guard values.isDirectory == true else { return false }
+        switch url.pathExtension.lowercased() {
+        case "pages", "numbers", "key":
+            return true
+        default:
+            return false
+        }
     }
 
     private func isPath(_ path: String, inside rootPath: String) -> Bool {
@@ -676,7 +849,8 @@ actor FileIndexDatabase {
     func replaceFiles(
         for sourceID: UUID,
         with files: [IndexedFile],
-        deletesUnscanned: Bool = true
+        deletesUnscanned: Bool = true,
+        preservesExistingText: Bool = false
     ) throws {
         let database = connection.pointer
         try Self.execute("BEGIN IMMEDIATE TRANSACTION;", on: database)
@@ -708,7 +882,10 @@ actor FileIndexDatabase {
                     created_at = excluded.created_at,
                     modified_at = excluded.modified_at,
                     indexed_at = excluded.indexed_at,
-                    text_content = excluded.text_content;
+                    text_content = CASE
+                        WHEN ? = 1 THEN files.text_content
+                        ELSE excluded.text_content
+                    END;
                 """
             )
             defer { sqlite3_finalize(insertStatement) }
@@ -731,6 +908,7 @@ actor FileIndexDatabase {
                 try bind(file.modifiedAt?.timeIntervalSince1970, at: 9, to: insertStatement)
                 try bind(file.indexedAt.timeIntervalSince1970, at: 10, to: insertStatement)
                 try bind(file.textContent, at: 11, to: insertStatement)
+                try bind(preservesExistingText ? 1 : 0, at: 12, to: insertStatement)
                 try stepDone(insertStatement)
 
                 sqlite3_reset(scannedIDStatement)
@@ -1008,6 +1186,37 @@ actor FileIndexDatabase {
         return text(statement, column: 0)
     }
 
+    func updateTextContents(_ updates: [FileTextContentUpdate]) throws {
+        guard !updates.isEmpty else { return }
+        try transaction {
+            let statement = try prepare(
+                "UPDATE files SET text_content = ? WHERE id = ?;"
+            )
+            defer { sqlite3_finalize(statement) }
+            for update in updates {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                try bind(update.textContent, at: 1, to: statement)
+                try bind(update.fileID, at: 2, to: statement)
+                try stepDone(statement)
+                try rebuildSearchEntry(update.fileID)
+            }
+        }
+    }
+
+    func clearTextContents() throws {
+        try transaction {
+            let select = try prepare("SELECT id FROM files;")
+            var fileIDs: [String] = []
+            while sqlite3_step(select) == SQLITE_ROW {
+                fileIDs.append(text(select, column: 0))
+            }
+            sqlite3_finalize(select)
+            try Self.execute("UPDATE files SET text_content = NULL;", on: connection.pointer)
+            try fileIDs.forEach(rebuildSearchEntry)
+        }
+    }
+
     func searchFiles(matching query: String, limit: Int = 500) throws -> [IndexedFile] {
         try searchFilesPage(matching: query, limit: limit).files
     }
@@ -1241,6 +1450,41 @@ actor FileIndexDatabase {
             try bind(categoryID.uuidString, at: 1, to: statement)
             try stepDone(statement)
             try fileIDs.forEach(rebuildSearchEntry)
+        }
+    }
+
+    /// Recreates a category and its file links after an undo. Does not touch
+    /// files on disk.
+    func restoreCategory(_ category: FileCategory, fileIDs: [String]) throws {
+        let normalizedName = try validatedCategoryName(category.name)
+        guard try categoryID(named: normalizedName, excluding: nil) == nil else {
+            throw FileIndexError.categoryExists
+        }
+
+        try transaction {
+            let statement = try prepare(
+                "INSERT INTO categories (id, name, icon, created_at) VALUES (?, ?, ?, ?);"
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind(category.id.uuidString, at: 1, to: statement)
+            try bind(normalizedName, at: 2, to: statement)
+            try bind(category.symbolName, at: 3, to: statement)
+            try bind(category.createdAt.timeIntervalSince1970, at: 4, to: statement)
+            try stepDone(statement)
+
+            for fileID in fileIDs {
+                let link = try prepare(
+                    """
+                    INSERT OR IGNORE INTO file_categories (file_id, category_id)
+                    VALUES (?, ?);
+                    """
+                )
+                defer { sqlite3_finalize(link) }
+                try bind(fileID, at: 1, to: link)
+                try bind(category.id.uuidString, at: 2, to: link)
+                try stepDone(link)
+                try rebuildSearchEntry(fileID)
+            }
         }
     }
 
