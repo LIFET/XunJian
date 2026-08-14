@@ -104,6 +104,13 @@ final class AppModel: ObservableObject {
     @Published var searchText = "" {
         didSet { index.scheduleSearch(query: searchText) }
     }
+    /// Search term used for inspector/preview highlighting. The visible page
+    /// owns this so category search and All Files search stay independent.
+    @Published var highlightQuery = ""
+    /// Bumped when the preferred language changes while the app is open, so
+    /// hand-written `AppLanguage.localized` strings refresh.
+    @Published private(set) var localeRevision: UInt64 = 0
+    private var lastPreferredLanguage = Locale.preferredLanguages.first
 
     // Manual filter values (N02), persisted so saved searches can restore
     // them. MB is the UI unit; bytes are derived by the view.
@@ -175,11 +182,18 @@ final class AppModel: ObservableObject {
     /// Distinguishes “no page has published yet” from “this page has nothing
     /// to export”, so Settings cannot silently dump the whole index.
     @Published private(set) var hasPublishedCommandTarget = false
+    @Published private(set) var commandTargetUsesGlobalSearchPagination = false
 
-    func updateCommandTargetFiles(_ files: [IndexedFile]) {
+    func updateCommandTargetFiles(
+        _ files: [IndexedFile],
+        usesGlobalSearchPagination: Bool = false
+    ) {
         let ids = files.map(\.id)
-        if hasPublishedCommandTarget, commandTargetFiles.map(\.id) == ids { return }
+        if hasPublishedCommandTarget,
+           commandTargetFiles.map(\.id) == ids,
+           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination { return }
         commandTargetFiles = files
+        commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
         hasPublishedCommandTarget = true
     }
 
@@ -189,9 +203,76 @@ final class AppModel: ObservableObject {
     /// Selects everything currently visible in the file list, which is what
     /// ⌘A means to the user — not every file in the index.
     func selectAllDisplayedFiles() {
+        if commandTargetUsesGlobalSearchPagination, hasMoreSearchResults {
+            Task { [weak self] in
+                guard let self else { return }
+                guard await self.index.loadAllSearchResults(query: self.searchText) else { return }
+                self.applySelectAll(to: self.filesMatchingCurrentBrowseFilters())
+            }
+            return
+        }
+        applySelectAll(to: commandTargetFiles)
+    }
+
+    func loadAllSearchResults() async -> Bool {
+        let query = searchText
+        guard await index.loadAllSearchResults(query: query) else { return false }
+        return searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+            == query.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func searchFiles(matching query: String, limit: Int) async throws -> [IndexedFile] {
+        try await index.searchFiles(matching: query, limit: limit)
+    }
+
+    func searchFileIDs(
+        matching query: String,
+        inCategory categoryID: UUID,
+        limit: Int
+    ) async throws -> Set<String> {
+        try await index.searchFileIDs(
+            matching: query,
+            inCategory: categoryID,
+            limit: limit
+        )
+    }
+
+    func removeSelectedFiles(from category: FileCategory) {
+        index.removeCategory(category, fromFiles: selectedFiles)
+    }
+
+    private func applySelectAll(to files: [IndexedFile]) {
         var next = FileSelection()
-        next.selectAll(orderedIDs: commandTargetFiles.map(\.id))
+        next.selectAll(orderedIDs: files.map(\.id))
         applyFileSelection(next)
+    }
+
+    func filesMatchingCurrentBrowseFilters() -> [IndexedFile] {
+        let minSize = Int64(filterMinSizeMB * 1_024 * 1_024)
+        let minDate = filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil
+        let kind = selectedKind
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let source: [IndexedFile]
+        if let aiSearchResults {
+            if query.isEmpty {
+                source = aiSearchResults
+            } else {
+                let matchingIDs = Set((searchResults ?? []).map(\.id))
+                source = aiSearchResults.filter { matchingIDs.contains($0.id) }
+            }
+        } else if !query.isEmpty {
+            source = searchResults ?? []
+        } else {
+            source = files
+        }
+        return source.filter { file in
+            if let kind, file.kind != kind { return false }
+            if minSize > 0, file.size < minSize { return false }
+            if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
+                return false
+            }
+            return true
+        }
     }
 
     /// Click in a custom list or grid. Reads ⌘/⇧ from the current event so
@@ -356,7 +437,7 @@ final class AppModel: ObservableObject {
 
     func performAISearch(_ query: String) async throws {
         guard index.isDatabaseAvailable else {
-            throw FileIndexError.database("database unavailable")
+            throw FileIndexError.databaseUnavailable
         }
         let service = try ai.currentService()
         let plan = try await service.searchPlan(for: query)
@@ -480,7 +561,7 @@ final class AppModel: ObservableObject {
 
     func undoAIClassification(_ changes: [AIClassificationChange]) async throws {
         guard index.isDatabaseAvailable else {
-            throw FileIndexError.database("database unavailable")
+            throw FileIndexError.databaseUnavailable
         }
         try await index.applyAICategories(changes, assigned: false)
     }
@@ -538,9 +619,12 @@ final class AppModel: ObservableObject {
         index.onFileResolved = { [weak self] url in
             guard let self else { return }
             let path = FilePathCanonicalizer.path(url)
-            self.selectedFileID = self.index.files.first {
+            guard let newID = self.index.files.first(where: {
                 FilePathCanonicalizer.path($0.url) == path
-            }?.id
+            })?.id else { return }
+            var next = self.fileSelection
+            next.resolveIdentity(from: self.selectedFileID, to: newID)
+            self.applyFileSelection(next)
         }
         indexObservation = index.objectWillChange.sink { [weak self] _ in
             // Scan counting lives on `scanProgressStore` and is not
@@ -565,6 +649,7 @@ final class AppModel: ObservableObject {
     var isScanning: Bool { index.isScanning }
     var includesHiddenFiles: Bool { index.includesHiddenFiles }
     var isDatabaseAvailable: Bool { index.isDatabaseAvailable }
+    var isUpdatingContentIndex: Bool { index.isUpdatingContentIndex }
 
     var selectedFile: IndexedFile? {
         guard let selectedFileID else { return nil }
@@ -626,8 +711,8 @@ final class AppModel: ObservableObject {
         index.setIncludesHiddenFiles(includesHiddenFiles)
     }
 
-    func setIndexesFileContents(_ enabled: Bool) async {
-        await index.setIndexesFileContents(enabled)
+    func setIndexesFileContents(_ enabled: Bool) {
+        index.setIndexesFileContents(enabled)
     }
 
     func cancelScan(startsPendingFullRescan: Bool = true) {
@@ -834,6 +919,13 @@ final class AppModel: ObservableObject {
         )
     }
 
+    static func sourcesAffected(
+        by urls: [URL],
+        in sources: [FileSource]
+    ) -> [FileSource] {
+        FileIndexCoordinator.sourcesAffected(by: urls, in: sources)
+    }
+
     static func shouldRemoveMissingFiles(
         failedScopeCount: Int,
         hasRemovalEvents: Bool
@@ -919,7 +1011,8 @@ final class AppModel: ObservableObject {
             name: name,
             query: query,
             minSizeBytes: minSizeBytes,
-            minDate: minDate
+            minDate: minDate,
+            fileKind: selectedKind
         )
     }
 
@@ -929,6 +1022,7 @@ final class AppModel: ObservableObject {
             query: search.query,
             minSizeBytes: search.minSizeBytes,
             minDate: search.minDate,
+            fileKind: search.fileKind,
             id: search.id,
             createdAt: search.createdAt
         )
@@ -940,6 +1034,7 @@ final class AppModel: ObservableObject {
             query: searchText,
             minSizeBytes: Int64(filterMinSizeMB * 1_024 * 1_024),
             minDate: filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil,
+            fileKind: selectedKind,
             id: search.id,
             createdAt: search.createdAt
         )
@@ -952,17 +1047,20 @@ final class AppModel: ObservableObject {
     /// Applies a saved search: restores the query plus manual filters (N07).
     func applySavedSearch(_ search: SavedSearch) {
         clearAISearch()
-        selectedKind = nil
+        selectedKind = search.fileKind
         searchText = search.query
         applyManualFilter(minSizeBytes: search.minSizeBytes, minDate: search.minDate)
     }
 
-    /// Keyword search from Home, the palette, or the menu bar: drop type and
-    /// AI narrowing so the query is what the user actually sees.
+    /// Keyword search from Home, the palette, or the menu bar: drop type, AI,
+    /// and manual filters so the query is what the user actually sees.
     func searchAllFiles(query: String) {
+        updateCommandTargetFiles([])
         clearAISearch()
         selectedKind = nil
         searchText = query
+        filterMinSizeMB = 0
+        filterMinDate = 0
         NotificationCenter.default.post(name: .xunJianRevealInAllFiles, object: nil)
     }
 
@@ -1023,6 +1121,11 @@ final class AppModel: ObservableObject {
 
     func applicationBecameActive() {
         oauth.applicationBecameActive()
+        let current = Locale.preferredLanguages.first
+        if current != lastPreferredLanguage {
+            lastPreferredLanguage = current
+            localeRevision &+= 1
+        }
     }
 
     func applicationResignedActive() {

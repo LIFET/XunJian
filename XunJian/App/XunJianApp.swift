@@ -600,7 +600,7 @@ struct XunJianApp: App {
 
     private var settingsScene: some Scene {
         Settings {
-            SettingsView()
+            SettingsView(presentsErrors: true)
                 .environmentObject(appModel)
                 .environmentObject(appModel.oauth)
                 .environmentObject(appModel.ai)
@@ -609,17 +609,6 @@ struct XunJianApp: App {
                     \.locale,
                     AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
                 )
-                .alert(
-                    AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
-                    isPresented: Binding(
-                        get: { appModel.errorMessage != nil },
-                        set: { if !$0 { appModel.clearError() } }
-                    )
-                ) {
-                    Button(AppLanguage.localized("好", english: "OK")) { appModel.clearError() }
-                } message: {
-                    Text(AppLanguage.localizedRuntimeMessage(appModel.errorMessage ?? ""))
-                }
                 .frame(minWidth: 360, minHeight: 520)
         }
     }

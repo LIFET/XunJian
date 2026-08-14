@@ -66,11 +66,7 @@ struct FileSystemChangeEvent: Hashable, Sendable {
     }
 
     private static func canonicalPath(_ path: String) -> String {
-        URL(fileURLWithPath: path)
-            .resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-            .precomposedStringWithCanonicalMapping
+        FilePathCanonicalizer.path(path)
     }
 }
 
@@ -92,6 +88,7 @@ struct IncrementalScanSnapshot: Sendable {
 
 final class FileSystemChangeMonitor: @unchecked Sendable {
     typealias EventHandler = @Sendable (UUID, [FileSystemChangeEvent]) -> Void
+    typealias FailureHandler = @Sendable (UUID, String) -> Void
 
     private final class CallbackBox: @unchecked Sendable {
         let sourceID: UUID
@@ -148,7 +145,11 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
         stopAll()
     }
 
-    func update(sources: [MonitoredSource], handler: @escaping EventHandler) {
+    func update(
+        sources: [MonitoredSource],
+        handler: @escaping EventHandler,
+        onFailure: FailureHandler? = nil
+    ) {
         let desired = Dictionary(uniqueKeysWithValues: sources.map { ($0.sourceID, $0) })
         var registrationsToStop: [Registration] = []
 
@@ -168,7 +169,10 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
         registrationsToStop.forEach { $0.stop() }
 
         for source in sources where !existingSourceIDs.contains(source.sourceID) {
-            guard let registration = makeRegistration(for: source, handler: handler) else { continue }
+            guard let registration = makeRegistration(for: source, handler: handler) else {
+                onFailure?(source.sourceID, source.rootPath)
+                continue
+            }
             lock.lock()
             if registrations[source.sourceID] == nil {
                 registrations[source.sourceID] = registration

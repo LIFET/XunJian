@@ -79,6 +79,17 @@ final class FileSelectionTests: XCTestCase {
         XCTAssertEqual(selection.leadID, "d")
     }
 
+    func testResolveIdentityKeepsTheRestOfAMultiSelection() {
+        var selection = FileSelection()
+        selection.select("a", in: files, command: false, shift: false)
+        selection.select("c", in: files, command: true, shift: false)
+        selection.resolveIdentity(from: "c", to: "c-renamed")
+
+        XCTAssertEqual(selection.ids, ["a", "c-renamed"])
+        XCTAssertEqual(selection.leadID, "c-renamed")
+        XCTAssertEqual(selection.anchorID, "c-renamed")
+    }
+
     func testSelectAllUsesTheFirstVisibleFileAsLead() {
         var selection = FileSelection()
         selection.selectAll(orderedIDs: files)

@@ -53,6 +53,8 @@ struct StorageInsightsSnapshot: Equatable {
         var sizeByKind: [FileKind: Int64] = [:]
         var countBySource: [UUID: Int] = [:]
         var sizeBySource: [UUID: Int64] = [:]
+        var largest: [IndexedFile] = []
+        var oldest: [(file: IndexedFile, date: Date)] = []
 
         for file in files {
             totalSize += file.size
@@ -60,6 +62,24 @@ struct StorageInsightsSnapshot: Equatable {
             sizeByKind[file.kind, default: 0] += file.size
             countBySource[file.sourceID, default: 0] += 1
             sizeBySource[file.sourceID, default: 0] += file.size
+
+            largest.append(file)
+            largest.sort {
+                $0.size == $1.size
+                    ? $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                    : $0.size > $1.size
+            }
+            if largest.count > listLimit { largest.removeLast() }
+
+            if let date = file.modifiedAt {
+                oldest.append((file, date))
+                oldest.sort {
+                    $0.date == $1.date
+                        ? $0.file.name.localizedStandardCompare($1.file.name) == .orderedAscending
+                        : $0.date < $1.date
+                }
+                if oldest.count > listLimit { oldest.removeLast() }
+            }
         }
 
         let kinds = FileKind.allCases
@@ -85,27 +105,13 @@ struct StorageInsightsSnapshot: Equatable {
             }
             .sorted { $0.totalSize > $1.totalSize }
 
-        let largest = files
-            .sorted { $0.size > $1.size }
-            .prefix(listLimit)
-
-        // Files with no modification date are skipped rather than sorted to
-        // one end, where they would crowd out real results.
-        let oldest = files
-            .compactMap { file -> (IndexedFile, Date)? in
-                file.modifiedAt.map { (file, $0) }
-            }
-            .sorted { $0.1 < $1.1 }
-            .prefix(listLimit)
-            .map(\.0)
-
         return StorageInsightsSnapshot(
             fileCount: files.count,
             totalSize: totalSize,
             kinds: kinds,
             sources: sourceBreakdowns,
-            largestFiles: Array(largest),
-            oldestFiles: oldest
+            largestFiles: largest,
+            oldestFiles: oldest.map(\.file)
         )
     }
 }
@@ -113,6 +119,7 @@ struct StorageInsightsSnapshot: Equatable {
 struct StorageInsightsView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.locale) private var locale
 
     @State private var snapshot = StorageInsightsSnapshot.empty
     @State private var hasComputed = false
@@ -123,6 +130,7 @@ struct StorageInsightsView: View {
     /// Distinguishes "not searched yet" from "searched and found nothing", so
     /// a clean result is reported instead of showing an empty section.
     @State private var hasSearchedDuplicates = false
+    @State private var duplicateUnreadCount = 0
     @State private var duplicateSearchTask: Task<Void, Never>?
 
     var body: some View {
@@ -130,7 +138,15 @@ struct StorageInsightsView: View {
             header
             Divider()
 
-            if snapshot.fileCount == 0 {
+            if !hasComputed {
+                ProgressView()
+                    .controlSize(.regular)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .accessibilityLabel(AppLanguage.localized(
+                        "正在计算存储洞察",
+                        english: "Calculating storage insights"
+                    ))
+            } else if snapshot.fileCount == 0 {
                 emptyState
             } else {
                 ScrollView {
@@ -158,8 +174,9 @@ struct StorageInsightsView: View {
             duplicateSearchTask = nil
             duplicateGroups = []
             hasSearchedDuplicates = false
+            duplicateUnreadCount = 0
             isFindingDuplicates = false
-            hasComputed = true
+            hasComputed = false
             let files = appModel.files
             let sources = appModel.sources
             let computed = await Task.detached(priority: .userInitiated) {
@@ -167,6 +184,7 @@ struct StorageInsightsView: View {
             }.value
             guard !Task.isCancelled else { return }
             snapshot = computed
+            hasComputed = true
         }
         .onDisappear {
             duplicateSearchTask?.cancel()
@@ -336,13 +354,14 @@ struct StorageInsightsView: View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             SectionHeader(title: AppLanguage.localized("最久未修改", english: "Least Recently Modified"))
             fileList(snapshot.oldestFiles) { file in
-                file.modifiedAt.map(FinderDateFormatting.string(for:)) ?? "—"
+                file.modifiedAt.map { FinderDateFormatting.formatter(for: locale).string(from: $0) }
+                    ?? "—"
             }
         }
     }
 
     /// Content-hash duplicate detection (N13). Runs on demand because it
-    /// reads file contents; files above 128MB are skipped.
+    /// reads file contents. Unreadable files are counted instead of aborting.
     private var duplicateSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             HStack {
@@ -378,12 +397,24 @@ struct StorageInsightsView: View {
                 .controlSize(.small)
             } else if hasSearchedDuplicates, duplicateGroups.isEmpty {
                 Text(verbatim: AppLanguage.localized(
-                    "未发现内容相同的文件。",
-                    english: "No files with identical content were found."
+                    duplicateUnreadCount > 0
+                        ? "未发现内容相同的文件。有 \(duplicateUnreadCount) 个文件无法读取，已跳过。"
+                        : "未发现内容相同的文件。",
+                    english: duplicateUnreadCount > 0
+                        ? "No files with identical content were found. \(duplicateUnreadCount) file(s) could not be read and were skipped."
+                        : "No files with identical content were found."
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } else if !duplicateGroups.isEmpty {
+                if duplicateUnreadCount > 0 {
+                    Text(verbatim: AppLanguage.localized(
+                        "有 \(duplicateUnreadCount) 个文件无法读取，已跳过。",
+                        english: "\(duplicateUnreadCount) file(s) could not be read and were skipped."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
                 ForEach(duplicateGroups) { group in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(
@@ -452,19 +483,21 @@ struct StorageInsightsView: View {
         duplicateSearchTask?.cancel()
         isFindingDuplicates = true
         hasSearchedDuplicates = false
+        duplicateUnreadCount = 0
         duplicateProgress = (0, 0)
         let files = appModel.files
         let revision = appModel.filesRevision
         duplicateSearchTask = Task {
             do {
-                let groups = try await DuplicateFileFinder.find(in: files) { hashed, total in
+                let result = try await DuplicateFileFinder.find(in: files) { hashed, total in
                     Task { @MainActor in
                         duplicateProgress = (hashed, total)
                     }
                 }
                 try Task.checkCancellation()
                 guard revision == appModel.filesRevision else { return }
-                duplicateGroups = groups
+                duplicateGroups = result.groups
+                duplicateUnreadCount = result.unreadCount
                 hasSearchedDuplicates = true
             } catch is CancellationError {
                 // Stopping an on-demand scan is not an error.

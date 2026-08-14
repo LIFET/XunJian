@@ -410,6 +410,7 @@ struct FileBrowseToolbar: View {
 struct FileBatchActionBar: View {
     @EnvironmentObject private var appModel: AppModel
     var contentWidth: CGFloat? = nil
+    var removalCategory: FileCategory? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -440,6 +441,20 @@ struct FileBatchActionBar: View {
                 )
             }
             .fixedSize()
+            if let removalCategory {
+                Button {
+                    appModel.removeSelectedFiles(from: removalCategory)
+                } label: {
+                    Label(
+                        AppLanguage.localized(
+                            "从此分类移除",
+                            english: "Remove from Category"
+                        ),
+                        systemImage: "folder.badge.minus"
+                    )
+                }
+                .fixedSize()
+            }
             Button(role: .destructive) {
                 appModel.requestBatchTrash()
             } label: {

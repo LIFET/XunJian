@@ -461,6 +461,17 @@ final class NavigationModelTests: XCTestCase {
         XCTAssertTrue(AppModel.shouldQueueFullRescan(isScanning: true))
         XCTAssertFalse(AppModel.shouldQueueFullRescan(isScanning: false))
     }
+
+    @MainActor
+    func testKnownFileChangesOnlyAffectContainingSources() {
+        let alpha = makeSource(at: URL(fileURLWithPath: "/tmp/alpha"))
+        let beta = makeSource(at: URL(fileURLWithPath: "/tmp/beta"))
+        let affected = AppModel.sourcesAffected(
+            by: [URL(fileURLWithPath: "/tmp/alpha/notes.md")],
+            in: [alpha, beta]
+        )
+        XCTAssertEqual(affected.map(\.id), [alpha.id])
+    }
 }
 
 private func makeSource(at url: URL) -> FileSource {
@@ -1598,6 +1609,102 @@ final class FileIndexDatabaseTests: XCTestCase {
         )
         let filesAfterDelete = try await database.fetchFiles()
         XCTAssertEqual(filesAfterDelete.map(\.id), [unrelated.id])
+    }
+
+    func testIncrementalUpsertPreservesExistingTextWhenExtractionReturnsNil() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "正文保留",
+            path: "/tmp/正文保留",
+            bookmark: Data([21])
+        )
+        let file = IndexedFile(
+            id: "text-keep-id",
+            sourceID: source.id,
+            name: "notes.md",
+            path: "/tmp/正文保留/notes.md",
+            fileExtension: "md",
+            kind: .document,
+            size: 12,
+            createdAt: nil,
+            modifiedAt: Date(timeIntervalSince1970: 100),
+            indexedAt: Date(timeIntervalSince1970: 100),
+            textContent: "可搜索的旧正文"
+        )
+        try await database.replaceFiles(for: source.id, with: [file])
+        let withoutText = IndexedFile(
+            id: file.id,
+            sourceID: source.id,
+            name: file.name,
+            path: file.path,
+            fileExtension: file.fileExtension,
+            kind: file.kind,
+            size: 14,
+            createdAt: nil,
+            modifiedAt: Date(timeIntervalSince1970: 200),
+            indexedAt: Date(timeIntervalSince1970: 200),
+            textContent: nil
+        )
+        try await database.reconcileFiles(
+            for: source.id,
+            scopes: [FileIndexScope(path: file.path, includesDescendants: false)],
+            with: [withoutText]
+        )
+        let stored = try await database.fetchTextContent(forFileID: file.id)
+        let matches = try await database.searchFiles(matching: "旧正文")
+        XCTAssertEqual(stored, "可搜索的旧正文")
+        XCTAssertEqual(matches.map(\.id), [file.id])
+    }
+
+    func testRestoreCategoryRenamesWhenTheOriginalNameIsTaken() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "分类恢复",
+            path: "/tmp/分类恢复",
+            bookmark: Data([22])
+        )
+        let file = IndexedFile(
+            id: "restore-file",
+            sourceID: source.id,
+            name: "a.txt",
+            path: "/tmp/分类恢复/a.txt",
+            fileExtension: "txt",
+            kind: .document,
+            size: 1,
+            createdAt: nil,
+            modifiedAt: nil,
+            indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [file])
+        let original = try await database.createCategory(
+            name: "撤销恢复测试",
+            symbolName: "folder"
+        )
+        try await database.setCategory(original.id, assigned: true, toFile: file.id)
+        try await database.deleteCategory(original.id)
+        let replacement = try await database.createCategory(
+            name: "撤销恢复测试",
+            symbolName: "folder"
+        )
+        try await database.restoreCategory(original, fileIDs: [file.id])
+
+        let categories = try await database.fetchCategories()
+        XCTAssertTrue(categories.contains { $0.id == replacement.id })
+        XCTAssertTrue(categories.contains { $0.id == original.id })
+        XCTAssertEqual(categories.first { $0.id == replacement.id }?.name, "撤销恢复测试")
+        let restored = categories.first { $0.id == original.id }
+        XCTAssertNotNil(restored)
+        XCTAssertNotEqual(restored?.name, "撤销恢复测试")
+        let restoredLinks = try await database.fetchCategoryIDs(forFile: file.id)
+        XCTAssertTrue(restoredLinks.contains(original.id))
     }
 
     func testCrossSourceMoveReconciliationTransfersCategoriesAndSearchEntryAtomically() async throws {

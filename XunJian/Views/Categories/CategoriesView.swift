@@ -63,7 +63,12 @@ struct CategoriesView: View {
             selectedCategory?.localizedDisplayName
                 ?? AppLanguage.localized("分类", english: "Categories")
         )
-        .onAppear { clearSelectionIfHidden() }
+        .onAppear {
+            if selectedCategory != nil {
+                appModel.highlightQuery = categoryQuery
+            }
+            clearSelectionIfHidden()
+        }
         .task(id: categoryFilesRefreshKey) {
             await refreshCategoryFilesSnapshot()
         }
@@ -73,6 +78,8 @@ struct CategoriesView: View {
             displayedFiles = []
             categoryFileCount = 0
             displayedSignature = nil
+            appModel.updateCommandTargetFiles([])
+            appModel.highlightQuery = ""
             clearSelectionIfHidden()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
@@ -82,7 +89,12 @@ struct CategoriesView: View {
             viewMode = mode
         }
         .onChange(of: selectedKind) { _, _ in clearSelectionIfHidden() }
-        .onChange(of: categoryQuery) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: categoryQuery) { _, query in
+            if selectedCategory != nil {
+                appModel.highlightQuery = query
+            }
+            clearSelectionIfHidden()
+        }
         .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
         .sheet(isPresented: $showsNewCategory) {
             CategoryEditorSheet(
@@ -352,7 +364,10 @@ struct CategoriesView: View {
                     viewMode: $viewMode
                 )
                 if appModel.selectedFileIDs.count > 1 {
-                    FileBatchActionBar(contentWidth: contentWidth)
+                    FileBatchActionBar(
+                        contentWidth: contentWidth,
+                        removalCategory: selectedCategory
+                    )
                 }
 
                 if files.isEmpty {
@@ -490,12 +505,17 @@ struct CategoriesView: View {
         _ files: [IndexedFile],
         kind: FileKind?,
         query: String = "",
+        ftsMatchIDs: Set<String>? = nil,
         sortOrder: FileSortOrder,
         ascending: Bool
     ) -> [IndexedFile] {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = files.filter { file in
             if let kind, file.kind != kind { return false }
+            if let ftsMatchIDs {
+                if ftsMatchIDs.contains(file.id) { return true }
+                return !trimmed.isEmpty && QuickSearchMatching.matches(file: file, query: trimmed)
+            }
             if !trimmed.isEmpty, !QuickSearchMatching.matches(file: file, query: trimmed) {
                 return false
             }
@@ -547,6 +567,9 @@ struct CategoriesView: View {
         }
 
         let signature = categoryFilesRefreshKey.signature
+        if displayedSignature != signature {
+            appModel.updateCommandTargetFiles([])
+        }
         guard displayedSignature != signature else {
             appModel.updateCommandTargetFiles(displayedFiles)
             return
@@ -556,9 +579,23 @@ struct CategoriesView: View {
         let links = appModel.fileCategoryLinks
         let categoryID = selectedCategory.id
         let kind = selectedKind
-        let query = categoryQuery
+        let query = categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         let order = sortOrder
         let ascending = sortAscending
+        let matchingIDs: Set<String>?
+        if query.isEmpty {
+            matchingIDs = nil
+        } else {
+            do {
+                let matches = try await appModel.searchFiles(
+                    matching: query,
+                    limit: max(allFiles.count, 1)
+                )
+                matchingIDs = Set(matches.map(\.id))
+            } catch {
+                matchingIDs = nil
+            }
+        }
         let result = await Task.detached(priority: .userInitiated) {
             let inCategory = allFiles.filter { file in
                 links[file.id]?.contains(categoryID) == true
@@ -567,6 +604,7 @@ struct CategoriesView: View {
                 inCategory,
                 kind: kind,
                 query: query,
+                ftsMatchIDs: matchingIDs,
                 sortOrder: order,
                 ascending: ascending
             )
@@ -712,6 +750,7 @@ struct CategoryEditorSheet: View {
                 Spacer()
                 Button(AppLanguage.localized("取消", english: "Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isSaving)
                 Button(AppLanguage.localized("保存", english: "Save"), action: save)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -721,6 +760,7 @@ struct CategoryEditorSheet: View {
         .padding(24)
         .frame(minWidth: 280, idealWidth: 440, maxWidth: 520, alignment: .leading)
         .onAppear { isNameFocused = true }
+        .interactiveDismissDisabled(isSaving)
     }
 
     private func save() {

@@ -72,6 +72,7 @@ struct SidebarView: View {
                             )) {
                                 appModel.updateSavedSearch(search)
                             }
+                            .disabled(selection != .allFiles)
                             Divider()
                             Button(
                                 AppLanguage.localized("删除保存的搜索", english: "Delete Saved Search"),
@@ -168,14 +169,14 @@ struct SidebarView: View {
     }
 
     private func isCurrentSavedSearch(_ search: SavedSearch) -> Bool {
-        appModel.selectedKind == nil
-            && appModel.aiSearchResults == nil
+        appModel.aiSearchResults == nil
             && search.matches(
                 query: appModel.searchText,
                 minSizeBytes: Int64(appModel.filterMinSizeMB * 1_024 * 1_024),
                 minDate: appModel.filterMinDate > 0
                     ? Date(timeIntervalSince1970: appModel.filterMinDate)
-                    : nil
+                    : nil,
+                fileKind: appModel.selectedKind
             )
     }
 }

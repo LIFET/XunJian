@@ -10,6 +10,65 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(FileListExport.csvField("normal.txt"), "normal.txt")
     }
 
+    func testStreamingCSVExportMatchesInMemoryContractAndReplacesDestination() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("files.csv")
+        try Data("stale".utf8).write(to: destination)
+        let files = [
+            makeFile(name: "=formula.pdf", path: "/docs/=formula.pdf", size: 42),
+            makeFile(name: "report.pdf", path: "/docs/report.pdf", size: 84)
+        ]
+        let categoryNames = [files[0].id: ["Finance"], files[1].id: ["Work"]]
+
+        try FileListExport.write(
+            files: files,
+            format: .csv,
+            categoryNames: categoryNames,
+            to: destination
+        )
+
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        XCTAssertEqual(
+            exported,
+            FileListExport.contents(
+                for: files,
+                format: .csv,
+                categoryNames: categoryNames
+            )
+        )
+        XCTAssertTrue(exported.contains("'=formula.pdf"))
+        XCTAssertTrue(
+            try FileManager.default.contentsOfDirectory(atPath: root.path)
+                .allSatisfy { !$0.hasPrefix(".xunjian-export-") }
+        )
+    }
+
+    func testStorageInsightsKeepsOnlyCorrectTopTenFiles() {
+        let sourceID = UUID()
+        let files = (0..<25).map { index in
+            IndexedFile(
+                id: "file-\(index)",
+                sourceID: sourceID,
+                name: "file-\(index).pdf",
+                path: "/docs/file-\(index).pdf",
+                fileExtension: "pdf",
+                kind: .document,
+                size: Int64(index),
+                createdAt: nil,
+                modifiedAt: Date(timeIntervalSince1970: TimeInterval(index)),
+                indexedAt: Date()
+            )
+        }
+
+        let snapshot = StorageInsightsSnapshot.make(files: files, sources: [])
+
+        XCTAssertEqual(snapshot.largestFiles.map(\.size), Array((15..<25).reversed()).map(Int64.init))
+        XCTAssertEqual(snapshot.oldestFiles.map(\.id), (0..<10).map { "file-\($0)" })
+    }
+
     func testDuplicateHashReadsTheCompleteFile() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("xunjian-duplicate-hash-\(UUID().uuidString)")
@@ -143,6 +202,34 @@ final class RemainingReviewTests: XCTestCase {
             minSizeBytes: 10 * 1_024 * 1_024,
             minDate: nil
         ))
+        XCTAssertTrue(search.matches(
+            query: "合同",
+            minSizeBytes: 10 * 1_024 * 1_024,
+            minDate: date,
+            fileKind: nil
+        ))
+        XCTAssertFalse(search.matches(
+            query: "合同",
+            minSizeBytes: 10 * 1_024 * 1_024,
+            minDate: date,
+            fileKind: .document
+        ))
+    }
+
+    func testSavedSearchIncludesKindInCurrentMatch() {
+        let search = SavedSearch(
+            id: UUID(),
+            name: "PDFs",
+            query: "合同",
+            minSizeBytes: 0,
+            minDate: nil,
+            createdAt: Date(),
+            fileKind: .document
+        )
+        XCTAssertTrue(search.matches(query: "合同", minSizeBytes: 0, minDate: nil, fileKind: .document))
+        XCTAssertFalse(search.matches(query: "合同", minSizeBytes: 0, minDate: nil, fileKind: nil))
+        XCTAssertTrue(search.conditionSummary(usesEnglish: false).contains("文档"))
+        XCTAssertTrue(search.conditionSummary(usesEnglish: true).contains("Document"))
     }
 
     func testQuickSearchPrefixCountsRemainingMatches() {
@@ -159,6 +246,31 @@ final class RemainingReviewTests: XCTestCase {
         )
         XCTAssertEqual(result.files.map(\.name), ["a.pdf", "b.pdf"])
         XCTAssertEqual(result.remainingCount, 1)
+    }
+
+    func testDuplicateFindSkipsUnreadablePackagesWithoutFailing() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-dup-skip-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let left = root.appendingPathComponent("a.txt")
+        let right = root.appendingPathComponent("b.txt")
+        let package = root.appendingPathComponent("pack.pages", isDirectory: true)
+        try Data("abc".utf8).write(to: left)
+        try Data("abc".utf8).write(to: right)
+        try FileManager.default.createDirectory(at: package, withIntermediateDirectories: false)
+        try Data("internal".utf8).write(to: package.appendingPathComponent("index.xml"))
+
+        let files = [
+            makeFile(name: "a.txt", path: left.path, size: 3),
+            makeFile(name: "b.txt", path: right.path, size: 3),
+            makeFile(name: "pack.pages", path: package.path, size: 3)
+        ]
+        let result = try await DuplicateFileFinder.find(in: files)
+        XCTAssertEqual(result.groups.count, 1)
+        XCTAssertEqual(Set(result.groups[0].files.map(\.name)), ["a.txt", "b.txt"])
+        XCTAssertEqual(result.unreadCount, 1)
     }
 
     func testDocumentPackageIsIndexedAsOneFile() async throws {
@@ -192,11 +304,47 @@ final class RemainingReviewTests: XCTestCase {
         try Data("replacement".utf8).write(to: url)
 
         do {
-            try await service.requireIndexedIdentity(indexed)
+            _ = try await service.rename(indexedFile: indexed, to: "renamed.txt")
             XCTFail("Expected replacement to be rejected")
         } catch let error as FileOperationError {
             XCTAssertEqual(error, .fileIdentityChanged)
         }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("renamed.txt").path
+            )
+        )
+    }
+
+    func testTextExtractionStreamsBoundedBatches() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-text-batches-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<5 {
+            try Data("text \(index)".utf8).write(
+                to: root.appendingPathComponent("file-\(index).txt")
+            )
+        }
+        let scanner = FileScanner()
+        let files = try await scanner.scan(
+            sourceID: UUID(),
+            rootURL: root,
+            extractsText: false
+        )
+        let recorder = TextExtractionBatchRecorder()
+
+        try await scanner.extractTextContents(
+            in: files,
+            batchSize: 2,
+            consume: { updates in await recorder.record(updates) }
+        )
+
+        let snapshot = await recorder.snapshot()
+        XCTAssertEqual(snapshot.sizes, [2, 2, 1])
+        XCTAssertEqual(snapshot.fileIDs.count, 5)
+        XCTAssertEqual(Set(snapshot.fileIDs), Set(files.map(\.id)))
     }
 
     func testContentIndexCanBeEnrichedAndClearedWithoutRemovingFile() async throws {
@@ -246,7 +394,8 @@ final class RemainingReviewTests: XCTestCase {
     private func makeFile(
         name: String,
         path: String,
-        modifiedAt: Date? = Date()
+        modifiedAt: Date? = Date(),
+        size: Int64 = 1
     ) -> IndexedFile {
         IndexedFile(
             id: path,
@@ -255,10 +404,24 @@ final class RemainingReviewTests: XCTestCase {
             path: path,
             fileExtension: "pdf",
             kind: .document,
-            size: 1,
+            size: size,
             createdAt: nil,
             modifiedAt: modifiedAt,
             indexedAt: Date()
         )
+    }
+}
+
+private actor TextExtractionBatchRecorder {
+    private var sizes: [Int] = []
+    private var fileIDs: [String] = []
+
+    func record(_ updates: [FileTextContentUpdate]) {
+        sizes.append(updates.count)
+        fileIDs.append(contentsOf: updates.map(\.fileID))
+    }
+
+    func snapshot() -> (sizes: [Int], fileIDs: [String]) {
+        (sizes, fileIDs)
     }
 }

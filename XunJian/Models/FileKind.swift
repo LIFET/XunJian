@@ -12,14 +12,18 @@ enum FileKind: String, CaseIterable, Identifiable, Sendable {
     var id: String { rawValue }
 
     var title: String {
+        title(usesEnglish: false)
+    }
+
+    func title(usesEnglish: Bool) -> String {
         switch self {
-        case .document: "文档"
-        case .image: "图片"
-        case .video: "视频"
-        case .audio: "音频"
-        case .archive: "压缩包"
-        case .code: "代码"
-        case .other: "其他"
+        case .document: usesEnglish ? "Document" : "文档"
+        case .image: usesEnglish ? "Image" : "图片"
+        case .video: usesEnglish ? "Video" : "视频"
+        case .audio: usesEnglish ? "Audio" : "音频"
+        case .archive: usesEnglish ? "Archive" : "压缩包"
+        case .code: usesEnglish ? "Code" : "代码"
+        case .other: usesEnglish ? "Other" : "其他"
         }
     }
 

@@ -33,14 +33,21 @@ enum DuplicateCleanup {
 ///
 /// Cost control: files are first grouped by size so hashing only runs inside
 /// groups that can actually match. Hashing is streamed, so large files do not
-/// need to be loaded into memory and are not silently omitted.
+/// need to be loaded into memory and are not silently omitted. Unreadable
+/// files (document packages, missing paths) are counted and skipped so one
+/// failure cannot abort the whole scan.
 enum DuplicateFileFinder {
     typealias ProgressHandler = @Sendable (_ hashed: Int, _ total: Int) -> Void
+
+    struct Result: Sendable {
+        var groups: [DuplicateGroup]
+        var unreadCount: Int
+    }
 
     static func find(
         in files: [IndexedFile],
         progress: ProgressHandler = { _, _ in }
-    ) async throws -> [DuplicateGroup] {
+    ) async throws -> Result {
         let candidates = files.filter { $0.size > 0 }
         var bySize: [Int64: [IndexedFile]] = [:]
         for file in candidates {
@@ -49,6 +56,7 @@ enum DuplicateFileFinder {
 
         var totalToHash = 0
         var hashedCount = 0
+        var unreadCount = 0
         let groupsToHash = bySize.values.filter { $0.count > 1 }
         for group in groupsToHash {
             totalToHash += group.count
@@ -58,8 +66,12 @@ enum DuplicateFileFinder {
         for group in groupsToHash {
             for file in group {
                 try Task.checkCancellation()
-                let digest = try await hash(fileAt: file.url)
-                byHash[digest, default: []].append(file)
+                if canHashFile(at: file.url),
+                   let digest = try? await hash(fileAt: file.url) {
+                    byHash[digest, default: []].append(file)
+                } else {
+                    unreadCount += 1
+                }
                 hashedCount += 1
                 let progressStride = max(totalToHash / 100, 1)
                 if hashedCount == totalToHash || hashedCount.isMultiple(of: progressStride) {
@@ -68,7 +80,7 @@ enum DuplicateFileFinder {
             }
         }
 
-        return byHash.compactMap { digest, files -> DuplicateGroup? in
+        let groups = byHash.compactMap { digest, files -> DuplicateGroup? in
             guard files.count > 1 else { return nil }
             return DuplicateGroup(
                 hash: digest,
@@ -79,6 +91,17 @@ enum DuplicateFileFinder {
             )
         }
         .sorted { $0.size > $1.size }
+        return Result(groups: groups, unreadCount: unreadCount)
+    }
+
+    /// Directories (including document packages) cannot be hashed as a single
+    /// file handle, so they are reported as unread instead of failing the scan.
+    static func canHashFile(at url: URL) -> Bool {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
+            return false
+        }
+        return !isDirectory.boolValue
     }
 
     /// Streams the file in 1MB chunks so multi-hundred-MB files don't get

@@ -30,6 +30,22 @@ struct FileSelection: Equatable, Sendable {
         anchorID = fileID
     }
 
+    /// Keeps a multi-selection intact when one file is renamed or moved.
+    mutating func resolveIdentity(from oldID: String?, to newID: String) {
+        if ids.contains(newID) {
+            leadID = newID
+            return
+        }
+        if ids.count > 1, let oldID, ids.contains(oldID) {
+            ids.remove(oldID)
+            ids.insert(newID)
+            if leadID == oldID { leadID = newID }
+            if anchorID == oldID { anchorID = newID }
+            return
+        }
+        replace(with: newID)
+    }
+
     mutating func selectAll(orderedIDs: [String]) {
         ids = Set(orderedIDs)
         leadID = orderedIDs.first

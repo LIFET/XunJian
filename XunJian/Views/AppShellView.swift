@@ -4,6 +4,7 @@ struct AppShellView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.controlActiveState) private var controlActiveState
     @State private var selection: NavigationDestination? = .home
     @State private var columnVisibility = NavigationSplitViewVisibility.all
     @State private var showsInspector = false
@@ -14,6 +15,7 @@ struct AppShellView: View {
     @State private var showsGlobalNewCategory = false
 
     var body: some View {
+        let _ = (locale.identifier, appModel.localeRevision)
         GeometryReader { geometry in
             appContent
                 .onAppear {
@@ -127,6 +129,9 @@ struct AppShellView: View {
             .onChange(of: showsInspector) { oldValue, newValue in
                 handleInspectorVisibilityChange(oldValue, newValue)
             }
+            .onChange(of: selection) { _, newSelection in
+                prepareCommandTargets(for: newSelection)
+            }
             .onChange(of: appModel.categories.map(\.id)) { oldIDs, newIDs in
                 handleCategoryIDsChange(oldIDs, newIDs)
             }
@@ -148,10 +153,7 @@ struct AppShellView: View {
             .modifier(GlobalPresentations(selection: $selection))
             .alert(
                 AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
-                isPresented: Binding(
-                    get: { appModel.errorMessage != nil },
-                    set: { if !$0 { appModel.clearError() } }
-                )
+                isPresented: presentsErrorAlert
             ) {
                 Button(AppLanguage.localized("好", english: "OK")) { appModel.clearError() }
             } message: {
@@ -262,6 +264,24 @@ struct AppShellView: View {
         selection = Self.selectionAfterCategoryReload(
             selection,
             availableCategoryIDs: Set(categoryIDs)
+        )
+    }
+
+    private func prepareCommandTargets(for destination: NavigationDestination?) {
+        switch destination ?? .home {
+        case .home:
+            appModel.updateCommandTargetFiles(appModel.recentFiles)
+        case .allFiles, .categories, .category, .settings:
+            // Each destination publishes its own exact visible rows once its
+            // async filtering is complete. Clear the previous page now.
+            appModel.updateCommandTargetFiles([])
+        }
+    }
+
+    private var presentsErrorAlert: Binding<Bool> {
+        Binding(
+            get: { controlActiveState == .key && appModel.errorMessage != nil },
+            set: { if !$0 { appModel.clearError() } }
         )
     }
 
@@ -447,6 +467,7 @@ private struct RenameFileSheet: View {
                 Spacer()
                 Button(AppLanguage.localized("取消", english: "Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
+                    .disabled(isSaving)
                 Button(AppLanguage.localized("重命名", english: "Rename"), action: rename)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -456,6 +477,7 @@ private struct RenameFileSheet: View {
         .padding(24)
         .frame(minWidth: 280, idealWidth: 420, maxWidth: 520, alignment: .leading)
         .onAppear { isNameFocused = true }
+        .interactiveDismissDisabled(isSaving)
     }
 
     private func rename() {

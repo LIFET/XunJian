@@ -88,6 +88,41 @@ actor FileOperationService {
         }
     }
 
+    /// Keeps identity validation and the path mutation in one actor turn, so
+    /// another app task cannot interleave between the two operations.
+    func rename(indexedFile file: IndexedFile, to proposedName: String) throws -> URL {
+        try requireIndexedIdentity(file)
+        return try rename(fileAt: file.url, to: proposedName)
+    }
+
+    func rename(
+        fileAt sourceURL: URL,
+        expectedIdentity: FileSystemObjectIdentity,
+        to proposedName: String
+    ) throws -> URL {
+        try requireIdentity(expectedIdentity, at: sourceURL)
+        return try rename(fileAt: sourceURL, to: proposedName)
+    }
+
+    func move(indexedFile file: IndexedFile, to destinationDirectory: URL) throws -> URL {
+        try requireIndexedIdentity(file)
+        return try move(fileAt: file.url, to: destinationDirectory)
+    }
+
+    func move(
+        fileAt sourceURL: URL,
+        expectedIdentity: FileSystemObjectIdentity,
+        to destinationDirectory: URL
+    ) throws -> URL {
+        try requireIdentity(expectedIdentity, at: sourceURL)
+        return try move(fileAt: sourceURL, to: destinationDirectory)
+    }
+
+    func moveToTrash(indexedFile file: IndexedFile) throws -> URL? {
+        try requireIndexedIdentity(file)
+        return try moveToTrash(fileAt: file.url)
+    }
+
     func rename(fileAt sourceURL: URL, to proposedName: String) throws -> URL {
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw FileOperationError.fileNotFound

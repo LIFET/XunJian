@@ -62,10 +62,22 @@ struct AllFilesView: View {
                 guard isVisible else { return }
                 await refreshDisplayedFilesSnapshot()
             }
+            .onAppear {
+                guard isVisible else { return }
+                appModel.highlightQuery = appModel.searchText
+            }
             .onChange(of: isVisible) { _, visible in
                 guard visible else { return }
-                appModel.updateCommandTargetFiles(appModel.browseSnapshot)
+                appModel.highlightQuery = appModel.searchText
+                // The retained All Files view may still hold the previous
+                // page's snapshot. Publish only after the current filters
+                // have been recomputed so commands cannot target stale rows.
+                appModel.updateCommandTargetFiles([])
                 Task { await refreshDisplayedFilesSnapshot() }
+            }
+            .onChange(of: appModel.searchText) { _, text in
+                guard isVisible else { return }
+                appModel.highlightQuery = text
             }
             .onChange(of: appModel.selectedFileID) { _, id in
                 guard let id else { return }
@@ -159,12 +171,28 @@ struct AllFilesView: View {
                     .frame(width: 140)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(AppLanguage.localized("修改时间不早于", english: "Modified no earlier than"))
-                        .font(.caption)
+                VStack(alignment: .leading, spacing: 8) {
+                    Toggle(
+                        AppLanguage.localized(
+                            "按修改日期过滤",
+                            english: "Filter by modified date"
+                        ),
+                        isOn: Binding(
+                            get: { minimumFilterDate != nil },
+                            set: { enabled in
+                                appModel.filterMinDate = enabled
+                                    ? Calendar.current.startOfDay(for: Date()).timeIntervalSince1970
+                                    : 0
+                            }
+                        )
+                    )
+                    .toggleStyle(.switch)
                     if let date = minimumFilterDate {
                         DatePicker(
-                            "",
+                            AppLanguage.localized(
+                                "修改时间不早于",
+                                english: "Modified no earlier than"
+                            ),
                             selection: Binding(
                                 get: { date },
                                 set: { appModel.filterMinDate = $0.timeIntervalSince1970 }
@@ -172,13 +200,7 @@ struct AllFilesView: View {
                             displayedComponents: .date
                         )
                         .datePickerStyle(.field)
-                        .labelsHidden()
-                        .frame(width: 160)
-                    } else {
-                        Button(AppLanguage.localized("选择日期…", english: "Choose Date…")) {
-                            appModel.filterMinDate = Calendar.current.startOfDay(for: Date())
-                                .timeIntervalSince1970
-                        }
+                        .frame(maxWidth: 280)
                     }
                 }
 
@@ -957,7 +979,10 @@ struct AllFilesView: View {
         // instead of re-sorting and flashing a placeholder.
         guard appModel.browseSnapshotSignature != signature else {
             if isVisible {
-                appModel.updateCommandTargetFiles(appModel.browseSnapshot)
+                appModel.updateCommandTargetFiles(
+                    appModel.browseSnapshot,
+                    usesGlobalSearchPagination: true
+                )
             }
             return
         }
@@ -983,7 +1008,10 @@ struct AllFilesView: View {
         appModel.browseSnapshot = result
         appModel.browseSnapshotSignature = signature
         if isVisible {
-            appModel.updateCommandTargetFiles(result)
+            appModel.updateCommandTargetFiles(
+                result,
+                usesGlobalSearchPagination: true
+            )
         }
         appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
     }

@@ -138,6 +138,7 @@ struct AIProviderSettingsRow: View {
             isExpanded = ai.activeProviderKind == kind
         }
         .onChange(of: ai.providerSettings) { _, _ in
+            guard !hasUnsavedConfigurationChanges else { return }
             synchronizeFields()
         }
         .onChange(of: activeExpansionID) { _, newValue in

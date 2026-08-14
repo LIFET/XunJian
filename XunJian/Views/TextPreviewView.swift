@@ -25,6 +25,7 @@ struct TextPreviewView: View {
     @State private var query = ""
     @State private var matches: [Match] = []
     @State private var currentMatch = 0
+    @State private var matchTask: Task<Void, Never>?
 
     private enum LoadState: Equatable {
         case loading
@@ -33,12 +34,12 @@ struct TextPreviewView: View {
         case failed(String)
     }
 
-    struct TextChunk: Identifiable, Equatable {
+    struct TextChunk: Identifiable, Equatable, Sendable {
         let id: Int
         let text: String
     }
 
-    struct Match: Equatable {
+    struct Match: Equatable, Sendable {
         let chunkID: Int
         let range: Range<String.Index>
     }
@@ -52,8 +53,9 @@ struct TextPreviewView: View {
         .frame(minWidth: 520, idealWidth: 720, minHeight: 420, idealHeight: 680)
         .task { await load() }
         .onChange(of: query) { _, newValue in
-            recomputeMatches(for: newValue)
+            scheduleMatchComputation(for: newValue)
         }
+        .onDisappear { matchTask?.cancel() }
     }
 
     // MARK: - Chrome
@@ -255,25 +257,46 @@ struct TextPreviewView: View {
             chunks = Self.chunk(text)
             loadState = .ready
             query = initialQuery
-            recomputeMatches(for: initialQuery)
         } catch {
             loadState = .failed(error.localizedDescription)
         }
     }
 
-    private func recomputeMatches(for rawQuery: String) {
+    private func scheduleMatchComputation(for rawQuery: String) {
+        matchTask?.cancel()
         let trimmed = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             matches = []
             currentMatch = 0
             return
         }
-        matches = chunks.flatMap { chunk in
-            Self.ranges(of: trimmed, in: chunk.text).map {
+        let chunkSnapshot = chunks
+        matchTask = Task {
+            do {
+                try await Task.sleep(for: .milliseconds(80))
+                let computed = await Task.detached(priority: .userInitiated) {
+                    Self.matches(for: trimmed, in: chunkSnapshot)
+                }.value
+                try Task.checkCancellation()
+                guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else {
+                    return
+                }
+                matches = computed
+                currentMatch = 0
+            } catch is CancellationError {
+                return
+            } catch {
+                return
+            }
+        }
+    }
+
+    nonisolated private static func matches(for query: String, in chunks: [TextChunk]) -> [Match] {
+        chunks.flatMap { chunk in
+            Self.ranges(of: query, in: chunk.text).map {
                 Match(chunkID: chunk.id, range: $0)
             }
         }
-        currentMatch = 0
     }
 
     private func moveMatch(by offset: Int) {
@@ -281,7 +304,7 @@ struct TextPreviewView: View {
         currentMatch = (currentMatch + offset + matches.count) % matches.count
     }
 
-    static func ranges(of query: String, in text: String) -> [Range<String.Index>] {
+    nonisolated static func ranges(of query: String, in text: String) -> [Range<String.Index>] {
         var result: [Range<String.Index>] = []
         var searchStart = text.startIndex
         while searchStart < text.endIndex,
@@ -298,7 +321,7 @@ struct TextPreviewView: View {
 
     /// Splits on newlines, then hard-wraps very long lines so a file with no
     /// line breaks still produces multiple chunks instead of one huge view.
-    static func chunk(_ text: String, maximumChunkLength: Int = 2_000) -> [TextChunk] {
+    nonisolated static func chunk(_ text: String, maximumChunkLength: Int = 2_000) -> [TextChunk] {
         var result: [TextChunk] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             var remainder = Substring(line)

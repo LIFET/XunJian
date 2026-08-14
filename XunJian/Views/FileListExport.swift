@@ -12,7 +12,7 @@ extension Notification.Name {
 /// Read-only: this writes a new file the user picks and never touches the
 /// indexed files themselves.
 enum FileListExport {
-    enum Format: String, CaseIterable, Identifiable {
+    enum Format: String, CaseIterable, Identifiable, Sendable {
         case csv
         case markdown
 
@@ -48,7 +48,27 @@ enum FileListExport {
 
     @MainActor
     static func run(appModel: AppModel, format: Format) {
-        let files = currentFiles(from: appModel)
+        Task { await export(appModel: appModel, format: format) }
+    }
+
+    @MainActor
+    private static func export(appModel: AppModel, format: Format) async {
+        var files = currentFiles(from: appModel)
+        if appModel.commandTargetUsesGlobalSearchPagination,
+           appModel.hasMoreSearchResults,
+           appModel.selectedFileIDs.count <= 1 {
+            let loaded = max(files.count, appModel.commandTargetFiles.count)
+            let total = appModel.searchResultTotalCount ?? loaded
+            switch promptForUnloadedResults(loaded: loaded, total: total) {
+            case .cancel:
+                return
+            case .loaded:
+                break
+            case .all:
+                guard await appModel.loadAllSearchResults() else { return }
+                files = appModel.filesMatchingCurrentBrowseFilters()
+            }
+        }
         guard !files.isEmpty else {
             appModel.errorMessage = AppLanguage.localized(
                 "当前没有可导出的文件。",
@@ -68,17 +88,127 @@ enum FileListExport {
         let categoryNames = files.reduce(into: [String: [String]]()) { result, file in
             result[file.id] = appModel.categories(for: file).map(\.localizedDisplayName)
         }
-        let text = contents(
-            for: files,
-            format: format,
-            categoryNames: categoryNames
-        )
-
         do {
-            try text.write(to: url, atomically: true, encoding: .utf8)
+            try await Task.detached(priority: .userInitiated) {
+                try write(
+                    files: files,
+                    format: format,
+                    categoryNames: categoryNames,
+                    to: url
+                )
+            }.value
         } catch {
             appModel.errorMessage = error.localizedDescription
         }
+    }
+
+    private enum UnloadedExportChoice {
+        case loaded
+        case all
+        case cancel
+    }
+
+    @MainActor
+    private static func promptForUnloadedResults(loaded: Int, total: Int) -> UnloadedExportChoice {
+        let alert = NSAlert()
+        alert.messageText = AppLanguage.localized(
+            "尚未加载全部匹配结果",
+            english: "Not All Matches Are Loaded"
+        )
+        alert.informativeText = AppLanguage.localized(
+            "当前列表有 \(loaded) 条，完整匹配共 \(total) 条。要导出哪些？",
+            english: "The current list has \(loaded) items; \(total) match in total. What should be exported?"
+        )
+        alert.addButton(withTitle: AppLanguage.localized(
+            "导出已加载（\(loaded)）",
+            english: "Export Loaded (\(loaded))"
+        ))
+        alert.addButton(withTitle: AppLanguage.localized(
+            "导出全部（\(total)）",
+            english: "Export All (\(total))"
+        ))
+        alert.addButton(withTitle: AppLanguage.localized("取消", english: "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            return .loaded
+        case .alertSecondButtonReturn:
+            return .all
+        default:
+            return .cancel
+        }
+    }
+
+    /// Streams rows into a same-directory temporary file and replaces the
+    /// destination only after a complete, synchronized write. This keeps
+    /// exports bounded in memory and never leaves a partial final artifact.
+    static func write(
+        files: [IndexedFile],
+        format: Format,
+        categoryNames: [String: [String]],
+        to destinationURL: URL
+    ) throws {
+        let fileManager = FileManager.default
+        let temporaryURL = destinationURL.deletingLastPathComponent()
+            .appendingPathComponent(".xunjian-export-\(UUID().uuidString).tmp")
+        guard fileManager.createFile(atPath: temporaryURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        var installed = false
+        defer {
+            try? handle.close()
+            if !installed { try? fileManager.removeItem(at: temporaryURL) }
+        }
+
+        func append(_ line: String) throws {
+            try handle.write(contentsOf: Data(line.utf8))
+        }
+
+        switch format {
+        case .csv:
+            let formatter = ISO8601DateFormatter()
+            try append(headers.map(csvField).joined(separator: ",") + "\n")
+            for file in files {
+                try Task.checkCancellation()
+                let cells = row(
+                    for: file,
+                    categoryNames: categoryNames,
+                    dateFormatter: { formatter.string(from: $0) }
+                )
+                try append(cells.map(csvField).joined(separator: ",") + "\n")
+            }
+        case .markdown:
+            let opening = [
+                "# " + AppLanguage.localized("寻简文件清单", english: "XunJian File List"),
+                "",
+                AppLanguage.localized(
+                    "共 \(files.count) 个文件 · 导出于 \(FinderDateFormatting.string(for: Date()))",
+                    english: "\(files.count) files · exported \(FinderDateFormatting.string(for: Date()))"
+                ),
+                "",
+                "| " + headers.map(markdownCell).joined(separator: " | ") + " |",
+                "| " + headers.map { _ in "---" }.joined(separator: " | ") + " |"
+            ]
+            try append(opening.joined(separator: "\n") + "\n")
+            for file in files {
+                try Task.checkCancellation()
+                let cells = row(
+                    for: file,
+                    categoryNames: categoryNames,
+                    dateFormatter: FinderDateFormatting.string(for:)
+                )
+                try append("| " + cells.map(markdownCell).joined(separator: " | ") + " |\n")
+            }
+        }
+
+        try handle.synchronize()
+        try handle.close()
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+        installed = true
     }
 
     static func defaultFileName(format: Format) -> String {

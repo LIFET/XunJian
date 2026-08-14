@@ -3,10 +3,13 @@ import SwiftUI
 import UserNotifications
 
 struct SettingsView: View {
+    var presentsErrors = false
+
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var oauth: OAuthCoordinator
     @EnvironmentObject private var ai: AISessionCoordinator
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.controlActiveState) private var controlActiveState
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
     @AppStorage(MenuBarSearchPreference.storageKey) private var showsMenuBarSearch = true
@@ -161,8 +164,7 @@ struct SettingsView: View {
                     isOn: Binding(
                         get: { indexesFileContents },
                         set: { enabled in
-                            indexesFileContents = enabled
-                            Task { await appModel.setIndexesFileContents(enabled) }
+                            appModel.setIndexesFileContents(enabled)
                         }
                     )
                 )
@@ -435,6 +437,14 @@ struct SettingsView: View {
             guard phase == .active else { return }
             Task { await refreshNotificationAuthorization() }
         }
+        .alert(
+            AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
+            isPresented: presentsErrorAlert
+        ) {
+            Button(AppLanguage.localized("好", english: "OK")) { appModel.clearError() }
+        } message: {
+            Text(AppLanguage.localizedRuntimeMessage(appModel.errorMessage ?? ""))
+        }
         .confirmationDialog(
             AppLanguage.localized("移除文件夹授权？", english: "Remove Folder Access?"),
             isPresented: Binding(
@@ -472,6 +482,17 @@ struct SettingsView: View {
         guard !candidate.isEmpty else { return }
         newExclusion = ""
         updateExclusions(customExclusions + [candidate])
+    }
+
+    private var presentsErrorAlert: Binding<Bool> {
+        Binding(
+            get: {
+                presentsErrors
+                    && controlActiveState == .key
+                    && appModel.errorMessage != nil
+            },
+            set: { if !$0 { appModel.clearError() } }
+        )
     }
 
     private var appVersionText: String {

@@ -56,6 +56,7 @@ struct HomeView: View {
         }
         .navigationTitle(AppLanguage.localized("首页", english: "Home"))
         .onAppear {
+            appModel.highlightQuery = ""
             appModel.updateCommandTargetFiles(appModel.recentFiles)
         }
         .onChange(of: appModel.recentFiles.map(\.id)) { _, _ in

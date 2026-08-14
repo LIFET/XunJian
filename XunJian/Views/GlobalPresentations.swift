@@ -92,7 +92,7 @@ private struct TextPreviewPresentation: ViewModifier {
                 file = appModel.selectedFile
             }
             .sheet(item: $file) { previewed in
-                TextPreviewView(file: previewed, initialQuery: appModel.searchText)
+                TextPreviewView(file: previewed, initialQuery: appModel.highlightQuery)
                     .environmentObject(appModel)
                     .environment(\.locale, locale)
             }

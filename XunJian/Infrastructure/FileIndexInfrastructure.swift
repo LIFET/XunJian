@@ -1,13 +1,46 @@
+import Darwin
 import Foundation
 import SQLite3
 import UniformTypeIdentifiers
 
 enum FilePathCanonicalizer {
     static func path(_ url: URL) -> String {
-        url.resolvingSymlinksInPath()
-            .standardizedFileURL
-            .path
-            .precomposedStringWithCanonicalMapping
+        // `resolvingSymlinksInPath()` cannot reliably resolve `/var` to
+        // `/private/var` after the final item has already moved away. Resolve
+        // the nearest existing ancestor, then append the missing suffix so
+        // live FSEvents and later reconciliation use the same identity.
+        var existingAncestor = url.standardizedFileURL
+        var missingComponents: [String] = []
+        while existingAncestor.path != "/",
+              !FileManager.default.fileExists(atPath: existingAncestor.path) {
+            missingComponents.insert(existingAncestor.lastPathComponent, at: 0)
+            existingAncestor.deleteLastPathComponent()
+        }
+        let resolvedAncestorPath = existingAncestor.path.withCString { pathPointer in
+            guard let resolvedPointer = Darwin.realpath(pathPointer, nil) else {
+                return existingAncestor.path
+            }
+            defer { free(resolvedPointer) }
+            return String(cString: resolvedPointer)
+        }
+        var resolved = URL(fileURLWithPath: resolvedAncestorPath, isDirectory: true)
+        for component in missingComponents {
+            resolved.appendPathComponent(component)
+        }
+        var resolvedPath = resolved.path
+        // Keep the stable, user-facing macOS aliases used by
+        // FileManager. FSEvents reports their `/private` targets directly,
+        // so normalize both forms to one value regardless of existence.
+        if resolvedPath == "/private/var" {
+            resolvedPath = "/var"
+        } else if resolvedPath.hasPrefix("/private/var/") {
+            resolvedPath = "/var/" + String(resolvedPath.dropFirst("/private/var/".count))
+        } else if resolvedPath == "/private/tmp" {
+            resolvedPath = "/tmp"
+        } else if resolvedPath.hasPrefix("/private/tmp/") {
+            resolvedPath = "/tmp/" + String(resolvedPath.dropFirst("/private/tmp/".count))
+        }
+        return resolvedPath.precomposedStringWithCanonicalMapping
     }
 
     static func path(_ path: String) -> String {
@@ -108,6 +141,7 @@ struct FileTextContentUpdate: Sendable {
 enum FileIndexPreferences {
     static let includesHiddenFilesKey = "fileIndex.includesDotPrefixedFiles"
     static let indexesFileContentsKey = "fileIndex.indexesFileContents"
+    static let disabledContentPurgeCompletedKey = "fileIndex.disabledContentPurgeCompleted"
 
     static var indexesFileContents: Bool {
         let defaults = UserDefaults.standard
@@ -150,6 +184,7 @@ struct SavedSearch: Identifiable, Hashable, Sendable {
     var minSizeBytes: Int64
     var minDate: Date?
     let createdAt: Date
+    var fileKind: FileKind? = nil
 
     /// One-line description of the stored query and filters, shown under the
     /// name in the sidebar so a saved search is recognisable without opening it.
@@ -160,6 +195,9 @@ struct SavedSearch: Identifiable, Hashable, Sendable {
             parts.append(usesEnglish ? "Any name" : "不限名称")
         } else {
             parts.append(trimmedQuery)
+        }
+        if let fileKind {
+            parts.append(fileKind.title(usesEnglish: usesEnglish))
         }
         if minSizeBytes > 0 {
             let size = ByteCountFormatter.string(fromByteCount: minSizeBytes, countStyle: .file)
@@ -174,10 +212,17 @@ struct SavedSearch: Identifiable, Hashable, Sendable {
 
     /// True when this saved search is the same query and filters the user is
     /// looking at now, so the sidebar can mark it as current.
-    func matches(query: String, minSizeBytes: Int64, minDate: Date?) -> Bool {
+    func matches(
+        query: String,
+        minSizeBytes: Int64,
+        minDate: Date?,
+        fileKind: FileKind? = nil
+    ) -> Bool {
         let normalizedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let ownQuery = self.query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard normalizedQuery == ownQuery, minSizeBytes == self.minSizeBytes else {
+        guard normalizedQuery == ownQuery,
+              minSizeBytes == self.minSizeBytes,
+              self.fileKind == fileKind else {
             return false
         }
         switch (minDate, self.minDate) {
@@ -212,6 +257,13 @@ enum FileIndexError: LocalizedError, Sendable {
     case overlappingSource(String)
     case invalidCategoryName
     case categoryExists
+
+    static var databaseUnavailable: FileIndexError {
+        .database(AppLanguage.localized(
+            "当前不可用，请在设置中重试。",
+            english: "It is currently unavailable. Retry from Settings."
+        ))
+    }
 
     var errorDescription: String? {
         switch self {
@@ -340,11 +392,14 @@ actor FileScanner {
     /// FTS in one bounded, cancellable pass.
     func extractTextContents(
         in files: [IndexedFile],
+        batchSize: Int = 64,
+        consume: @Sendable ([FileTextContentUpdate]) async throws -> Void,
         progress: ProgressHandler? = nil
-    ) throws -> [FileTextContentUpdate] {
+    ) async throws {
+        precondition(batchSize > 0)
         let candidates = files.filter { textExtractor.supports($0.url) }
         var updates: [FileTextContentUpdate] = []
-        updates.reserveCapacity(candidates.count)
+        updates.reserveCapacity(min(batchSize, candidates.count))
         for (offset, file) in candidates.enumerated() {
             try Task.checkCancellation()
             updates.append(
@@ -353,6 +408,10 @@ actor FileScanner {
                     textContent: textExtractor.extractText(from: file.url)
                 )
             )
+            if updates.count == batchSize {
+                try await consume(updates)
+                updates.removeAll(keepingCapacity: true)
+            }
             if offset.isMultiple(of: 25) {
                 progress?(
                     ScanProgress(
@@ -362,7 +421,9 @@ actor FileScanner {
                 )
             }
         }
-        return updates
+        if !updates.isEmpty {
+            try await consume(updates)
+        }
     }
 
     func scanChanges(
@@ -1061,7 +1122,10 @@ actor FileIndexDatabase {
                     created_at = excluded.created_at,
                     modified_at = excluded.modified_at,
                     indexed_at = excluded.indexed_at,
-                    text_content = excluded.text_content;
+                    text_content = CASE
+                        WHEN excluded.text_content IS NULL THEN files.text_content
+                        ELSE excluded.text_content
+                    END;
                 """
             )
             defer { sqlite3_finalize(upsertStatement) }
@@ -1206,14 +1270,12 @@ actor FileIndexDatabase {
 
     func clearTextContents() throws {
         try transaction {
-            let select = try prepare("SELECT id FROM files;")
-            var fileIDs: [String] = []
-            while sqlite3_step(select) == SQLITE_ROW {
-                fileIDs.append(text(select, column: 0))
-            }
-            sqlite3_finalize(select)
             try Self.execute("UPDATE files SET text_content = NULL;", on: connection.pointer)
-            try fileIDs.forEach(rebuildSearchEntry)
+            // FTS5 applies UPDATE as a bulk delete/insert internally. Updating
+            // the derived column in one statement avoids preparing three SQL
+            // statements per file, which made opting out of content indexing
+            // increasingly slow on large libraries.
+            try Self.execute("UPDATE file_search SET text_content = '';", on: connection.pointer)
         }
     }
 
@@ -1237,7 +1299,9 @@ actor FileIndexDatabase {
     func searchFilesPage(
         matching query: String,
         limit: Int = 500,
-        includesHiddenFiles: Bool = true
+        offset: Int = 0,
+        includesHiddenFiles: Bool = true,
+        fetchesTotalCount: Bool = true
     ) throws -> FileSearchPage {
         guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
             return FileSearchPage(files: [], totalCount: 0)
@@ -1245,17 +1309,52 @@ actor FileIndexDatabase {
         return try searchFilesPage(
             matchExpression: matchExpression,
             limit: limit,
-            includesHiddenFiles: includesHiddenFiles
+            offset: offset,
+            includesHiddenFiles: includesHiddenFiles,
+            fetchesTotalCount: fetchesTotalCount
         )
+    }
+
+    func searchFileIDs(
+        matching query: String,
+        inCategory categoryID: UUID,
+        limit: Int
+    ) throws -> Set<String> {
+        guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
+            return []
+        }
+        let statement = try prepare(
+            """
+            SELECT file_search.file_id
+            FROM file_search
+            JOIN file_categories AS fc ON fc.file_id = file_search.file_id
+            WHERE file_search MATCH ? AND fc.category_id = ?
+            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
+            LIMIT ?;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(matchExpression, at: 1, to: statement)
+        try bind(categoryID.uuidString, at: 2, to: statement)
+        try bind(Int64(max(1, limit)), at: 3, to: statement)
+
+        var result = Set<String>()
+        while sqlite3_step(statement) == SQLITE_ROW {
+            result.insert(text(statement, column: 0))
+        }
+        return result
     }
 
     private func searchFilesPage(
         matchExpression: String,
         limit: Int,
-        includesHiddenFiles: Bool = true
+        offset: Int = 0,
+        includesHiddenFiles: Bool = true,
+        fetchesTotalCount: Bool = true
     ) throws -> FileSearchPage {
 
         let requestedLimit = Int64(max(1, limit))
+        let requestedOffset = Int64(max(0, offset))
 
         let statement = try prepare(
             """
@@ -1268,13 +1367,14 @@ actor FileIndexDatabase {
             ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
                      f.modified_at DESC,
                      f.name COLLATE NOCASE ASC
-            LIMIT ?;
+            LIMIT ? OFFSET ?;
             """
         )
         defer { sqlite3_finalize(statement) }
         try bind(matchExpression, at: 1, to: statement)
         try bind(includesHiddenFiles ? 1 : 0, at: 2, to: statement)
         try bind(requestedLimit, at: 3, to: statement)
+        try bind(requestedOffset, at: 4, to: statement)
 
         var files: [IndexedFile] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -1296,6 +1396,9 @@ actor FileIndexDatabase {
                     indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
                 )
             )
+        }
+        guard fetchesTotalCount else {
+            return FileSearchPage(files: files, totalCount: max(0, offset) + files.count)
         }
         let countStatement = try prepare(
             """
@@ -1323,7 +1426,7 @@ actor FileIndexDatabase {
     func fetchSavedSearches() throws -> [SavedSearch] {
         let statement = try prepare(
             """
-            SELECT id, name, query, min_size, min_date, created_at
+            SELECT id, name, query, min_size, min_date, created_at, file_kind
             FROM saved_searches
             ORDER BY created_at ASC;
             """
@@ -1340,7 +1443,8 @@ actor FileIndexDatabase {
                     query: text(statement, column: 2),
                     minSizeBytes: sqlite3_column_int64(statement, 3),
                     minDate: optionalDate(statement, column: 4),
-                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5))
+                    createdAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 5)),
+                    fileKind: FileKind(rawValue: text(statement, column: 6))
                 )
             )
         }
@@ -1350,13 +1454,14 @@ actor FileIndexDatabase {
     func upsertSavedSearch(_ search: SavedSearch) throws {
         let statement = try prepare(
             """
-            INSERT INTO saved_searches (id, name, query, min_size, min_date, created_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO saved_searches (id, name, query, min_size, min_date, created_at, file_kind)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
                 query = excluded.query,
                 min_size = excluded.min_size,
-                min_date = excluded.min_date;
+                min_date = excluded.min_date,
+                file_kind = excluded.file_kind;
             """
         )
         defer { sqlite3_finalize(statement) }
@@ -1366,6 +1471,7 @@ actor FileIndexDatabase {
         try bind(search.minSizeBytes, at: 4, to: statement)
         try bind(search.minDate?.timeIntervalSince1970, at: 5, to: statement)
         try bind(search.createdAt.timeIntervalSince1970, at: 6, to: statement)
+        try bind(search.fileKind?.rawValue, at: 7, to: statement)
         try stepDone(statement)
     }
 
@@ -1456,9 +1562,9 @@ actor FileIndexDatabase {
     /// Recreates a category and its file links after an undo. Does not touch
     /// files on disk.
     func restoreCategory(_ category: FileCategory, fileIDs: [String]) throws {
-        let normalizedName = try validatedCategoryName(category.name)
-        guard try categoryID(named: normalizedName, excluding: nil) == nil else {
-            throw FileIndexError.categoryExists
+        var normalizedName = try validatedCategoryName(category.name)
+        if try categoryID(named: normalizedName, excluding: nil) != nil {
+            normalizedName = try uniqueRestoredCategoryName(normalizedName)
         }
 
         try transaction {
@@ -1585,7 +1691,10 @@ actor FileIndexDatabase {
                     created_at = excluded.created_at,
                     modified_at = excluded.modified_at,
                     indexed_at = excluded.indexed_at,
-                    text_content = excluded.text_content;
+                    text_content = CASE
+                        WHEN excluded.text_content IS NULL THEN files.text_content
+                        ELSE excluded.text_content
+                    END;
                 """
             )
             defer { sqlite3_finalize(upsertStatement) }
@@ -1819,6 +1928,28 @@ actor FileIndexDatabase {
         }
     }
 
+    private func uniqueRestoredCategoryName(_ name: String) throws -> String {
+        func candidate(suffix: String) throws -> String {
+            if name.count + suffix.count <= 80 {
+                return try validatedCategoryName(name + suffix)
+            }
+            let trimmed = String(name.prefix(max(1, 80 - suffix.count)))
+            return try validatedCategoryName(trimmed + suffix)
+        }
+
+        var restored = try candidate(
+            suffix: AppLanguage.localized(" (已恢复)", english: " (Restored)")
+        )
+        var index = 2
+        while try categoryID(named: restored, excluding: nil) != nil {
+            restored = try candidate(
+                suffix: AppLanguage.localized(" (已恢复 \(index))", english: " (Restored \(index))")
+            )
+            index += 1
+        }
+        return restored
+    }
+
     private func validatedCategoryName(_ name: String) throws -> String {
         let normalizedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !normalizedName.isEmpty, normalizedName.count <= 80 else {
@@ -1976,6 +2107,16 @@ actor FileIndexDatabase {
                     created_at REAL NOT NULL
                 );
                 PRAGMA user_version = 4;
+                """,
+                on: database
+            )
+        }
+
+        if try userVersion(database) < 5 {
+            try execute(
+                """
+                ALTER TABLE saved_searches ADD COLUMN file_kind TEXT;
+                PRAGMA user_version = 5;
                 """,
                 on: database
             )

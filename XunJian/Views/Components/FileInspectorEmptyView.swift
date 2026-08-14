@@ -22,7 +22,9 @@ struct FileInspectorView: View {
 
     var body: some View {
         Group {
-            if let file {
+            if appModel.selectedFileIDs.count > 1 {
+                multiSelectInspector
+            } else if let file {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
                         VStack(spacing: 12) {
@@ -358,7 +360,7 @@ struct FileInspectorView: View {
             previewLimit = 2_000
             previewFailed = false
             finderTags = []
-            guard let file else { return }
+            guard appModel.selectedFileIDs.count <= 1, let file else { return }
 
             // N11: live Finder tags.
             if let values = try? file.url.resourceValues(forKeys: [.tagNamesKey]),
@@ -379,11 +381,31 @@ struct FileInspectorView: View {
         }
     }
 
+    private var multiSelectInspector: some View {
+        let files = appModel.selectedFiles
+        let totalSize = files.reduce(Int64(0)) { $0 + $1.size }
+        return ContentUnavailableView {
+            Label(
+                AppLanguage.localized(
+                    "已选择 \(files.count) 项",
+                    english: "\(files.count) Selected"
+                ),
+                systemImage: "checkmark.circle"
+            )
+        } description: {
+            Text(verbatim: AppLanguage.localized(
+                "批量操作请用列表上方的工具条。单文件重命名、移动和废纸篓在只选一项时可用。总大小 \(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))。",
+                english: "Use the batch bar above the list. Rename, move, and Trash apply to a single file when only one is selected. Total size \(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))."
+            ))
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
     /// Renders the preview with every occurrence of the current search query
     /// highlighted (N08). Case-insensitive; plain text otherwise.
     private func highlightedPreview(_ text: String) -> AttributedString {
         var attributed = AttributedString(text)
-        let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = appModel.highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return attributed }
 
         let lowercasedText = text.lowercased()
