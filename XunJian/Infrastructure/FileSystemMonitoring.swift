@@ -227,10 +227,13 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
                 callbackBox.emit(events)
             }
         }
+        // No `NoDefer`: that flag makes FSEvents deliver events immediately
+        // and ignores the latency window, defeating kernel-side batching and
+        // multiplying callback hops. The coordinator's own 350ms coalescing
+        // still applies on top of the 250ms latency here.
         let createFlags = FSEventStreamCreateFlags(
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagWatchRoot
-                | kFSEventStreamCreateFlagNoDefer
         )
         guard let stream = FSEventStreamCreate(
             nil,

@@ -1032,6 +1032,77 @@ final class FileIndexDatabaseTests: XCTestCase {
         XCTAssertEqual(pageIncludingHidden.totalCount, 4)
     }
 
+    func testSearchPageOffsetReturnsOnlyTheNextBatch() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "增量分页",
+            path: container.path,
+            bookmark: Data([3, 2, 1])
+        )
+        let files = (0..<6).map { index in
+            IndexedFile(
+                id: "batch-\(index)", sourceID: source.id,
+                name: "批次-\(index).txt",
+                path: container.appendingPathComponent("批次-\(index).txt").path,
+                fileExtension: "txt", kind: .document, size: 1,
+                createdAt: nil,
+                modifiedAt: Date(timeIntervalSince1970: TimeInterval(100 - index)),
+                indexedAt: Date(), textContent: "共同分页词"
+            )
+        }
+        try await database.replaceFiles(for: source.id, with: files)
+
+        let first = try await database.searchFilesPage(
+            matching: "共同分页词", limit: 2, offset: 0
+        )
+        let second = try await database.searchFilesPage(
+            matching: "共同分页词", limit: 2, offset: 2, fetchesTotalCount: false
+        )
+
+        XCTAssertEqual(first.totalCount, 6)
+        XCTAssertEqual(first.files.count, 2)
+        XCTAssertEqual(second.files.count, 2)
+        XCTAssertTrue(Set(first.files.map(\.id)).isDisjoint(with: second.files.map(\.id)))
+    }
+
+    func testCategorySearchNeverReturnsMatchesFromAnotherCategory() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "分类搜索",
+            path: container.path,
+            bookmark: Data([4, 5, 6])
+        )
+        let inside = IndexedFile(
+            id: "inside", sourceID: source.id, name: "合同-分类内.txt",
+            path: container.appendingPathComponent("合同-分类内.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let outside = IndexedFile(
+            id: "outside", sourceID: source.id, name: "合同-分类外.txt",
+            path: container.appendingPathComponent("合同-分类外.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [inside, outside])
+        let category = try await database.createCategory(name: "目标", symbolName: "folder")
+        try await database.setCategory(category.id, assigned: true, toFile: inside.id)
+
+        let result = try await database.searchFileIDs(
+            matching: "合同", inCategory: category.id, limit: 100
+        )
+
+        XCTAssertEqual(result, Set([inside.id]))
+    }
+
     func testTextContentIsLoadedOnlyOnDemand() async throws {
         let container = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -1871,7 +1942,7 @@ final class FileIndexDatabaseTests: XCTestCase {
         let remainingFiles = try await database.fetchFiles()
         let staleSearch = try await database.searchFiles(matching: "removed")
 
-        XCTAssertEqual(removedCount, 1)
+        XCTAssertEqual(removedCount.count, 1)
         XCTAssertEqual(remainingFiles.map(\.id), ["kept-id"])
         XCTAssertTrue(staleSearch.isEmpty)
     }

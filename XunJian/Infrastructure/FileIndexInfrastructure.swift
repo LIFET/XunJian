@@ -390,6 +390,10 @@ actor FileScanner {
     /// Content extraction is deliberately separate from metadata discovery.
     /// The coordinator can publish the usable file list first, then enrich
     /// FTS in one bounded, cancellable pass.
+    ///
+    /// Extraction runs with bounded concurrency: a single slow PDF previously
+    /// stalled the entire library's text pass because every file was read
+    /// serially on this actor.
     func extractTextContents(
         in files: [IndexedFile],
         batchSize: Int = 64,
@@ -398,27 +402,52 @@ actor FileScanner {
     ) async throws {
         precondition(batchSize > 0)
         let candidates = files.filter { textExtractor.supports($0.url) }
+        guard !candidates.isEmpty else { return }
+
+        let maximumConcurrentExtractions = 4
         var updates: [FileTextContentUpdate] = []
         updates.reserveCapacity(min(batchSize, candidates.count))
-        for (offset, file) in candidates.enumerated() {
-            try Task.checkCancellation()
-            updates.append(
-                FileTextContentUpdate(
-                    fileID: file.id,
-                    textContent: textExtractor.extractText(from: file.url)
-                )
-            )
-            if updates.count == batchSize {
-                try await consume(updates)
-                updates.removeAll(keepingCapacity: true)
-            }
-            if offset.isMultiple(of: 25) {
-                progress?(
-                    ScanProgress(
-                        discoveredCount: files.count,
-                        currentPath: file.path
+        var processedCount = 0
+        var lastProgressEmission = DispatchTime(uptimeNanoseconds: 0)
+
+        try await withThrowingTaskGroup(
+            of: (update: FileTextContentUpdate, path: String).self
+        ) { group in
+            var iterator = candidates.makeIterator()
+            func addNext() {
+                guard let file = iterator.next() else { return }
+                group.addTask { [textExtractor] in
+                    (
+                        FileTextContentUpdate(
+                            fileID: file.id,
+                            textContent: textExtractor.extractText(from: file.url)
+                        ),
+                        file.path
                     )
-                )
+                }
+            }
+            for _ in 0..<min(maximumConcurrentExtractions, candidates.count) {
+                addNext()
+            }
+
+            while let completed = try await group.next() {
+                try Task.checkCancellation()
+                updates.append(completed.update)
+                processedCount += 1
+                if updates.count == batchSize {
+                    try await consume(updates)
+                    updates.removeAll(keepingCapacity: true)
+                }
+                if processedCount.isMultiple(of: 25),
+                   Self.shouldEmitProgress(lastEmission: &lastProgressEmission) {
+                    progress?(
+                        ScanProgress(
+                            discoveredCount: files.count,
+                            currentPath: completed.path
+                        )
+                    )
+                }
+                addNext()
             }
         }
         if !updates.isEmpty {
@@ -540,9 +569,7 @@ actor FileScanner {
             failedScopes: failedScopes.sorted {
                 $0.path.localizedStandardCompare($1.path) == .orderedAscending
             },
-            files: filesByID.values.sorted {
-                $0.path.localizedStandardCompare($1.path) == .orderedAscending
-            }
+            files: Array(filesByID.values)
         )
     }
 
@@ -577,6 +604,7 @@ actor FileScanner {
 
         var files: [IndexedFile] = []
         let indexedAt = Date()
+        var lastProgressEmission = DispatchTime(uptimeNanoseconds: 0)
 
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
@@ -612,7 +640,10 @@ actor FileScanner {
             ) else { continue }
             files.append(file)
 
-            if files.count.isMultiple(of: 100) {
+            // Stride-based progress plus a time floor: fast scans otherwise
+            // emit thousands of main-actor hops for no visible benefit.
+            if files.count.isMultiple(of: 100),
+               Self.shouldEmitProgress(lastEmission: &lastProgressEmission) {
                 progress?(
                     ScanProgress(discoveredCount: files.count, currentPath: fileURL.path)
                 )
@@ -631,9 +662,22 @@ actor FileScanner {
             ScanProgress(discoveredCount: files.count, currentPath: rootURL.path)
         )
 
-        return files.sorted {
-            $0.path.localizedStandardCompare($1.path) == .orderedAscending
+        // Unsorted: enumeration order is stable enough for ingestion, and the
+        // database reads sort deterministically. Sorting here doubled the peak
+        // memory of large scans for no observable benefit.
+        return files
+    }
+
+    private static func shouldEmitProgress(
+        lastEmission: inout DispatchTime,
+        minimumIntervalNanoseconds: UInt64 = 200_000_000
+    ) -> Bool {
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard now - lastEmission.uptimeNanoseconds >= minimumIntervalNanoseconds else {
+            return false
         }
+        lastEmission = DispatchTime(uptimeNanoseconds: now)
+        return true
     }
 
     private func shouldExcludeDirectory(_ name: String) -> Bool {
@@ -766,6 +810,10 @@ actor FileIndexDatabase {
             try Self.execute("PRAGMA foreign_keys = ON;", on: openedDatabase)
             try Self.execute("PRAGMA journal_mode = WAL;", on: openedDatabase)
             try Self.execute("PRAGMA synchronous = NORMAL;", on: openedDatabase)
+            // Wait out brief external locks (another app instance, a sqlite3
+            // shell, Time Machine) instead of failing immediately with
+            // SQLITE_BUSY, which the default zero timeout would do.
+            sqlite3_busy_timeout(openedDatabase, 3_000)
             try Self.migrate(openedDatabase)
             try Self.restrictDatabaseFiles(at: databaseURL)
         } catch {
@@ -1035,22 +1083,33 @@ actor FileIndexDatabase {
             }
 
             try Self.execute("COMMIT;", on: database)
+            // Bound the write-ahead log and refresh query-planner statistics
+            // after the largest maintenance transaction; without this the WAL
+            // can grow to hundreds of MB and the next write pays a
+            // synchronous checkpoint.
+            try? Self.execute("PRAGMA wal_checkpoint(TRUNCATE);", on: database)
+            try? Self.execute("PRAGMA optimize;", on: database)
         } catch {
             try? Self.execute("ROLLBACK;", on: database)
             throw error
         }
     }
 
+    /// Reconciles one source's changed scopes against the database, returning
+    /// the IDs of rows removed as stale so callers can patch their in-memory
+    /// model without refetching the whole table.
+    @discardableResult
     func reconcileFiles(
         for sourceID: UUID,
         scopes: [FileIndexScope],
         with files: [IndexedFile]
-    ) throws {
-        guard !scopes.isEmpty else { return }
+    ) throws -> Set<String> {
+        guard !scopes.isEmpty else { return [] }
         guard files.allSatisfy({ $0.sourceID == sourceID }) else {
             throw FileIndexError.database("增量索引包含不匹配的扫描来源")
         }
 
+        var removedFileIDs = Set<String>()
         try transaction {
             var existingFileIDs: Set<String> = []
             for scope in Set(scopes) {
@@ -1130,6 +1189,7 @@ actor FileIndexDatabase {
             )
             defer { sqlite3_finalize(upsertStatement) }
 
+            var upsertedFileIDs: [String] = []
             for file in filesByID.values {
                 sqlite3_reset(upsertStatement)
                 sqlite3_clear_bindings(upsertStatement)
@@ -1145,28 +1205,43 @@ actor FileIndexDatabase {
                 try bind(file.indexedAt.timeIntervalSince1970, at: 10, to: upsertStatement)
                 try bind(file.textContent, at: 11, to: upsertStatement)
                 try stepDone(upsertStatement)
-                try rebuildSearchEntry(file.id)
+                upsertedFileIDs.append(file.id)
             }
+            try rebuildSearchEntries(upsertedFileIDs)
+            removedFileIDs = staleFileIDs
         }
+        return removedFileIDs
     }
 
+    /// Removes rows whose paths no longer exist on disk, returning the IDs of
+    /// the rows removed.
     @discardableResult
-    func removeMissingFiles(for sourceID: UUID) throws -> Int {
+    func removeMissingFiles(for sourceID: UUID) async throws -> Set<String> {
         let selectStatement = try prepare(
             "SELECT id, path FROM files WHERE source_id = ?;"
         )
         defer { sqlite3_finalize(selectStatement) }
         try bind(sourceID.uuidString, at: 1, to: selectStatement)
 
-        var missingFileIDs: [String] = []
+        var candidateFiles: [(id: String, path: String)] = []
         while sqlite3_step(selectStatement) == SQLITE_ROW {
-            let fileID = text(selectStatement, column: 0)
-            let path = text(selectStatement, column: 1)
-            if !FileManager.default.fileExists(atPath: path) {
-                missingFileIDs.append(fileID)
-            }
+            candidateFiles.append((text(selectStatement, column: 0), text(selectStatement, column: 1)))
         }
-        guard !missingFileIDs.isEmpty else { return 0 }
+        guard !candidateFiles.isEmpty else { return [] }
+
+        // Existence checks are blocking stat() calls. Running them on this
+        // actor serialized one syscall per indexed file behind every search
+        // and query; move them to a detached utility task instead.
+        let missingFileIDs = await Task.detached(priority: .utility) {
+            var missing: [String] = []
+            missing.reserveCapacity(candidateFiles.count)
+            for candidate in candidateFiles
+            where !FileManager.default.fileExists(atPath: candidate.path) {
+                missing.append(candidate.id)
+            }
+            return missing
+        }.value
+        guard !missingFileIDs.isEmpty else { return [] }
 
         try transaction {
             let deleteSearchStatement = try prepare(
@@ -1191,7 +1266,7 @@ actor FileIndexDatabase {
                 try stepDone(deleteFileStatement)
             }
         }
-        return missingFileIDs.count
+        return Set(missingFileIDs)
     }
 
     func fetchFiles() throws -> [IndexedFile] {
@@ -1207,27 +1282,58 @@ actor FileIndexDatabase {
 
         var files: [IndexedFile] = []
         while sqlite3_step(statement) == SQLITE_ROW {
-            guard let sourceID = UUID(uuidString: text(statement, column: 1)),
-                  let kind = FileKind(rawValue: text(statement, column: 5)) else {
-                continue
-            }
-
-            files.append(
-                IndexedFile(
-                    id: text(statement, column: 0),
-                    sourceID: sourceID,
-                    name: text(statement, column: 2),
-                    path: text(statement, column: 3),
-                    fileExtension: text(statement, column: 4),
-                    kind: kind,
-                    size: sqlite3_column_int64(statement, 6),
-                    createdAt: optionalDate(statement, column: 7),
-                    modifiedAt: optionalDate(statement, column: 8),
-                    indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
-                )
-            )
+            guard let file = rowFile(from: statement) else { continue }
+            files.append(file)
         }
         return files
+    }
+
+    /// Fetches only the given rows, keeping their canonical ordering
+    /// (modified_at DESC, name NOCASE ASC) so callers can merge them into the
+    /// in-memory model without refetching the whole table (H2 incremental).
+    func fetchFiles(fileIDs: [String]) throws -> [IndexedFile] {
+        guard !fileIDs.isEmpty else { return [] }
+        let placeholders = Array(repeating: "?", count: fileIDs.count)
+            .joined(separator: ", ")
+        let statement = try prepare(
+            """
+            SELECT id, source_id, name, path, extension, file_type, size,
+                   created_at, modified_at, indexed_at
+            FROM files
+            WHERE id IN (\(placeholders))
+            ORDER BY modified_at DESC, name COLLATE NOCASE ASC;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        for (index, fileID) in fileIDs.enumerated() {
+            try bind(fileID, at: Int32(index + 1), to: statement)
+        }
+
+        var files: [IndexedFile] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let file = rowFile(from: statement) else { continue }
+            files.append(file)
+        }
+        return files
+    }
+
+    private func rowFile(from statement: OpaquePointer) -> IndexedFile? {
+        guard let sourceID = UUID(uuidString: text(statement, column: 1)),
+              let kind = FileKind(rawValue: text(statement, column: 5)) else {
+            return nil
+        }
+        return IndexedFile(
+            id: text(statement, column: 0),
+            sourceID: sourceID,
+            name: text(statement, column: 2),
+            path: text(statement, column: 3),
+            fileExtension: text(statement, column: 4),
+            kind: kind,
+            size: sqlite3_column_int64(statement, 6),
+            createdAt: optionalDate(statement, column: 7),
+            modifiedAt: optionalDate(statement, column: 8),
+            indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+        )
     }
 
     func fetchTextContent(forFileID fileID: String) throws -> String? {
@@ -1257,14 +1363,16 @@ actor FileIndexDatabase {
                 "UPDATE files SET text_content = ? WHERE id = ?;"
             )
             defer { sqlite3_finalize(statement) }
+            var updatedFileIDs: [String] = []
             for update in updates {
                 sqlite3_reset(statement)
                 sqlite3_clear_bindings(statement)
                 try bind(update.textContent, at: 1, to: statement)
                 try bind(update.fileID, at: 2, to: statement)
                 try stepDone(statement)
-                try rebuildSearchEntry(update.fileID)
+                updatedFileIDs.append(update.fileID)
             }
+            try rebuildSearchEntries(updatedFileIDs)
         }
     }
 
@@ -1356,17 +1464,21 @@ actor FileIndexDatabase {
         let requestedLimit = Int64(max(1, limit))
         let requestedOffset = Int64(max(0, offset))
 
+        // Ordered by bm25 only: FTS5 can stream rows in rank order for this
+        // exact ORDER BY shape. Secondary keys (modified_at, name) previously
+        // forced SQLite to materialize and externally sort every matching
+        // row before applying LIMIT; ties are cosmetic, so break them in
+        // Swift over the already-fetched page instead.
         let statement = try prepare(
             """
             SELECT f.id, f.source_id, f.name, f.path, f.extension, f.file_type, f.size,
-                   f.created_at, f.modified_at, f.indexed_at
+                   f.created_at, f.modified_at, f.indexed_at,
+                   bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) AS search_rank
             FROM file_search
             JOIN files AS f ON f.id = file_search.file_id
             WHERE file_search MATCH ?
               AND (? = 1 OR f.path NOT GLOB '*/.*')
-            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
-                     f.modified_at DESC,
-                     f.name COLLATE NOCASE ASC
+            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
             LIMIT ? OFFSET ?;
             """
         )
@@ -1377,28 +1489,50 @@ actor FileIndexDatabase {
         try bind(requestedOffset, at: 4, to: statement)
 
         var files: [IndexedFile] = []
+        var ranks: [String: Double] = [:]
+        var fetchedRows = 0
         while sqlite3_step(statement) == SQLITE_ROW {
+            fetchedRows += 1
             guard let sourceID = UUID(uuidString: text(statement, column: 1)),
                   let kind = FileKind(rawValue: text(statement, column: 5)) else {
                 continue
             }
-            files.append(
-                IndexedFile(
-                    id: text(statement, column: 0),
-                    sourceID: sourceID,
-                    name: text(statement, column: 2),
-                    path: text(statement, column: 3),
-                    fileExtension: text(statement, column: 4),
-                    kind: kind,
-                    size: sqlite3_column_int64(statement, 6),
-                    createdAt: optionalDate(statement, column: 7),
-                    modifiedAt: optionalDate(statement, column: 8),
-                    indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
-                )
+            let file = IndexedFile(
+                id: text(statement, column: 0),
+                sourceID: sourceID,
+                name: text(statement, column: 2),
+                path: text(statement, column: 3),
+                fileExtension: text(statement, column: 4),
+                kind: kind,
+                size: sqlite3_column_int64(statement, 6),
+                createdAt: optionalDate(statement, column: 7),
+                modifiedAt: optionalDate(statement, column: 8),
+                indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
             )
+            ranks[file.id] = sqlite3_column_double(statement, 10)
+            files.append(file)
+        }
+        files.sort { lhs, rhs in
+            let lhsRank = ranks[lhs.id] ?? 0
+            let rhsRank = ranks[rhs.id] ?? 0
+            if lhsRank != rhsRank { return lhsRank < rhsRank }
+            // Mirrors the previous SQL tie-breaks: modified_at DESC (NULLs
+            // last, as in SQLite), then name NOCASE ascending.
+            let lhsDate = lhs.modifiedAt ?? .distantPast
+            let rhsDate = rhs.modifiedAt ?? .distantPast
+            if lhsDate != rhsDate { return lhsDate > rhsDate }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
         guard fetchesTotalCount else {
             return FileSearchPage(files: files, totalCount: max(0, offset) + files.count)
+        }
+        // When the page did not fill, the row count is the total and the
+        // second full MATCH scan can be skipped entirely.
+        guard fetchedRows == requestedLimit else {
+            return FileSearchPage(
+                files: files,
+                totalCount: max(0, offset) + fetchedRows
+            )
         }
         let countStatement = try prepare(
             """
@@ -1544,7 +1678,7 @@ actor FileIndexDatabase {
             try bind(normalizedName, at: 1, to: statement)
             try bind(categoryID.uuidString, at: 2, to: statement)
             try stepDone(statement)
-            try fileIDs.forEach(rebuildSearchEntry)
+            try rebuildSearchEntries(fileIDs)
         }
     }
 
@@ -1555,7 +1689,7 @@ actor FileIndexDatabase {
             defer { sqlite3_finalize(statement) }
             try bind(categoryID.uuidString, at: 1, to: statement)
             try stepDone(statement)
-            try fileIDs.forEach(rebuildSearchEntry)
+            try rebuildSearchEntries(fileIDs)
         }
     }
 
@@ -1578,19 +1712,21 @@ actor FileIndexDatabase {
             try bind(category.createdAt.timeIntervalSince1970, at: 4, to: statement)
             try stepDone(statement)
 
+            let link = try prepare(
+                """
+                INSERT OR IGNORE INTO file_categories (file_id, category_id)
+                VALUES (?, ?);
+                """
+            )
+            defer { sqlite3_finalize(link) }
             for fileID in fileIDs {
-                let link = try prepare(
-                    """
-                    INSERT OR IGNORE INTO file_categories (file_id, category_id)
-                    VALUES (?, ?);
-                    """
-                )
-                defer { sqlite3_finalize(link) }
+                sqlite3_reset(link)
+                sqlite3_clear_bindings(link)
                 try bind(fileID, at: 1, to: link)
                 try bind(category.id.uuidString, at: 2, to: link)
                 try stepDone(link)
-                try rebuildSearchEntry(fileID)
             }
+            try rebuildSearchEntries(fileIDs)
         }
     }
 
@@ -1644,9 +1780,7 @@ actor FileIndexDatabase {
                 try stepDone(statement)
             }
 
-            for fileID in Set(changes.map(\.fileID)) {
-                try rebuildSearchEntry(fileID)
-            }
+            try rebuildSearchEntries(Set(changes.map(\.fileID)))
         }
     }
 
@@ -1751,6 +1885,30 @@ actor FileIndexDatabase {
             "SELECT file_id, category_id FROM file_categories;"
         )
         defer { sqlite3_finalize(statement) }
+
+        var links: [String: Set<UUID>] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            let fileID = text(statement, column: 0)
+            guard let categoryID = UUID(uuidString: text(statement, column: 1)) else { continue }
+            links[fileID, default: []].insert(categoryID)
+        }
+        return links
+    }
+
+    /// Fetches category links only for the given file IDs, so single-file
+    /// mutations can refresh the in-memory model without reading the whole
+    /// link table (H2 incremental).
+    func fetchFileCategoryLinks(fileIDs: [String]) throws -> [String: Set<UUID>] {
+        guard !fileIDs.isEmpty else { return [:] }
+        let placeholders = Array(repeating: "?", count: fileIDs.count)
+            .joined(separator: ", ")
+        let statement = try prepare(
+            "SELECT file_id, category_id FROM file_categories WHERE file_id IN (\(placeholders));"
+        )
+        defer { sqlite3_finalize(statement) }
+        for (index, fileID) in fileIDs.enumerated() {
+            try bind(fileID, at: Int32(index + 1), to: statement)
+        }
 
         var links: [String: Set<UUID>] = [:]
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -1878,14 +2036,13 @@ actor FileIndexDatabase {
         return fileIDs
     }
 
-    private func rebuildSearchEntry(_ fileID: String) throws {
+    /// Rebuilds one derived search row per file ID, preparing the three
+    /// statements once for the whole batch. Callers that walk many files
+    /// (reconcile, text updates, category changes) previously paid a full
+    /// `sqlite3_prepare_v2` per file per statement.
+    private func rebuildSearchEntries(_ fileIDs: some Sequence<String>) throws {
         let deleteStatement = try prepare("DELETE FROM file_search WHERE file_id = ?;")
-        do {
-            defer { sqlite3_finalize(deleteStatement) }
-            try bind(fileID, at: 1, to: deleteStatement)
-            try stepDone(deleteStatement)
-        }
-
+        defer { sqlite3_finalize(deleteStatement) }
         let selectStatement = try prepare(
             """
             SELECT f.name, f.path, COALESCE(f.text_content, ''),
@@ -1898,9 +2055,6 @@ actor FileIndexDatabase {
             """
         )
         defer { sqlite3_finalize(selectStatement) }
-        try bind(fileID, at: 1, to: selectStatement)
-        guard sqlite3_step(selectStatement) == SQLITE_ROW else { return }
-
         let insertStatement = try prepare(
             """
             INSERT INTO file_search (file_id, name, path, categories, text_content)
@@ -1908,12 +2062,35 @@ actor FileIndexDatabase {
             """
         )
         defer { sqlite3_finalize(insertStatement) }
-        try bind(fileID, at: 1, to: insertStatement)
-        try bind(SearchIndexText.normalized(text(selectStatement, column: 0)), at: 2, to: insertStatement)
-        try bind(SearchIndexText.normalized(text(selectStatement, column: 1)), at: 3, to: insertStatement)
-        try bind(SearchIndexText.normalized(text(selectStatement, column: 3)), at: 4, to: insertStatement)
-        try bind(SearchIndexText.normalized(text(selectStatement, column: 2)), at: 5, to: insertStatement)
-        try stepDone(insertStatement)
+
+        for fileID in fileIDs {
+            sqlite3_reset(deleteStatement)
+            sqlite3_clear_bindings(deleteStatement)
+            try bind(fileID, at: 1, to: deleteStatement)
+            try stepDone(deleteStatement)
+
+            sqlite3_reset(selectStatement)
+            sqlite3_clear_bindings(selectStatement)
+            try bind(fileID, at: 1, to: selectStatement)
+            guard sqlite3_step(selectStatement) == SQLITE_ROW else { continue }
+            let name = text(selectStatement, column: 0)
+            let path = text(selectStatement, column: 1)
+            let content = text(selectStatement, column: 2)
+            let categories = text(selectStatement, column: 3)
+
+            sqlite3_reset(insertStatement)
+            sqlite3_clear_bindings(insertStatement)
+            try bind(fileID, at: 1, to: insertStatement)
+            try bind(SearchIndexText.normalized(name), at: 2, to: insertStatement)
+            try bind(SearchIndexText.normalized(path), at: 3, to: insertStatement)
+            try bind(SearchIndexText.normalized(categories), at: 4, to: insertStatement)
+            try bind(SearchIndexText.normalized(content), at: 5, to: insertStatement)
+            try stepDone(insertStatement)
+        }
+    }
+
+    private func rebuildSearchEntry(_ fileID: String) throws {
+        try rebuildSearchEntries(CollectionOfOne(fileID))
     }
 
     private func transaction(_ work: () throws -> Void) throws {

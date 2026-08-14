@@ -42,9 +42,9 @@ final class OAuthCoordinator: ObservableObject {
     private var loginAttemptIDs: [AIProviderKind: UUID] = [:]
     private var loginStartGenerations: [AIProviderKind: UUID] = [:]
     private var mutationGenerations: [AIProviderKind: UUID] = [:]
-    private var mutationWaiters: [AIProviderKind: [CheckedContinuation<Void, Never>]] = [:]
+    private var mutationWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var statusInFlight = Set<AIProviderKind>()
-    private var statusWaiters: [AIProviderKind: [CheckedContinuation<Void, Never>]] = [:]
+    private var statusWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var pollingTask: Task<Void, Never>?
 
     init(bridgeService: any OAuthBridgeServicing, isRunningTests: Bool) {
@@ -335,10 +335,44 @@ final class OAuthCoordinator: ObservableObject {
         return generation
     }
 
+    /// Waiter slots are boxed so a cancelled waiter can be dropped from the
+    /// queue exactly once; `finishStatus`/`finishMutation` still drain the
+    /// queue unconditionally, so nothing can be parked forever even if the
+    /// bridge call that owns the in-flight flag takes its full protocol
+    /// timeout.
+    private final class WaiterBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var stored: CheckedContinuation<Void, Never>?
+
+        func set(_ continuation: CheckedContinuation<Void, Never>) {
+            lock.lock()
+            stored = continuation
+            lock.unlock()
+        }
+
+        func take() -> CheckedContinuation<Void, Never>? {
+            lock.lock()
+            defer { lock.unlock() }
+            let continuation = stored
+            stored = nil
+            return continuation
+        }
+    }
+
     private func waitForStatus(for kind: AIProviderKind) async {
         while statusInFlight.contains(kind) {
-            await withCheckedContinuation { continuation in
-                statusWaiters[kind, default: []].append(continuation)
+            if Task.isCancelled { return }
+            let box = WaiterBox()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    box.set(continuation)
+                    statusWaiters[kind, default: []].append(box)
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    statusWaiters[kind]?.removeAll { $0 === box }
+                    box.take()?.resume()
+                }
             }
         }
     }
@@ -346,13 +380,23 @@ final class OAuthCoordinator: ObservableObject {
     private func finishStatus(for kind: AIProviderKind) {
         statusInFlight.remove(kind)
         let waiters = statusWaiters.removeValue(forKey: kind) ?? []
-        waiters.forEach { $0.resume() }
+        waiters.forEach { $0.take()?.resume() }
     }
 
     private func waitForMutation(for kind: AIProviderKind) async {
         while mutationGenerations[kind] != nil {
-            await withCheckedContinuation { continuation in
-                mutationWaiters[kind, default: []].append(continuation)
+            if Task.isCancelled { return }
+            let box = WaiterBox()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    box.set(continuation)
+                    mutationWaiters[kind, default: []].append(box)
+                }
+            } onCancel: {
+                Task { @MainActor in
+                    mutationWaiters[kind]?.removeAll { $0 === box }
+                    box.take()?.resume()
+                }
             }
         }
     }
@@ -361,7 +405,7 @@ final class OAuthCoordinator: ObservableObject {
         guard mutationGenerations[kind] == generation else { return }
         mutationGenerations.removeValue(forKey: kind)
         let waiters = mutationWaiters.removeValue(forKey: kind) ?? []
-        waiters.forEach { $0.resume() }
+        waiters.forEach { $0.take()?.resume() }
     }
 
     // MARK: - Applying results

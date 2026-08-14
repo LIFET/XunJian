@@ -7,6 +7,11 @@ extension Notification.Name {
     )
 }
 
+struct FileExportProgress: Equatable, Sendable {
+    let completed: Int
+    let total: Int
+}
+
 /// Exports the current result list as a plain-text artifact (N11).
 ///
 /// Read-only: this writes a new file the user picks and never touches the
@@ -48,6 +53,7 @@ enum FileListExport {
 
     @MainActor
     static func run(appModel: AppModel, format: Format) {
+        guard !appModel.isExportingFileList else { return }
         Task { await export(appModel: appModel, format: format) }
     }
 
@@ -88,17 +94,17 @@ enum FileListExport {
         let categoryNames = files.reduce(into: [String: [String]]()) { result, file in
             result[file.id] = appModel.categories(for: file).map(\.localizedDisplayName)
         }
-        do {
+        let filesSnapshot = files
+        appModel.startFileListExport(totalCount: files.count) { reportProgress in
             try await Task.detached(priority: .userInitiated) {
                 try write(
-                    files: files,
+                    files: filesSnapshot,
                     format: format,
                     categoryNames: categoryNames,
-                    to: url
+                    to: url,
+                    progress: reportProgress
                 )
             }.value
-        } catch {
-            appModel.errorMessage = error.localizedDescription
         }
     }
 
@@ -145,7 +151,8 @@ enum FileListExport {
         files: [IndexedFile],
         format: Format,
         categoryNames: [String: [String]],
-        to destinationURL: URL
+        to destinationURL: URL,
+        progress: (@Sendable (Int) -> Void)? = nil
     ) throws {
         let fileManager = FileManager.default
         let temporaryURL = destinationURL.deletingLastPathComponent()
@@ -168,7 +175,7 @@ enum FileListExport {
         case .csv:
             let formatter = ISO8601DateFormatter()
             try append(headers.map(csvField).joined(separator: ",") + "\n")
-            for file in files {
+            for (index, file) in files.enumerated() {
                 try Task.checkCancellation()
                 let cells = row(
                     for: file,
@@ -176,6 +183,9 @@ enum FileListExport {
                     dateFormatter: { formatter.string(from: $0) }
                 )
                 try append(cells.map(csvField).joined(separator: ",") + "\n")
+                if (index + 1).isMultiple(of: 250) || index + 1 == files.count {
+                    progress?(index + 1)
+                }
             }
         case .markdown:
             let opening = [
@@ -190,7 +200,7 @@ enum FileListExport {
                 "| " + headers.map { _ in "---" }.joined(separator: " | ") + " |"
             ]
             try append(opening.joined(separator: "\n") + "\n")
-            for file in files {
+            for (index, file) in files.enumerated() {
                 try Task.checkCancellation()
                 let cells = row(
                     for: file,
@@ -198,6 +208,9 @@ enum FileListExport {
                     dateFormatter: FinderDateFormatting.string(for:)
                 )
                 try append("| " + cells.map(markdownCell).joined(separator: " | ") + " |\n")
+                if (index + 1).isMultiple(of: 250) || index + 1 == files.count {
+                    progress?(index + 1)
+                }
             }
         }
 

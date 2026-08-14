@@ -337,6 +337,12 @@ struct SearchField: View {
             }
             .buttonStyle(.plain)
             .opacity(hoveredHistoryEntry == entry ? 1 : 0)
+            // Invisible until hover, so it must also stop being interactive
+            // and present in the accessibility tree: keyboard and VoiceOver
+            // users have no hover, and an invisible tappable area silently
+            // deleting an entry was a trap.
+            .disabled(hoveredHistoryEntry != entry)
+            .accessibilityHidden(hoveredHistoryEntry != entry)
             .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                 "移除“\(entry)”",
                 english: "Remove “\(entry)”"

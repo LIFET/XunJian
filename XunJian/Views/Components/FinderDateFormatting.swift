@@ -37,3 +37,31 @@ enum FinderDateFormatting {
         formatter(for: .autoupdatingCurrent).string(from: date)
     }
 }
+
+/// Cached byte formatting. `ByteCountFormatter.string(fromByteCount:)` is a
+/// class method that constructs a fresh formatter per call, which the file
+/// table was paying once per visible row per render pass.
+enum ByteFormatting {
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var cachedFormatters: [
+        ByteCountFormatter.CountStyle: ByteCountFormatter
+    ] = [:]
+
+    static func string(
+        forByteCount count: Int64,
+        countStyle: ByteCountFormatter.CountStyle = .file
+    ) -> String {
+        lock.lock()
+        let formatter: ByteCountFormatter
+        if let cached = cachedFormatters[countStyle] {
+            formatter = cached
+        } else {
+            let created = ByteCountFormatter()
+            created.countStyle = countStyle
+            cachedFormatters[countStyle] = created
+            formatter = created
+        }
+        lock.unlock()
+        return formatter.string(fromByteCount: count)
+    }
+}

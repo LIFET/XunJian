@@ -59,7 +59,7 @@ struct HomeView: View {
             appModel.highlightQuery = ""
             appModel.updateCommandTargetFiles(appModel.recentFiles)
         }
-        .onChange(of: appModel.recentFiles.map(\.id)) { _, _ in
+        .onChange(of: appModel.filesRevision) { _, _ in
             appModel.updateCommandTargetFiles(appModel.recentFiles)
         }
         .confirmationDialog(
@@ -339,6 +339,14 @@ struct HomeView: View {
                 AppLanguage.localized(
                     source.enabled ? "暂停索引" : "恢复索引",
                     english: source.enabled ? "Pause indexing" : "Resume indexing"
+                )
+            )
+            .accessibilityLabel(
+                AppLanguage.localized(
+                    source.enabled ? "暂停索引“\(source.displayName)”" : "恢复索引“\(source.displayName)”",
+                    english: source.enabled
+                        ? "Pause indexing for “\(source.displayName)”"
+                        : "Resume indexing for “\(source.displayName)”"
                 )
             )
             .disabled(!appModel.isDatabaseAvailable)

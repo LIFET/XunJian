@@ -246,13 +246,22 @@ struct CommandPaletteView: View {
         let matched = all.filter { QuickSearchMatching.matches($0.title, query: trimmed) }
         let files = appModel.files
         let limit = Self.maximumFileResults
-        let result = await Task.detached(priority: .userInitiated) {
-            QuickSearchMatching.prefixMatches(
-                in: files,
-                query: trimmed,
-                limit: limit
-            )
-        }.value
+        // The detached scan cannot observe the outer task's cancellation, so
+        // a flag flipped by the cancellation handler lets stale full-index
+        // walks stop the moment newer input arrives.
+        let cancellationFlag = QuickSearchCancellationFlag()
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                QuickSearchMatching.prefixMatches(
+                    in: files,
+                    query: trimmed,
+                    limit: limit,
+                    isCancelled: { cancellationFlag.isCancelled }
+                )
+            }.value
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
         guard !Task.isCancelled else { return }
         var commands = matched + fileCommands(from: result.files)
         if result.remainingCount > 0 {
@@ -328,7 +337,8 @@ struct CommandPaletteView: View {
         var items: [PaletteCommand] = []
         // Only offered when it has a target, so the palette never lists an
         // action that would silently do nothing.
-        if let selected = appModel.selectedFile {
+        if let selected = appModel.selectedFile,
+           appModel.supportsTextContent(selected) {
             items.append(
                 PaletteCommand(
                     id: "action-preview-text",

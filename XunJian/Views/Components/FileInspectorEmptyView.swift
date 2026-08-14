@@ -92,6 +92,7 @@ struct FileInspectorView: View {
                                             systemImage: "doc.text.magnifyingglass"
                                         )
                                     }
+                                    .disabled(!appModel.supportsTextContent(file))
                                     Button {
                                         appModel.aiSheetRequest = .ask(file)
                                     } label: {
@@ -100,6 +101,7 @@ struct FileInspectorView: View {
                                             systemImage: "bubble.left.and.text.bubble.right"
                                         )
                                     }
+                                    .disabled(!appModel.supportsTextContent(file))
                                 } label: {
                                     Image(systemName: "sparkles")
                                         .frame(width: actionIconSide, height: actionIconSide)
@@ -362,10 +364,15 @@ struct FileInspectorView: View {
             finderTags = []
             guard appModel.selectedFileIDs.count <= 1, let file else { return }
 
-            // N11: live Finder tags.
-            if let values = try? file.url.resourceValues(forKeys: [.tagNamesKey]),
-               let tags = values.tagNames {
-                finderTags = tags
+            // N11: live Finder tags. The metadata read is a synchronous
+            // filesystem call, so it runs off the main actor: network volumes
+            // or not-yet-downloaded iCloud items must not stall the UI.
+            let fileURL = file.url
+            let tagNames = await Task.detached(priority: .utility) {
+                (try? fileURL.resourceValues(forKeys: [.tagNamesKey]))?.tagNames
+            }.value
+            if let tagNames {
+                finderTags = tagNames
             }
 
             guard file.kind.supportsTextExtraction else { return }

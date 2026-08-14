@@ -16,6 +16,7 @@ struct CategoriesView: View {
     @State private var displayedFiles: [IndexedFile] = []
     @State private var categoryFileCount = 0
     @State private var displayedSignature: Int?
+    @State private var isCategorySearching = false
 
     // Browsing preferences for the category detail page (N05). Persisted so
     // they survive page switches and relaunches, matching "All Files".
@@ -88,12 +89,19 @@ struct CategoriesView: View {
                   let mode = FileBrowseViewMode(rawValue: raw) else { return }
             viewMode = mode
         }
-        .onChange(of: selectedKind) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: selectedKind) { _, _ in
+            displayedSignature = nil
+            displayedFiles = []
+            appModel.updateCommandTargetFiles([])
+        }
         .onChange(of: categoryQuery) { _, query in
             if selectedCategory != nil {
                 appModel.highlightQuery = query
             }
-            clearSelectionIfHidden()
+            displayedSignature = nil
+            displayedFiles = []
+            appModel.updateCommandTargetFiles([])
+            isCategorySearching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
         .sheet(isPresented: $showsNewCategory) {
@@ -346,17 +354,27 @@ struct CategoriesView: View {
             )
         } else {
             VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-                SearchField(
-                    text: $categoryQuery,
-                    prompt: AppLanguage.localized(
-                        "在此分类中搜索…",
-                        english: "Search in this category…"
-                    ),
-                    accessibilityHint: AppLanguage.localized(
-                        "只搜索当前分类中的文件",
-                        english: "Searches only files in this category"
+                HStack(spacing: 8) {
+                    SearchField(
+                        text: $categoryQuery,
+                        prompt: AppLanguage.localized(
+                            "在此分类中搜索…",
+                            english: "Search in this category…"
+                        ),
+                        accessibilityHint: AppLanguage.localized(
+                            "只搜索当前分类中的文件",
+                            english: "Searches only files in this category"
+                        )
                     )
-                )
+                    if isCategorySearching {
+                        ProgressView()
+                            .controlSize(.small)
+                            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                                "正在搜索",
+                                english: "Searching"
+                            )))
+                    }
+                }
                 FileBrowseToolbar(
                     selectedKind: $selectedKind,
                     sortOrder: $sortOrder,
@@ -370,7 +388,10 @@ struct CategoriesView: View {
                     )
                 }
 
-                if files.isEmpty {
+                if isCategorySearching {
+                    ProgressView(AppLanguage.localized("正在搜索…", english: "Searching…"))
+                        .frame(maxWidth: .infinity, minHeight: 180)
+                } else if files.isEmpty {
                     kindFilterEmptyState
                 } else if viewMode == .grid {
                     categoryFileGrid(files)
@@ -530,19 +551,15 @@ struct CategoriesView: View {
     /// Only the visible ID set matters here, so this skips the sort the list
     /// itself performs.
     private func clearSelectionIfHidden() {
-        guard let selectedCategory else {
+        guard selectedCategory != nil else {
             appModel.clearSelectionIfHidden(from: Set(appModel.files.map(\.id)))
             return
         }
-        var visible = Set<String>()
-        for file in appModel.files(in: selectedCategory)
-        where selectedKind == nil || file.kind == selectedKind {
-            if categoryQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                || QuickSearchMatching.matches(file: file, query: categoryQuery) {
-                visible.insert(file.id)
-            }
-        }
-        appModel.clearSelectionIfHidden(from: visible)
+        // While a debounced FTS request is pending, keep the selection. Once
+        // the snapshot is committed, its IDs are the exact visible truth,
+        // including files matched only through indexed body text.
+        guard displayedSignature != nil else { return }
+        appModel.clearSelectionIfHidden(from: Set(displayedFiles.map(\.id)))
     }
 
     private var categoryFilesRefreshKey: CategoryFilesRefreshKey {
@@ -563,12 +580,14 @@ struct CategoriesView: View {
             displayedFiles = []
             categoryFileCount = 0
             displayedSignature = nil
+            isCategorySearching = false
             return
         }
 
         let signature = categoryFilesRefreshKey.signature
         if displayedSignature != signature {
             appModel.updateCommandTargetFiles([])
+            displayedFiles = []
         }
         guard displayedSignature != signature else {
             appModel.updateCommandTargetFiles(displayedFiles)
@@ -586,14 +605,21 @@ struct CategoriesView: View {
         if query.isEmpty {
             matchingIDs = nil
         } else {
+            isCategorySearching = true
             do {
-                let matches = try await appModel.searchFiles(
+                try await Task.sleep(for: .milliseconds(120))
+                let matches = try await appModel.searchFileIDs(
                     matching: query,
-                    limit: max(allFiles.count, 1)
+                    inCategory: categoryID,
+                    limit: max(appModel.fileCount(in: selectedCategory), 1)
                 )
-                matchingIDs = Set(matches.map(\.id))
+                try Task.checkCancellation()
+                matchingIDs = matches
+            } catch is CancellationError {
+                return
             } catch {
-                matchingIDs = nil
+                appModel.errorMessage = error.localizedDescription
+                matchingIDs = []
             }
         }
         let result = await Task.detached(priority: .userInitiated) {
@@ -610,12 +636,14 @@ struct CategoriesView: View {
             )
             return (inCategory.count, displayed)
         }.value
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              categoryFilesRefreshKey.signature == signature else { return }
         categoryFileCount = result.0
         displayedFiles = result.1
         displayedSignature = signature
+        isCategorySearching = false
         appModel.updateCommandTargetFiles(result.1)
-        clearSelectionIfHidden()
+        appModel.clearSelectionIfHidden(from: Set(result.1.map(\.id)))
     }
 
     private var deleteMessage: String {

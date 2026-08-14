@@ -88,6 +88,9 @@ enum JSONValue: Codable, Equatable, Sendable {
     }
 }
 
+/// Line framing used directly by tests and as a building block for
+/// `BoundedLineChannel` consumers. Kept because `OAuthProtocolClientTests`
+/// exercises its reassembly and size-limit behavior.
 enum JSONLineFramingError: Error, Equatable, Sendable {
     case lineTooLarge
 }
@@ -442,6 +445,10 @@ actor JSONLineRPCPeer {
             await failClosed(.messageTooLarge)
             return
         }
+        guard Self.jsonNestingDepthIsSafe(data) else {
+            await failClosed(.malformedMessage)
+            return
+        }
 
         let value: JSONValue
         do {
@@ -464,6 +471,43 @@ actor JSONLineRPCPeer {
         } else {
             await receiveResponseEnvelope(object)
         }
+    }
+
+    // Linear pre-scan that rejects deeply nested or structurally unbalanced
+    // JSON before JSONValue.init(from:) recursively unboxes containers (a
+    // deeply nested line can otherwise overflow the stack). Only structural
+    // ASCII bytes matter; string contents are skipped with backslash escapes
+    // honored. Bytes are treated as raw UTF-8 bytes, not decoded characters.
+    private static func jsonNestingDepthIsSafe(_ data: Data) -> Bool {
+        let maximumDepth = 512
+        var depth = 0
+        var inString = false
+        var escaped = false
+        for byte in data {
+            if inString {
+                if escaped {
+                    escaped = false
+                } else if byte == 0x5C { // backslash
+                    escaped = true
+                } else if byte == 0x22 { // double quote
+                    inString = false
+                }
+                continue
+            }
+            switch byte {
+            case 0x22: // double quote
+                inString = true
+            case 0x7B, 0x5B: // { [
+                depth += 1
+                if depth > maximumDepth { return false }
+            case 0x7D, 0x5D: // } ]
+                depth -= 1
+                if depth < 0 { return false }
+            default:
+                break
+            }
+        }
+        return !inString && depth == 0
     }
 
     private func receiveMethodEnvelope(_ object: [String: JSONValue]) async {

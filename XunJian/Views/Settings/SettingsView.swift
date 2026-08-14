@@ -145,7 +145,11 @@ struct SettingsView: View {
                         set: { appModel.setIncludesHiddenFiles($0) }
                     )
                 )
-                .disabled(appModel.isScanning || !appModel.isDatabaseAvailable)
+                .disabled(
+                    appModel.isScanning
+                        || appModel.isUpdatingContentIndex
+                        || !appModel.isDatabaseAvailable
+                )
 
                 Text(
                     verbatim: AppLanguage.localized(
@@ -168,7 +172,24 @@ struct SettingsView: View {
                         }
                     )
                 )
-                .disabled(appModel.isScanning || !appModel.isDatabaseAvailable)
+                .disabled(
+                    appModel.isScanning
+                        || appModel.isUpdatingContentIndex
+                        || !appModel.isDatabaseAvailable
+                )
+
+                if appModel.isUpdatingContentIndex {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(verbatim: AppLanguage.localized(
+                            "正在安全清除已保存正文…",
+                            english: "Securely clearing stored file contents…"
+                        ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
 
                 Text(verbatim: AppLanguage.localized(
                     "正文只保存在本机索引中，用于全文搜索；关闭会立即清除已保存正文。只有你主动使用 AI 文件操作时，相关正文才会发送给当前 AI。",
@@ -212,7 +233,7 @@ struct SettingsView: View {
                         added = true
                     }
                     if !added {
-                        appModel.errorMessage = AppLanguage.localized(
+                        appModel.settingsErrorMessage = AppLanguage.localized(
                             "请拖入文件夹。",
                             english: "Drop a folder."
                         )
@@ -412,7 +433,17 @@ struct SettingsView: View {
                 }
             }
             .task(id: appModel.filesRevision) {
+                // Skip the repeated database-size reads while a scan bumps
+                // filesRevision on every batch commit; the scan-end hook
+                // below recomputes once when scanning stops.
+                guard !appModel.isScanning else { return }
                 indexStatistics = await IndexStatistics.make(files: appModel.files)
+            }
+            .onChange(of: appModel.isScanning) { _, isScanning in
+                guard !isScanning else { return }
+                Task {
+                    indexStatistics = await IndexStatistics.make(files: appModel.files)
+                }
             }
 
             Section(AppLanguage.localized("关于", english: "About")) {
@@ -441,9 +472,11 @@ struct SettingsView: View {
             AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
             isPresented: presentsErrorAlert
         ) {
-            Button(AppLanguage.localized("好", english: "OK")) { appModel.clearError() }
+            Button(AppLanguage.localized("好", english: "OK")) {
+                appModel.clearSettingsError()
+            }
         } message: {
-            Text(AppLanguage.localizedRuntimeMessage(appModel.errorMessage ?? ""))
+            Text(AppLanguage.localizedRuntimeMessage(appModel.settingsErrorMessage ?? ""))
         }
         .confirmationDialog(
             AppLanguage.localized("移除文件夹授权？", english: "Remove Folder Access?"),
@@ -489,9 +522,9 @@ struct SettingsView: View {
             get: {
                 presentsErrors
                     && controlActiveState == .key
-                    && appModel.errorMessage != nil
+                    && appModel.settingsErrorMessage != nil
             },
-            set: { if !$0 { appModel.clearError() } }
+            set: { if !$0 { appModel.clearSettingsError() } }
         )
     }
 

@@ -259,7 +259,9 @@ actor ThumbnailService {
     }
 
     func thumbnail(for file: IndexedFile, size: CGSize, scale: CGFloat) async -> NSImage? {
-        let cacheKey = "\(file.id)-\(Int(size.width))-\(Int(size.height))" as NSString
+        // Scale is part of the key: Retina and non-Retina displays (or a
+        // display-scale change) must not share one pixel-density entry.
+        let cacheKey = "\(file.id)-\(Int(size.width))-\(Int(size.height))-\(Int(scale * 100))" as NSString
         if let cached = cache.object(forKey: cacheKey) {
             return cached
         }

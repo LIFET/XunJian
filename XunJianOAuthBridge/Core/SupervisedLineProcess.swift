@@ -1295,19 +1295,37 @@ actor SupervisedLineProcess: JSONLineTransport {
 
         let graceNanoseconds = configuration.terminationGraceNanoseconds
         let terminationDeadline = DispatchTime.now().uptimeNanoseconds + graceNanoseconds
+        // The full-system pid scan inside signalOwnedProcesses is expensive;
+        // within the drain loops re-run it at most every 100ms and signal the
+        // cached tracked set in between. The first SIGTERM, the SIGTERM→SIGKILL
+        // transition, and the final SIGKILL always rescan.
+        var lastScanNanoseconds = DispatchTime.now().uptimeNanoseconds
         while (!running.control.isFullyDrained || hasLivingProcesses),
               DispatchTime.now().uptimeNanoseconds < terminationDeadline {
-            try? await Task.sleep(nanoseconds: min(10_000_000, graceNanoseconds))
-            hasLivingProcesses = running.control.signalOwnedProcesses(SIGTERM)
+            try? await Task.sleep(nanoseconds: min(100_000_000, graceNanoseconds))
+            let now = DispatchTime.now().uptimeNanoseconds
+            let shouldRescan = now - lastScanNanoseconds >= 100_000_000
+            hasLivingProcesses = running.control.signalOwnedProcesses(
+                SIGTERM,
+                rescan: shouldRescan
+            )
+            if shouldRescan { lastScanNanoseconds = now }
         }
         hasLivingProcesses = running.control.signalOwnedProcesses(SIGKILL)
+        lastScanNanoseconds = DispatchTime.now().uptimeNanoseconds
 
         let drainDeadline = DispatchTime.now().uptimeNanoseconds
             + max(graceNanoseconds, 100_000_000)
         while (!running.control.isFullyDrained || hasLivingProcesses),
               DispatchTime.now().uptimeNanoseconds < drainDeadline {
-            try? await Task.sleep(nanoseconds: 10_000_000)
-            hasLivingProcesses = running.control.signalOwnedProcesses(SIGKILL)
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let now = DispatchTime.now().uptimeNanoseconds
+            let shouldRescan = now - lastScanNanoseconds >= 100_000_000
+            hasLivingProcesses = running.control.signalOwnedProcesses(
+                SIGKILL,
+                rescan: shouldRescan
+            )
+            if shouldRescan { lastScanNanoseconds = now }
         }
         _ = running.control.signalOwnedProcesses(SIGKILL)
         if !running.control.isFullyDrained {
@@ -2572,10 +2590,11 @@ private final class ProcessControl: @unchecked Sendable {
     }
 
     @discardableResult
-    func signalOwnedProcesses(_ signal: Int32) -> Bool {
+    func signalOwnedProcesses(_ signal: Int32, rescan: Bool = true) -> Bool {
         guard signal == SIGTERM || signal == SIGKILL else { return false }
 
-        if let discovered = Self.scanOwnedProcesses(
+        if rescan,
+           let discovered = Self.scanOwnedProcesses(
             userIdentifier: rootIdentity.userIdentifier,
             sessionIdentifier: rootSessionIdentifier,
             temporaryDirectoryMarker: temporaryDirectoryMarker

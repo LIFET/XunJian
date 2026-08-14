@@ -64,7 +64,7 @@ struct XunJianCommands: Commands {
                 selectedFile.map(appModel.open)
             }
             .keyboardShortcut(.downArrow, modifiers: .command)
-            .disabled(!hasSelection)
+            .disabled(selectedFile.map { !appModel.supportsTextContent($0) } ?? true)
 
             Button(AppLanguage.localized("快速查看", english: "Quick Look")) {
                 selectedFile.map(appModel.quickLook)
@@ -208,5 +208,6 @@ struct XunJianCommands: Commands {
                 object: format.rawValue
             )
         }
+        .disabled(appModel.commandTargetFiles.isEmpty || appModel.isExportingFileList)
     }
 }

@@ -35,6 +35,7 @@ struct AllFilesView: View {
     // F03: toolbar rows grow with the text size setting instead of clipping
     // at a fixed 32pt.
     @ScaledMetric(relativeTo: .body) private var toolbarControlHeight = FileToolbarMetrics.controlHeight
+    @ScaledMetric(relativeTo: .body) private var overflowButtonSide = FileToolbarMetrics.iconButtonSide
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
@@ -311,13 +312,19 @@ struct AllFilesView: View {
                     appModel.aiSheetRequest = .explain(file)
                 }
             }
-            .disabled(!hasAIProvider || appModel.selectedFile == nil)
+            .disabled(
+                !hasAIProvider
+                    || appModel.selectedFile.map { !appModel.supportsTextContent($0) } != false
+            )
             Button(AppLanguage.localized("AI 问文件…", english: "Ask AI About File…")) {
                 if let file = appModel.selectedFile {
                     appModel.aiSheetRequest = .ask(file)
                 }
             }
-            .disabled(!hasAIProvider || appModel.selectedFile == nil)
+            .disabled(
+                !hasAIProvider
+                    || appModel.selectedFile.map { !appModel.supportsTextContent($0) } != false
+            )
             Button(AppLanguage.localized("AI 分类…", english: "AI Classify…")) {
                 appModel.aiSheetRequest = .classify
             }
@@ -428,7 +435,7 @@ struct AllFilesView: View {
                 )
             }
         }
-        .frame(height: FileToolbarMetrics.controlHeight)
+        .frame(height: toolbarControlHeight)
         .fixedSize(horizontal: true, vertical: false)
     }
 
@@ -640,8 +647,8 @@ struct AllFilesView: View {
         }
         .menuStyle(.borderlessButton)
         .frame(
-            width: FileToolbarMetrics.iconButtonSide,
-            height: FileToolbarMetrics.iconButtonSide
+            width: overflowButtonSide,
+            height: overflowButtonSide
         )
         .help(AppLanguage.localized("更多工具", english: "More Tools"))
         .accessibilityLabel(AppLanguage.localized("更多工具", english: "More Tools"))
@@ -1065,7 +1072,7 @@ struct AllFilesView: View {
 
             TableColumn(AppLanguage.localized("大小", english: "Size")) { file in
                 selectableTableCell(file: file) {
-                    Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
+                    Text(ByteFormatting.string(forByteCount: file.size))
                         .lineLimit(1)
                 }
             }
@@ -1166,7 +1173,7 @@ struct AllFilesView: View {
         var parts = [
             file.name,
             file.kind.localizedTitle,
-            ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
+            ByteFormatting.string(forByteCount: file.size)
         ]
         if let modifiedAt = file.modifiedAt {
             parts.append(finderDateFormatter.string(from: modifiedAt))

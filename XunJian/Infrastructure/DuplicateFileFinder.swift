@@ -64,18 +64,38 @@ enum DuplicateFileFinder {
 
         var byHash: [String: [IndexedFile]] = [:]
         for group in groupsToHash {
-            for file in group {
-                try Task.checkCancellation()
-                if canHashFile(at: file.url),
-                   let digest = try? await hash(fileAt: file.url) {
-                    byHash[digest, default: []].append(file)
-                } else {
-                    unreadCount += 1
+            try await withThrowingTaskGroup(
+                of: (file: IndexedFile, digest: String?).self
+            ) { taskGroup in
+                var iterator = group.makeIterator()
+                func addNext() {
+                    guard let file = iterator.next() else { return }
+                    taskGroup.addTask {
+                        do {
+                            guard canHashFile(at: file.url) else { return (file, nil) }
+                            return (file, try await hash(fileAt: file.url))
+                        } catch is CancellationError {
+                            throw CancellationError()
+                        } catch {
+                            return (file, nil)
+                        }
+                    }
                 }
-                hashedCount += 1
-                let progressStride = max(totalToHash / 100, 1)
-                if hashedCount == totalToHash || hashedCount.isMultiple(of: progressStride) {
-                    progress(hashedCount, totalToHash)
+                for _ in 0..<min(Self.maximumConcurrentHashes, group.count) {
+                    addNext()
+                }
+                while let completed = try await taskGroup.next() {
+                    if let digest = completed.digest {
+                        byHash[digest, default: []].append(completed.file)
+                    } else {
+                        unreadCount += 1
+                    }
+                    hashedCount += 1
+                    let progressStride = max(totalToHash / 100, 1)
+                    if hashedCount == totalToHash || hashedCount.isMultiple(of: progressStride) {
+                        progress(hashedCount, totalToHash)
+                    }
+                    addNext()
                 }
             }
         }
@@ -105,19 +125,26 @@ enum DuplicateFileFinder {
     }
 
     /// Streams the file in 1MB chunks so multi-hundred-MB files don't get
-    /// loaded into memory at once.
+    /// loaded into memory at once. The read loop is blocking I/O, so it runs
+    /// on a detached task instead of occupying a cooperative pool thread.
     static func hash(fileAt url: URL) async throws -> String {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
+        try await Task.detached(priority: .userInitiated) {
+            let handle = try FileHandle(forReadingFrom: url)
+            defer { try? handle.close() }
 
-        var hasher = SHA256()
-        while true {
-            try Task.checkCancellation()
-            guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else {
-                break
+            var hasher = SHA256()
+            while true {
+                try Task.checkCancellation()
+                guard let chunk = try handle.read(upToCount: 1 << 20), !chunk.isEmpty else {
+                    break
+                }
+                hasher.update(data: chunk)
             }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        }.value
     }
+
+    /// Hashing runs with bounded concurrency per size group: duplicate-size
+    /// groups on large libraries previously hashed one file at a time.
+    private static let maximumConcurrentHashes = 4
 }

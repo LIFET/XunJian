@@ -16,23 +16,33 @@ actor FinderTagService {
     /// A tag edited in Finder while Xunjian is running keeps the cached value
     /// until `invalidate` is called; tag changes do not update the file's
     /// modification date, so there is nothing cheaper to key off.
-    private var cache: [String: [String]] = [:]
+    ///
+    /// `NSCache` bounds the session cache: files deleted on disk would
+    /// otherwise accumulate one entry each for the whole session.
+    private let cache: NSCache<NSString, NSArray>
+
+    init(cacheCountLimit: Int = 2_000) {
+        cache = NSCache()
+        cache.countLimit = cacheCountLimit
+    }
 
     func tags(forFileID fileID: String, path: String) -> [String] {
-        if let cached = cache[fileID] { return cached }
+        if let cached = cache.object(forKey: fileID as NSString) as? [String] {
+            return cached
+        }
 
         let url = URL(fileURLWithPath: path)
         let names = (try? url.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
-        cache[fileID] = names
+        cache.setObject(names as NSArray, forKey: fileID as NSString)
         return names
     }
 
     func invalidate(fileID: String) {
-        cache.removeValue(forKey: fileID)
+        cache.removeObject(forKey: fileID as NSString)
     }
 
     func invalidateAll() {
-        cache.removeAll()
+        cache.removeAllObjects()
     }
 }
 

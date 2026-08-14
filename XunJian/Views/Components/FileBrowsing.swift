@@ -127,7 +127,7 @@ struct FileGridCard: View {
     }
 
     static func sizeText(_ file: IndexedFile) -> String {
-        ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
+        ByteFormatting.string(forByteCount: file.size)
     }
 
     static let minimumItemWidth: CGFloat = 132
@@ -256,10 +256,8 @@ struct FileBrowseToolbar: View {
     @Binding var sortAscending: Bool
     @Binding var viewMode: FileBrowseViewMode
 
-    @ScaledMetric(relativeTo: .body) private var symbolSize: CGFloat = 12
-    @ScaledMetric(relativeTo: .body) private var directionSide: CGFloat = 26
-    @ScaledMetric(relativeTo: .body) private var viewModeItemWidth: CGFloat = 30
-    @ScaledMetric(relativeTo: .body) private var viewModeItemHeight: CGFloat = 24
+    @ScaledMetric(relativeTo: .body)
+    private var controlHeight = FileToolbarMetrics.controlHeight
 
     /// Relevance only makes sense while a search is scoring results.
     private var sortOrders: [FileSortOrder] {
@@ -321,12 +319,14 @@ struct FileBrowseToolbar: View {
                 }
             }
         } label: {
-            Text(
-                verbatim: selectedKind?.localizedTitle
-                    ?? AppLanguage.localized("所有类型", english: "All Types")
+            FileToolbarPopupLabel(
+                title: selectedKind?.localizedTitle
+                    ?? AppLanguage.localized("所有类型", english: "All Types"),
+                width: FileToolbarMetrics.fileTypeWidth
             )
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(Text(verbatim: AppLanguage.localized(
             "文件类型",
@@ -351,9 +351,13 @@ struct FileBrowseToolbar: View {
                 }
             }
         } label: {
-            Text(verbatim: sortOrder.localizedTitle)
+            FileToolbarPopupLabel(
+                title: sortOrder.localizedTitle,
+                width: FileToolbarMetrics.sortWidth(for: sortOrder)
+            )
         }
         .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
         .fixedSize()
         .accessibilityLabel(Text(verbatim: AppLanguage.localized("排序", english: "Sort By")))
     }
@@ -362,10 +366,7 @@ struct FileBrowseToolbar: View {
         Button {
             sortAscending.toggle()
         } label: {
-            Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
-                .font(.system(size: symbolSize, weight: .semibold))
-                .frame(width: directionSide, height: directionSide)
-                .contentShape(Rectangle())
+            FileToolbarIconLabel(systemName: sortAscending ? "arrow.up" : "arrow.down")
         }
         .buttonStyle(.plain)
         .accessibilityLabel(Text(verbatim: sortAscending
@@ -374,35 +375,39 @@ struct FileBrowseToolbar: View {
     }
 
     private var viewModePicker: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 0) {
             ForEach(FileBrowseViewMode.allCases) { mode in
                 Button {
                     viewMode = mode
                 } label: {
                     Image(systemName: mode.symbolName)
-                        .font(.system(size: symbolSize, weight: .medium))
-                        .foregroundStyle(viewMode == mode ? Color.accentColor : Color.primary)
-                        .frame(width: viewModeItemWidth, height: viewModeItemHeight)
+                        .font(.system(size: FileToolbarMetrics.symbolSize, weight: .medium))
+                        .frame(
+                            width: FileToolbarMetrics.viewModeItemWidth,
+                            height: controlHeight - 2
+                        )
                         .background {
-                            RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                .fill(
-                                    viewMode == mode
-                                        ? XunJianUI.Fill.selected
-                                        : Color.clear
-                                )
+                            RoundedRectangle(
+                                cornerRadius: FileToolbarMetrics.innerCornerRadius,
+                                style: .continuous
+                            )
+                            .fill(viewMode == mode ? Color.accentColor : Color.clear)
                         }
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .foregroundStyle(viewMode == mode ? Color.white : Color.primary)
                 .accessibilityLabel(Text(verbatim: mode.localizedTitle))
                 .accessibilityAddTraits(viewMode == mode ? [.isButton, .isSelected] : .isButton)
             }
         }
-        .padding(2)
-        .background(
-            XunJianUI.Fill.control,
-            in: RoundedRectangle(cornerRadius: 6, style: .continuous)
+        .padding(1)
+        .frame(
+            width: FileToolbarMetrics.viewModeWidth,
+            height: controlHeight
         )
+        .fileToolbarSurface()
+        .fixedSize()
     }
 }
 

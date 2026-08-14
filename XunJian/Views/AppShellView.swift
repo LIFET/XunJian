@@ -48,6 +48,11 @@ struct AppShellView: View {
                         appModel.cancelScan()
                     }
 
+                    FileExportProgressBanner(
+                        progress: appModel.fileExportProgress,
+                        onCancel: appModel.cancelFileListExport
+                    )
+
                     TrashUndoBanner(
                         undo: appModel.lastTrashUndo,
                         onUndo: { appModel.undoLastTrash() },
@@ -116,6 +121,26 @@ struct AppShellView: View {
                     NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
                 }
             }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
+                guard let raw = note.object as? String,
+                      let mode = FileBrowseViewMode(rawValue: raw) else { return }
+                switch selection ?? .home {
+                case .allFiles, .category:
+                    // The visible file page consumes this notification itself.
+                    return
+                case .home, .categories, .settings:
+                    // No file list is visible: land on All Files and forward
+                    // the request so ⌘1/⌘2 does what it says instead of
+                    // silently no-op'ing.
+                    selection = .allFiles
+                    Task { @MainActor in
+                        NotificationCenter.default.post(
+                            name: .xunJianSetBrowseViewMode,
+                            object: mode.rawValue
+                        )
+                    }
+                }
+            }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianToggleInspector)) { _ in
                 guard supportsInspector else { return }
                 withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) {
@@ -132,8 +157,11 @@ struct AppShellView: View {
             .onChange(of: selection) { _, newSelection in
                 prepareCommandTargets(for: newSelection)
             }
-            .onChange(of: appModel.categories.map(\.id)) { oldIDs, newIDs in
-                handleCategoryIDsChange(oldIDs, newIDs)
+            .onChange(of: appModel.categoryRevision) { _, _ in
+                selection = Self.selectionAfterCategoryReload(
+                    selection,
+                    availableCategoryIDs: Set(appModel.categories.map(\.id))
+                )
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRequestNewCategory)) { _ in
                 showsGlobalNewCategory = true
@@ -258,13 +286,6 @@ struct AppShellView: View {
             && !isPresented
             && inspectorWasAutoCollapsed
         if !isAutomaticCollapse { inspectorWasAutoCollapsed = false }
-    }
-
-    private func handleCategoryIDsChange(_ oldIDs: [UUID], _ categoryIDs: [UUID]) {
-        selection = Self.selectionAfterCategoryReload(
-            selection,
-            availableCategoryIDs: Set(categoryIDs)
-        )
     }
 
     private func prepareCommandTargets(for destination: NavigationDestination?) {
@@ -420,6 +441,36 @@ struct AppShellView: View {
     }
 }
 
+private struct FileExportProgressBanner: View {
+    let progress: FileExportProgress?
+    let onCancel: () -> Void
+
+    var body: some View {
+        if let progress {
+            HStack(spacing: 10) {
+                ProgressView(
+                    value: Double(progress.completed),
+                    total: Double(max(progress.total, 1))
+                )
+                    .frame(maxWidth: 180)
+                Text(verbatim: AppLanguage.localized(
+                    "正在导出 \(progress.completed)/\(progress.total)",
+                    english: "Exporting \(progress.completed)/\(progress.total)"
+                ))
+                    .font(.caption)
+                    .monospacedDigit()
+                Spacer(minLength: 8)
+                Button(AppLanguage.localized("取消", english: "Cancel"), action: onCancel)
+                    .controlSize(.small)
+            }
+            .padding(.horizontal, XunJianUI.Spacing.page)
+            .padding(.vertical, 8)
+            .background(XunJianUI.Fill.accentWash)
+            .accessibilityElement(children: .combine)
+        }
+    }
+}
+
 extension Notification.Name {
     static let xunJianRequestNewCategory = Notification.Name(
         "com.xunjian.request-new-category"
@@ -554,7 +605,9 @@ private struct TrashUndoBanner: View {
         .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: undo != nil)
         .task(id: undo) {
             guard undo != nil else { return }
-            try? await Task.sleep(for: .seconds(8))
+            // Long enough to read a multi-file summary; a new undo replaces
+            // the old one and restarts this window via `id`.
+            try? await Task.sleep(for: .seconds(12))
             guard !Task.isCancelled else { return }
             onDismiss()
         }

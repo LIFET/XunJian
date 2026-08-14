@@ -94,6 +94,7 @@ final class AppModel: ObservableObject {
         }
     }
     @Published var errorMessage: String?
+    @Published var settingsErrorMessage: String?
     @Published var renameRequest: IndexedFile?
     @Published var trashRequest: IndexedFile?
     /// Batch trash confirmation (F05 multi-select).
@@ -101,6 +102,9 @@ final class AppModel: ObservableObject {
     /// AI sheet request, owned here so both the file list and the inspector
     /// can open the same sheets (N04).
     @Published var aiSheetRequest: AITaskSheet?
+    @Published private(set) var fileExportProgress: FileExportProgress?
+    private var fileExportTask: Task<Void, Never>?
+    private var fileExportRevision = UUID()
     @Published var searchText = "" {
         didSet { index.scheduleSearch(query: searchText) }
     }
@@ -115,20 +119,36 @@ final class AppModel: ObservableObject {
     // Manual filter values (N02), persisted so saved searches can restore
     // them. MB is the UI unit; bytes are derived by the view.
     @Published var filterMinSizeMB: Double {
-        didSet {
-            UserDefaults.standard.set(
-                filterMinSizeMB,
-                forKey: "allFiles.filterMinSizeMB"
-            )
-        }
+        didSet { scheduleManualFilterPersistence() }
     }
     @Published var filterMinDate: Double {
-        didSet {
-            UserDefaults.standard.set(
-                filterMinDate,
-                forKey: "allFiles.filterMinDate"
-            )
+        didSet { scheduleManualFilterPersistence() }
+    }
+
+    /// Debounced persistence for the manual filters: the size filter is a
+    /// text field, and writing UserDefaults on every typed digit was
+    /// pointless churn. Flushed immediately when the app resigns active.
+    private var manualFilterPersistenceTask: Task<Void, Never>?
+
+    private func scheduleManualFilterPersistence() {
+        guard !isRunningTests else { return }
+        manualFilterPersistenceTask?.cancel()
+        let minSize = filterMinSizeMB
+        let minDate = filterMinDate
+        manualFilterPersistenceTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, let self else { return }
+            UserDefaults.standard.set(minSize, forKey: "allFiles.filterMinSizeMB")
+            UserDefaults.standard.set(minDate, forKey: "allFiles.filterMinDate")
         }
+    }
+
+    private func flushManualFilterPersistence() {
+        manualFilterPersistenceTask?.cancel()
+        manualFilterPersistenceTask = nil
+        guard !isRunningTests else { return }
+        UserDefaults.standard.set(filterMinSizeMB, forKey: "allFiles.filterMinSizeMB")
+        UserDefaults.standard.set(filterMinDate, forKey: "allFiles.filterMinDate")
     }
 
     func applyManualFilter(minSizeBytes: Int64, minDate: Date?) {
@@ -394,6 +414,7 @@ final class AppModel: ObservableObject {
     }
 
     deinit {
+        fileExportTask?.cancel()
         let oauth = oauth
         let ai = ai
         let index = index
@@ -406,6 +427,53 @@ final class AppModel: ObservableObject {
 
     func clearError() {
         errorMessage = nil
+    }
+
+    func clearSettingsError() {
+        settingsErrorMessage = nil
+    }
+
+    var isExportingFileList: Bool { fileExportProgress != nil }
+
+    func startFileListExport(
+        totalCount: Int,
+        operation: @escaping @Sendable (
+            _ reportProgress: @escaping @Sendable (Int) -> Void
+        ) async throws -> Void
+    ) {
+        fileExportTask?.cancel()
+        let revision = UUID()
+        fileExportRevision = revision
+        fileExportProgress = FileExportProgress(completed: 0, total: totalCount)
+        fileExportTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await operation { [weak self] completed in
+                    Task { @MainActor [weak self] in
+                        guard let self, self.fileExportRevision == revision else { return }
+                        self.fileExportProgress = FileExportProgress(
+                            completed: min(completed, totalCount),
+                            total: totalCount
+                        )
+                    }
+                }
+            } catch is CancellationError {
+                // The atomic writer removes its temporary artifact.
+            } catch {
+                guard fileExportRevision == revision else { return }
+                errorMessage = error.localizedDescription
+            }
+            guard fileExportRevision == revision else { return }
+            fileExportProgress = nil
+            fileExportTask = nil
+        }
+    }
+
+    func cancelFileListExport() {
+        fileExportRevision = UUID()
+        fileExportTask?.cancel()
+        fileExportTask = nil
+        fileExportProgress = nil
     }
 
     func requestRename(_ file: IndexedFile) {
@@ -520,7 +588,7 @@ final class AppModel: ObservableObject {
     }
 
     private func fileWithText(_ file: IndexedFile) async throws -> IndexedFile {
-        let textContent = try await index.textContent(forFileID: file.id)
+        let textContent = try await textContentForExplicitUse(file)
         return IndexedFile(
             id: file.id,
             sourceID: file.sourceID,
@@ -536,11 +604,26 @@ final class AppModel: ObservableObject {
         )
     }
 
+    func supportsTextContent(_ file: IndexedFile) -> Bool {
+        TextExtractionService.supports(file.url)
+    }
+
+    private func textContentForExplicitUse(_ file: IndexedFile) async throws -> String? {
+        if let indexed = try await index.textContent(forFileID: file.id),
+           !indexed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return indexed
+        }
+        guard supportsTextContent(file) else { return nil }
+        return await Task.detached(priority: .userInitiated) {
+            TextExtractionService().extractText(from: file.url)
+        }.value
+    }
+
     func applyAIClassification(
         _ suggestions: [AIClassificationSuggestion]
     ) async throws -> [AIClassificationChange] {
         guard index.isDatabaseAvailable else { return [] }
-        let validFileIDs = Set(index.files.map(\.id))
+        let validFileIDs = index.allFileIDs
         let validCategoryIDs = Set(index.categories.map(\.id))
         var changes: [AIClassificationChange] = []
 
@@ -609,19 +692,17 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             // Keep selection and AI results consistent with the new file set.
             if !selectedFileIDs.isEmpty {
-                clearSelectionIfHidden(from: Set(index.files.map(\.id)))
+                clearSelectionIfHidden(from: index.allFileIDs)
             }
             if let aiSearchResults {
                 let resultIDs = Set(aiSearchResults.map(\.id))
-                self.aiSearchResults = self.index.files.filter { resultIDs.contains($0.id) }
+                self.aiSearchResults = self.index.files(ids: resultIDs)
             }
         }
         index.onFileResolved = { [weak self] url in
             guard let self else { return }
             let path = FilePathCanonicalizer.path(url)
-            guard let newID = self.index.files.first(where: {
-                FilePathCanonicalizer.path($0.url) == path
-            })?.id else { return }
+            guard let newID = self.index.file(at: URL(fileURLWithPath: path))?.id else { return }
             var next = self.fileSelection
             next.resolveIdentity(from: self.selectedFileID, to: newID)
             self.applyFileSelection(next)
@@ -653,7 +734,7 @@ final class AppModel: ObservableObject {
 
     var selectedFile: IndexedFile? {
         guard let selectedFileID else { return nil }
-        return index.files.first(where: { $0.id == selectedFileID })
+        return index.file(id: selectedFileID)
     }
 
     var recentFiles: [IndexedFile] { index.recentFiles }
@@ -741,7 +822,8 @@ final class AppModel: ObservableObject {
 
     /// On-demand text content for the inspector's inline preview (N08).
     func fetchTextContent(forFileID fileID: String) async throws -> String? {
-        try await index.textContent(forFileID: fileID)
+        guard let file = index.file(id: fileID) else { return nil }
+        return try await textContentForExplicitUse(file)
     }
 
     func rename(_ file: IndexedFile, to newName: String) async throws {
@@ -762,7 +844,7 @@ final class AppModel: ObservableObject {
     // MARK: - Batch operations (F05)
 
     var selectedFiles: [IndexedFile] {
-        index.files.filter { selectedFileIDs.contains($0.id) }
+        index.files(ids: selectedFileIDs)
     }
 
     func requestBatchTrash() {
@@ -819,10 +901,7 @@ final class AppModel: ObservableObject {
         var assigned: [IndexedFile] = []
         var skippedNames: [String] = []
         for url in urls {
-            let path = FilePathCanonicalizer.path(url)
-            if let file = index.files.first(where: {
-                FilePathCanonicalizer.path($0.url) == path
-            }) {
+            if let file = index.file(at: url) {
                 assigned.append(file)
             } else {
                 skippedNames.append(url.lastPathComponent)
@@ -1130,6 +1209,7 @@ final class AppModel: ObservableObject {
 
     func applicationResignedActive() {
         oauth.applicationResignedActive()
+        flushManualFilterPersistence()
     }
 
     /// Drops every selected file that is no longer visible, keeping the rest.

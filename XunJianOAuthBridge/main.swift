@@ -78,6 +78,7 @@ private enum OAuthVerificationProofStore {
         runtimeURL: URL,
         credentialURL: URL
     ) -> Bool {
+        sweepStaleTemporaryProofFiles(near: credentialURL)
         guard let proof = (try? makeProof(
             provider: provider,
             runtimeVersion: runtimeVersion,
@@ -133,6 +134,32 @@ private enum OAuthVerificationProofStore {
 
     private static func proofURL(for credentialURL: URL) -> URL {
         credentialURL.deletingLastPathComponent().appending(path: fileName)
+    }
+
+    // Removes orphaned `.verification-proof-*.tmp` files left behind by a
+    // crash between the exclusive write and the rename in `persist`. Only
+    // names matching the exact prefix and suffix pattern are touched, removal
+    // is best-effort, and symlinks are never followed (lstat must report a
+    // regular file before the entry is removed).
+    private static func sweepStaleTemporaryProofFiles(near credentialURL: URL) {
+        let directory = proofURL(for: credentialURL).deletingLastPathComponent()
+        guard let names = try? FileManager.default.contentsOfDirectory(
+            atPath: directory.path
+        ) else {
+            return
+        }
+        for name in names {
+            guard name.hasPrefix(".verification-proof-"), name.hasSuffix(".tmp") else {
+                continue
+            }
+            let url = directory.appending(path: name)
+            var information = stat()
+            guard lstat(url.path, &information) == 0,
+                  information.st_mode & S_IFMT == S_IFREG else {
+                continue
+            }
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private static func writeExclusive(_ data: Data, to url: URL) -> Bool {
@@ -893,7 +920,8 @@ private actor OAuthBridgeCoordinator {
                         guard let self else { throw CancellationError() }
                         return try await self.performCodexGeneration(
                             model: "gpt-5.6-sol",
-                            prompt: "Reply exactly XUNJIAN_OK. Do not use tools."
+                            prompt: "Reply exactly XUNJIAN_OK. Do not use tools.",
+                            fallbackToFirstListedModel: true
                         )
                     }
                     group.addTask {
@@ -1122,7 +1150,8 @@ private actor OAuthBridgeCoordinator {
 
     private func performCodexGeneration(
         model: String,
-        prompt: String
+        prompt: String,
+        fallbackToFirstListedModel: Bool = false
     ) async throws -> String {
         guard codexLogin == nil else {
             throw Failure.response(
@@ -1158,9 +1187,26 @@ private actor OAuthBridgeCoordinator {
                 }
             }
             codexCredentialState = .signedIn
+            let generationModel: String
+            if fallbackToFirstListedModel {
+                // Connection verification depends on the pinned model being
+                // advertised by the server. When the pinned model is missing
+                // from the live catalog but the catalog is non-empty, fall
+                // back to the first listed model so verification does not
+                // silently fail. An empty catalog keeps the previous behavior:
+                // the pinned model attempt fails closed.
+                let listedModels = try await runtime.client.listModels()
+                if listedModels.contains(where: { $0.id == model }) {
+                    generationModel = model
+                } else {
+                    generationModel = listedModels.first?.id ?? model
+                }
+            } else {
+                generationModel = model
+            }
             generationResult = .success(
                 try await runtime.client.generateText(
-                    model: model,
+                    model: generationModel,
                     prompt: prompt
                 )
             )
@@ -2190,6 +2236,19 @@ private actor OAuthBridgeCoordinator {
         guard let inputs = verificationProofInputs(for: provider) else {
             clearStoredVerification(for: provider)
             return false
+        }
+        // Reuse the stored proof when it is still valid instead of hashing the
+        // runtime and rewriting the proof on every generation call. The proof
+        // is only recomputed and persisted when restoration fails (missing or
+        // stale). No state is cached across calls: this restore-first check
+        // re-validates the current runtime and credential on every call.
+        if OAuthVerificationProofStore.restore(
+            provider: provider,
+            runtimeVersion: inputs.runtimeVersion,
+            runtimeURL: inputs.runtimeURL,
+            credentialURL: inputs.credentialURL
+        ) {
+            return true
         }
         return OAuthVerificationProofStore.persist(
             provider: provider,

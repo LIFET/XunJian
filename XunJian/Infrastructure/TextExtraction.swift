@@ -19,9 +19,13 @@ struct TextExtractionService: Sendable {
         self.maxCharacterCount = maxCharacterCount
     }
 
-    func supports(_ url: URL) -> Bool {
+    static func supports(_ url: URL) -> Bool {
         let fileExtension = url.pathExtension.lowercased()
         return fileExtension == "pdf" || Self.supportedTextExtensions.contains(fileExtension)
+    }
+
+    func supports(_ url: URL) -> Bool {
+        Self.supports(url)
     }
 
     func extractText(from url: URL) -> String? {

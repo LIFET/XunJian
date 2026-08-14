@@ -245,13 +245,22 @@ struct MenuBarSearchView: View {
         }
         let files = appModel.files
         let limit = Self.maximumResults
-        let result = await Task.detached(priority: .userInitiated) {
-            QuickSearchMatching.prefixMatches(
-                in: files,
-                query: trimmed,
-                limit: limit
-            )
-        }.value
+        // The detached scan cannot observe the outer task's cancellation, so
+        // a flag flipped by the cancellation handler lets stale full-index
+        // walks stop the moment newer input arrives.
+        let cancellationFlag = QuickSearchCancellationFlag()
+        let result = await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                QuickSearchMatching.prefixMatches(
+                    in: files,
+                    query: trimmed,
+                    limit: limit,
+                    isCancelled: { cancellationFlag.isCancelled }
+                )
+            }.value
+        } onCancel: {
+            cancellationFlag.cancel()
+        }
         guard !Task.isCancelled else { return }
         displayedResults = result.files
         remainingCount = result.remainingCount

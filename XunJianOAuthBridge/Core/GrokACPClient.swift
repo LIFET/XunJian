@@ -1571,11 +1571,22 @@ actor GrokACPClient {
         guard let totalTokens = usage["total_tokens"]?.integerValue else {
             return usage["total_tokens"] == nil
         }
-        let expectedTotal = componentKeys
-            .subtracting(["reasoning_tokens"])
-            .compactMap { usage[$0]?.integerValue }
-            .reduce(0, +)
-        return totalTokens >= 0 && totalTokens == expectedTotal
+        guard totalTokens >= 0 else { return false }
+        // Validate the components sum to total_tokens using overflow-safe
+        // subtraction: start from total_tokens and subtract each component,
+        // rejecting if any subtraction would overflow or go below zero. A
+        // crafted payload with huge components must not trap on checked
+        // arithmetic.
+        var remaining = totalTokens
+        for key in componentKeys.subtracting(["reasoning_tokens"]) {
+            guard let value = usage[key]?.integerValue, value >= 0 else {
+                return false
+            }
+            let (result, overflow) = remaining.subtractingReportingOverflow(value)
+            guard !overflow, result >= 0 else { return false }
+            remaining = result
+        }
+        return remaining == 0
     }
 
     private static func isValidPromptUsage(_ value: JSONValue?) -> Bool {

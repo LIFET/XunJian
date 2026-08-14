@@ -439,6 +439,10 @@ struct StorageInsightsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
+                                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                                    "在列表中显示",
+                                    english: "Show in List"
+                                )))
                                 Button {
                                     appModel.quickLook(file)
                                 } label: {
@@ -446,6 +450,10 @@ struct StorageInsightsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(AppLanguage.localized("快速查看", english: "Quick Look"))
+                                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                                    "快速查看",
+                                    english: "Quick Look"
+                                )))
                             }
                             .font(.caption)
                         }
@@ -461,7 +469,7 @@ struct StorageInsightsView: View {
                                 trashDuplicates(keepingNewestIn: group)
                             }
                             .buttonStyle(.link)
-                            .foregroundStyle(.red)
+                            .foregroundStyle(XunJianUI.Semantic.danger)
                         }
                         .font(.caption)
                     }
@@ -581,6 +589,6 @@ struct StorageInsightsView: View {
     }
 
     static func sizeText(_ size: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        ByteFormatting.string(forByteCount: size)
     }
 }

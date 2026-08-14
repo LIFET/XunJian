@@ -23,6 +23,7 @@ struct AISearchSheet: View {
     @State private var isWorking = false
     @State private var failure: String?
     @State private var operationTask: Task<Void, Never>?
+    @FocusState private var isFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -46,6 +47,7 @@ struct AISearchSheet: View {
                 text: $query
             )
                 .textFieldStyle(.roundedBorder)
+                .focused($isFieldFocused)
                 .onSubmit(search)
 
             if let failure {
@@ -80,6 +82,7 @@ struct AISearchSheet: View {
         }
         .padding(24)
         .frame(minWidth: 320, idealWidth: 520, maxWidth: 560, alignment: .leading)
+        .onAppear { isFieldFocused = true }
         .onDisappear { operationTask?.cancel() }
     }
 
@@ -172,6 +175,7 @@ struct AIQuestionSheet: View {
     @State private var failure: String?
     @State private var isWorking = false
     @State private var operationTask: Task<Void, Never>?
+    @FocusState private var isFieldFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -190,6 +194,7 @@ struct AIQuestionSheet: View {
                 text: $question
             )
                 .textFieldStyle(.roundedBorder)
+                .focused($isFieldFocused)
                 .onSubmit(ask)
 
             Group {
@@ -253,6 +258,7 @@ struct AIQuestionSheet: View {
         }
         .padding(24)
         .frame(minWidth: 320, idealWidth: 560, maxWidth: 620, minHeight: 340, idealHeight: 380)
+        .onAppear { isFieldFocused = true }
         .onDisappear { operationTask?.cancel() }
     }
 
@@ -332,11 +338,19 @@ struct AITextResultSheet: View {
                         )
                     )
                 } else {
-                    ScrollView {
-                        Text(output)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+                    // Stream finished without producing content: show an
+                    // explicit state instead of an empty scroll box.
+                    Text(verbatim: AppLanguage.localized(
+                        "没有可显示的回复内容。",
+                        english: "No response content to show."
+                    ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(
+                            maxWidth: .infinity,
+                            maxHeight: .infinity,
+                            alignment: .topLeading
+                        )
                 }
             }
             .padding(12)
@@ -384,6 +398,12 @@ struct AIClassificationSheet: View {
     @State private var appliedChanges: [AIClassificationChange] = []
     @State private var showsAppliedConfirmation = false
     @State private var isCommittingChanges = false
+    /// Name-sorted copy of the index, recomputed only when the file set
+    /// changes. The per-body selected-first partitioning above it is O(n)
+    /// with cheap set lookups, so body evaluation no longer pays a
+    /// locale-collated sort of up to ~100k names per keystroke.
+    @State private var nameSortedFilesCache: [IndexedFile] = []
+    @State private var nameSortedFilesRevision: UInt64 = 0
 
     init(initialFileID: String?) {
         _selectedFileIDs = State(
@@ -392,7 +412,8 @@ struct AIClassificationSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        refreshNameSortedFilesCacheIfNeeded()
+        return VStack(alignment: .leading, spacing: 16) {
             Text(AppLanguage.localized("AI 分类", english: "AI Classify"))
                 .font(.title2.weight(.semibold))
             Text(
@@ -438,6 +459,12 @@ struct AIClassificationSheet: View {
         .interactiveDismissDisabled(isCommittingChanges)
         .onDisappear {
             if !isCommittingChanges { operationTask?.cancel() }
+        }
+        .onAppear {
+            let supportedIDs = Set(appModel.files.lazy
+                .filter(appModel.supportsTextContent)
+                .map(\.id))
+            selectedFileIDs.formIntersection(supportedIDs)
         }
         .alert(
             AppLanguage.localized("分类已应用", english: "Classification Applied"),
@@ -496,14 +523,23 @@ struct AIClassificationSheet: View {
 
     private var filteredClassificationFiles: [IndexedFile] {
         let query = fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        return appModel.files.sorted { lhs, rhs in
-            let lhsSelected = selectedFileIDs.contains(lhs.id)
-            let rhsSelected = selectedFileIDs.contains(rhs.id)
-            if lhsSelected != rhsSelected { return lhsSelected }
-            return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
-        }.filter { file in
-            query.isEmpty || file.name.localizedCaseInsensitiveContains(query)
-        }
+        // Selected-first is a stable partition over the cached name order;
+        // the name sort itself is refreshed only when the index changes.
+        let selected = nameSortedFilesCache.filter { selectedFileIDs.contains($0.id) }
+        let unselected = nameSortedFilesCache.filter { !selectedFileIDs.contains($0.id) }
+        let ordered = selected + unselected
+        guard !query.isEmpty else { return ordered }
+        return ordered.filter { $0.name.localizedCaseInsensitiveContains(query) }
+    }
+
+    private func refreshNameSortedFilesCacheIfNeeded() {
+        guard nameSortedFilesRevision != appModel.filesRevision else { return }
+        nameSortedFilesRevision = appModel.filesRevision
+        nameSortedFilesCache = appModel.files
+            .filter(appModel.supportsTextContent)
+            .sorted {
+                $0.name.localizedStandardCompare($1.name) == .orderedAscending
+            }
     }
 
     private var classificationFooter: some View {
@@ -609,7 +645,9 @@ struct AIClassificationSheet: View {
     }
 
     private func classify() {
-        let selectedFiles = appModel.files.filter { selectedFileIDs.contains($0.id) }
+        let selectedFiles = appModel.files.filter {
+            selectedFileIDs.contains($0.id) && appModel.supportsTextContent($0)
+        }
         isWorking = true
         failure = nil
         operationTask?.cancel()
