@@ -83,6 +83,8 @@ enum XunJianUI {
         static let transition: TimeInterval = 0.18
         /// Faster variant for press/hover feedback.
         static let feedback: TimeInterval = 0.12
+        /// Overlay panels (command palette) use a slightly longer spring.
+        static let overlay: TimeInterval = 0.28
     }
 
     static func pagePadding(for width: CGFloat) -> CGFloat {
@@ -93,6 +95,7 @@ enum XunJianUI {
 
     static let standardAnimation = Animation.easeOut(duration: Timing.transition)
     static let feedbackAnimation = Animation.easeOut(duration: Timing.feedback)
+    static let overlayAnimation = Animation.spring(response: 0.28, dampingFraction: 0.88)
 
     /// Returns `nil` when the system "Reduce Motion" setting is on, so callers
     /// can pass the result straight to `withAnimation` and get an instant,
@@ -171,7 +174,18 @@ struct SearchField: View {
                 if !focused { dismissedHistoryForCurrentFocus = false }
             }
             .onExitCommand {
-                dismissedHistoryForCurrentFocus = true
+                // First Escape closes the suggestions, a second one clears the
+                // query — matching how Spotlight and Finder search behave.
+                if showsHistory {
+                    dismissedHistoryForCurrentFocus = true
+                } else if !text.isEmpty {
+                    text = ""
+                } else {
+                    isFocused = false
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearchField)) { _ in
+                isFocused = true
             }
             .xunjianAnimation(value: showsHistory)
     }
@@ -194,7 +208,6 @@ struct SearchField: View {
             .textFieldStyle(.plain)
             .font(.body)
             .focused($isFocused)
-            .keyboardShortcut("f", modifiers: .command)
             .onSubmit { history.record(text) }
             .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                 "搜索文件",
@@ -353,10 +366,10 @@ struct PageHeader: View {
 }
 
 struct SectionHeader: View {
-    let title: LocalizedStringKey
+    let title: String
 
     var body: some View {
-        Text(title)
+        Text(verbatim: title)
             .font(.headline)
             .foregroundStyle(.primary)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -392,6 +405,8 @@ struct InteractiveCardBackground: View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .strokeBorder(strokeColor, lineWidth: 1)
             }
+            .xunjianAnimation(XunJianUI.feedbackAnimation, value: isSelected)
+            .xunjianAnimation(XunJianUI.feedbackAnimation, value: isHovered)
     }
 
     private var fillColor: Color {

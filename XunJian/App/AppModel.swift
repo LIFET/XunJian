@@ -51,16 +51,31 @@ final class AppModel: ObservableObject {
     @Published private(set) var aiSearchQuery: String?
     /// Multi-selection in the file table/grid (F05). `selectedFileID` remains
     /// as the single-selection compatibility surface on top of this set.
-    @Published var selectedFileIDs: Set<String> = []
+    @Published var selectedFileIDs: Set<String> = [] {
+        didSet { reconcileFileSelectionMetadata() }
+    }
     var selectedFileID: String? {
-        get { selectedFileIDs.first }
+        get { fileSelection.primaryID }
         set {
+            var next = fileSelection
             if let newValue {
-                selectedFileIDs = [newValue]
+                next.replace(with: newValue)
             } else {
-                selectedFileIDs = []
+                next.clear()
             }
+            applyFileSelection(next)
         }
+    }
+    /// Sticky range-select anchor (Finder ⇧-click / ⇧-arrow).
+    private var selectionAnchorID: String?
+    /// The file the inspector and keyboard treat as current.
+    private var selectionLeadID: String?
+    private var fileSelection: FileSelection {
+        FileSelection(
+            ids: selectedFileIDs,
+            leadID: selectionLeadID,
+            anchorID: selectionAnchorID
+        )
     }
     @Published var selectedKind: FileKind? = nil {
         didSet {
@@ -141,6 +156,71 @@ final class AppModel: ObservableObject {
     /// Menu title for the next undo, e.g. "撤销重命名".
     var undoTitle: String {
         undo.nextTitle ?? AppLanguage.localized("撤销", english: "Undo")
+    }
+
+    /// Filtered and sorted "All Files" list, cached here rather than in the
+    /// view so switching pages does not throw it away and force a visible
+    /// re-preparation every time the user comes back.
+    @Published var browseSnapshot: [IndexedFile] = []
+    /// Identifies the inputs `browseSnapshot` was built from. `nil` means
+    /// nothing has been prepared yet, which is the only case that warrants
+    /// showing a spinner.
+    @Published var browseSnapshotSignature: Int?
+
+    var filesRevision: UInt64 { index.filesRevision }
+
+    /// Selects everything currently visible in the file list, which is what
+    /// ⌘A means to the user — not every file in the index.
+    func selectAllDisplayedFiles() {
+        var next = FileSelection()
+        next.selectAll(orderedIDs: browseSnapshot.map(\.id))
+        applyFileSelection(next)
+    }
+
+    /// Click in a custom list or grid. Reads ⌘/⇧ from the current event so
+    /// hosts don't each reimplement Finder-style multi-select.
+    func selectDisplayedFile(_ file: IndexedFile, in files: [IndexedFile]) {
+        let modifiers = NSEvent.modifierFlags
+        selectDisplayedFile(
+            file.id,
+            in: files,
+            command: modifiers.contains(.command),
+            shift: modifiers.contains(.shift)
+        )
+    }
+
+    func selectDisplayedFile(
+        _ fileID: String,
+        in files: [IndexedFile],
+        command: Bool,
+        shift: Bool
+    ) {
+        var next = fileSelection
+        next.select(fileID, in: files.map(\.id), command: command, shift: shift)
+        applyFileSelection(next)
+    }
+
+    func moveDisplayedSelection(
+        by offset: Int,
+        in files: [IndexedFile],
+        extending: Bool
+    ) {
+        var next = fileSelection
+        next.moveLead(by: offset, in: files.map(\.id), extending: extending)
+        applyFileSelection(next)
+    }
+
+    private func applyFileSelection(_ next: FileSelection) {
+        selectionLeadID = next.leadID
+        selectionAnchorID = next.anchorID
+        selectedFileIDs = next.ids
+    }
+
+    private func reconcileFileSelectionMetadata() {
+        var next = fileSelection
+        next.reconcileMetadata()
+        selectionLeadID = next.leadID
+        selectionAnchorID = next.anchorID
     }
 
     func rebuildSearchIndex() async {
@@ -411,9 +491,8 @@ final class AppModel: ObservableObject {
         index.onFilesChanged = { [weak self] in
             guard let self else { return }
             // Keep selection and AI results consistent with the new file set.
-            if let selectedFileID,
-               !self.index.files.contains(where: { $0.id == selectedFileID }) {
-                self.selectedFileID = nil
+            if !selectedFileIDs.isEmpty {
+                clearSelectionIfHidden(from: Set(index.files.map(\.id)))
             }
             if let aiSearchResults {
                 let resultIDs = Set(aiSearchResults.map(\.id))
@@ -428,6 +507,9 @@ final class AppModel: ObservableObject {
             }?.id
         }
         indexObservation = index.objectWillChange.sink { [weak self] _ in
+            // Scan counting lives on `scanProgressStore` and is not
+            // `@Published` here, so this fan-out is start/stop and index
+            // changes, not every 100 files.
             self?.objectWillChange.send()
         }
     }
@@ -441,6 +523,7 @@ final class AppModel: ObservableObject {
     var searchResults: [IndexedFile]? { index.searchResults }
     var searchResultTotalCount: Int? { index.searchResultTotalCount }
     var isSearching: Bool { index.isSearching }
+    var scanProgressStore: ScanProgressStore { index.scanProgressStore }
     var scanProgress: ScanProgress? { index.scanProgress }
     var isScanning: Bool { index.isScanning }
     var includesHiddenFiles: Bool { index.includesHiddenFiles }
@@ -804,10 +887,14 @@ final class AppModel: ObservableObject {
         oauth.applicationResignedActive()
     }
 
+    /// Drops every selected file that is no longer visible, keeping the rest.
+    ///
+    /// Checking only the first selection left stale IDs in the set, so the
+    /// batch bar could claim "3 selected" while showing two rows.
     func clearSelectionIfHidden(from visibleFileIDs: Set<String>) {
-        guard let selectedFileID,
-              !visibleFileIDs.contains(selectedFileID) else { return }
-        self.selectedFileID = nil
+        let remaining = selectedFileIDs.intersection(visibleFileIDs)
+        guard remaining.count != selectedFileIDs.count else { return }
+        selectedFileIDs = remaining
     }
 
     private static func message(for error: Error) -> String {

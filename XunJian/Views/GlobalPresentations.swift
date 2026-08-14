@@ -47,10 +47,12 @@ private struct CommandPalettePresentation: ViewModifier {
                 if isPresented {
                     CommandPaletteView(isPresented: $isPresented, selection: $selection)
                         .environment(\.locale, locale)
-                        .transition(.opacity)
+                        .transition(
+                            .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+                        )
                 }
             }
-            .xunjianAnimation(value: isPresented)
+            .xunjianAnimation(XunJianUI.overlayAnimation, value: isPresented)
     }
 }
 

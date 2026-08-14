@@ -45,7 +45,10 @@ struct FileInspectorView: View {
                             Button {
                                 appModel.open(file)
                             } label: {
-                                Label("打开", systemImage: "arrow.up.forward.app")
+                                Label(
+                                    AppLanguage.localized("打开", english: "Open"),
+                                    systemImage: "arrow.up.forward.app"
+                                )
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
@@ -114,7 +117,10 @@ struct FileInspectorView: View {
                                         object: nil
                                     )
                                 } label: {
-                                    Label("新建分类…", systemImage: "plus")
+                                    Label(
+                                        AppLanguage.localized("新建分类…", english: "New Category…"),
+                                        systemImage: "plus"
+                                    )
                                 }
                             } else {
                                 ForEach(appModel.categories) { category in
@@ -151,42 +157,69 @@ struct FileInspectorView: View {
 
                         ViewThatFits(in: .horizontal) {
                             HStack {
-                                Button("重命名…") { appModel.requestRename(file) }
-                                Button("移动到…") { appModel.chooseMoveDestination(for: file) }
-                                Button("移到废纸篓", role: .destructive) { appModel.requestTrash(file) }
+                                Button(AppLanguage.localized("重命名…", english: "Rename…")) {
+                                    appModel.requestRename(file)
+                                }
+                                Button(AppLanguage.localized("移动到…", english: "Move To…")) {
+                                    appModel.chooseMoveDestination(for: file)
+                                }
+                                Button(
+                                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                                    role: .destructive
+                                ) {
+                                    appModel.requestTrash(file)
+                                }
                             }
-                            Menu("更多操作") {
-                                Button("重命名…") { appModel.requestRename(file) }
-                                Button("移动到…") { appModel.chooseMoveDestination(for: file) }
+                            Menu(AppLanguage.localized("更多操作", english: "More Actions")) {
+                                Button(AppLanguage.localized("重命名…", english: "Rename…")) {
+                                    appModel.requestRename(file)
+                                }
+                                Button(AppLanguage.localized("移动到…", english: "Move To…")) {
+                                    appModel.chooseMoveDestination(for: file)
+                                }
                                 Divider()
-                                Button("移到废纸篓", role: .destructive) { appModel.requestTrash(file) }
+                                Button(
+                                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                                    role: .destructive
+                                ) {
+                                    appModel.requestTrash(file)
+                                }
                             }
                         }
 
                         Divider()
 
                         VStack(alignment: .leading, spacing: 14) {
-                            Text("信息")
+                            Text(AppLanguage.localized("信息", english: "Information"))
                                 .font(.subheadline.weight(.semibold))
                                 .foregroundStyle(.secondary)
-                            detail("类型", value: file.kind.localizedTitle)
                             detail(
-                                "大小",
+                                AppLanguage.localized("类型", english: "Kind"),
+                                value: file.kind.localizedTitle
+                            )
+                            detail(
+                                AppLanguage.localized("大小", english: "Size"),
                                 value: ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
                             )
                             detail(
-                                "位置",
+                                AppLanguage.localized("位置", english: "Where"),
                                 value: file.parentPath,
                                 lineLimit: 3,
                                 help: file.parentPath
                             )
-                            detail("创建时间", value: formatted(file.createdAt))
-                            detail("修改时间", value: formatted(file.modifiedAt))
+                            detail(
+                                AppLanguage.localized("创建时间", english: "Created"),
+                                value: formatted(file.createdAt)
+                            )
+                            detail(
+                                AppLanguage.localized("修改时间", english: "Modified"),
+                                value: formatted(file.modifiedAt)
+                            )
 
                             // N11: read-only Finder tags, fetched live.
                             if !finderTags.isEmpty {
                                 detail(
-                                    "Finder 标签",
+                                    AppLanguage.localized("Finder 标签", english: "Finder Tags"),
                                     value: finderTags.joined(
                                         separator: AppLanguage.selected.usesEnglish ? ", " : "、"
                                     )
@@ -219,7 +252,11 @@ struct FileInspectorView: View {
                                 .foregroundStyle(.secondary)
 
                                 if let previewText {
-                                    Text(highlightedPreview(previewText))
+                                    // Actually truncate. Rendering the full
+                                    // body made "Show More" a no-op and pushed
+                                    // up to 200k characters through the
+                                    // inspector's layout.
+                                    Text(highlightedPreview(String(previewText.prefix(previewLimit))))
                                         .font(.caption)
                                         .lineSpacing(3)
                                         .textSelection(.enabled)
@@ -228,7 +265,7 @@ struct FileInspectorView: View {
                                             alignment: .leading
                                         )
 
-                                    if previewText.count >= previewLimit {
+                                    if previewText.count > previewLimit {
                                         Button(
                                             AppLanguage.localized(
                                                 "显示更多",
@@ -260,13 +297,18 @@ struct FileInspectorView: View {
                 }
             } else {
                 ContentUnavailableView(
-                    "未选择文件",
+                    AppLanguage.localized("未选择文件", english: "No File Selected"),
                     systemImage: "doc.text.magnifyingglass",
-                    description: Text("选择文件后可在这里查看详情。")
+                    description: Text(
+                        AppLanguage.localized(
+                            "选择文件后可在这里查看详情。",
+                            english: "Select a file to see its details here."
+                        )
+                    )
                 )
             }
         }
-        .navigationTitle("文件详情")
+        .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
         .task(id: file?.id) {
             // N08: load text content on demand for the inline preview.
             previewText = nil
@@ -313,13 +355,13 @@ struct FileInspectorView: View {
     }
 
     private func detail(
-        _ title: LocalizedStringKey,
+        _ title: String,
         value: String,
         lineLimit: Int? = nil,
         help: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title)
+            Text(verbatim: title)
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Group {

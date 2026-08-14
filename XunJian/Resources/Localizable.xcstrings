@@ -30,6 +30,7 @@
       "shouldTranslate" : false
     },
     "AI 分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -40,6 +41,7 @@
       }
     },
     "AI 分类…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -50,6 +52,7 @@
       }
     },
     "AI 只理解你的描述并生成检索条件；文件候选筛选和结果匹配均在本地完成。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -60,6 +63,7 @@
       }
     },
     "AI 搜文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -70,6 +74,7 @@
       }
     },
     "AI 搜文件…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -80,6 +85,7 @@
       }
     },
     "AI 服务" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -90,6 +96,7 @@
       }
     },
     "AI 看文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -100,6 +107,7 @@
       }
     },
     "AI 问文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -110,6 +118,7 @@
       }
     },
     "AI 问文件…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -161,9 +170,6 @@
         }
       }
     },
-    "Finder 标签" : {
-
-    },
     "https://…" : {
       "shouldTranslate" : false
     },
@@ -200,6 +206,7 @@
       }
     },
     "不建议分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -210,6 +217,7 @@
       }
     },
     "仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -220,6 +228,7 @@
       }
     },
     "从文件右键菜单或详情栏为文件添加分类。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -230,6 +239,7 @@
       }
     },
     "位置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -240,6 +250,7 @@
       }
     },
     "例如：找我去年保存的合同" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -250,6 +261,7 @@
       }
     },
     "例如：这个合同什么时候到期？" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -260,6 +272,7 @@
       }
     },
     "保存" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -269,10 +282,8 @@
         }
       }
     },
-    "保存的搜索" : {
-
-    },
     "信息" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -283,6 +294,7 @@
       }
     },
     "修改分类名称" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -293,6 +305,7 @@
       }
     },
     "修改名称…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -303,6 +316,7 @@
       }
     },
     "修改时间" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -335,6 +349,7 @@
       }
     },
     "全部分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -345,6 +360,7 @@
       }
     },
     "关于" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -355,6 +371,7 @@
       }
     },
     "关闭" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -375,10 +392,8 @@
         }
       }
     },
-    "最久未修改" : {
-
-    },
     "最多选择 8 个文件。AI 只会建议已有分类，确认后才写入本地索引。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -388,10 +403,8 @@
         }
       }
     },
-    "最大的文件" : {
-
-    },
     "最近文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -402,6 +415,7 @@
       }
     },
     "分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -412,6 +426,7 @@
       }
     },
     "分类名称" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -422,6 +437,7 @@
       }
     },
     "列表" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -432,6 +448,7 @@
       }
     },
     "创建分类后，可以从文件右键菜单或详情栏添加。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -442,6 +459,7 @@
       }
     },
     "创建时间" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -452,6 +470,7 @@
       }
     },
     "删除分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -462,6 +481,7 @@
       }
     },
     "删除分类？" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -472,6 +492,7 @@
       }
     },
     "取消" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -482,6 +503,7 @@
       }
     },
     "只会移除寻简保存的授权与本地索引，不会删除原文件夹或其中的文件。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -503,6 +525,7 @@
       }
     },
     "名称" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -513,6 +536,7 @@
       }
     },
     "图标" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -523,6 +547,7 @@
       }
     },
     "在 Finder 中显示" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -533,6 +558,7 @@
       }
     },
     "外观" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -543,6 +569,7 @@
       }
     },
     "大小" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -553,6 +580,7 @@
       }
     },
     "好" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -563,6 +591,7 @@
       }
     },
     "完成" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -573,6 +602,7 @@
       }
     },
     "寻简" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -583,6 +613,7 @@
       }
     },
     "尚未添加扫描位置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -593,6 +624,7 @@
       }
     },
     "已授权目录" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -603,6 +635,7 @@
       }
     },
     "应用" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -624,6 +657,7 @@
       }
     },
     "当前 AI" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -634,6 +668,7 @@
       }
     },
     "快速查看" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -655,6 +690,7 @@
       }
     },
     "所有文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -665,6 +701,7 @@
       }
     },
     "所有类型" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -675,6 +712,7 @@
       }
     },
     "打开" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -685,6 +723,7 @@
       }
     },
     "打开设置…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -695,6 +734,7 @@
       }
     },
     "扫描位置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -704,13 +744,8 @@
         }
       }
     },
-    "按位置分布" : {
-
-    },
-    "按类型分布" : {
-
-    },
     "排序" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -721,6 +756,7 @@
       }
     },
     "提问" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -753,6 +789,7 @@
       }
     },
     "操作未完成" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -763,6 +800,7 @@
       }
     },
     "文件位置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -773,6 +811,7 @@
       }
     },
     "文件分类概览" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -783,6 +822,7 @@
       }
     },
     "文件名" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -793,6 +833,7 @@
       }
     },
     "文件类型" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -803,6 +844,7 @@
       }
     },
     "文件详情" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -824,6 +866,7 @@
       }
     },
     "新建分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -834,6 +877,7 @@
       }
     },
     "新建分类…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -866,6 +910,7 @@
       }
     },
     "显示方式" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -876,6 +921,7 @@
       }
     },
     "更多" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -897,6 +943,7 @@
       }
     },
     "更多操作" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -907,6 +954,7 @@
       }
     },
     "未选择文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -928,6 +976,7 @@
       }
     },
     "查找" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -936,9 +985,6 @@
           }
         }
       }
-    },
-    "标签" : {
-
     },
     "桌面" : {
       "extractionState" : "stale",
@@ -952,6 +998,7 @@
       }
     },
     "模型名称" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -984,6 +1031,7 @@
       }
     },
     "正在理解查找条件…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -994,6 +1042,7 @@
       }
     },
     "正在读取必要文本…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1004,6 +1053,7 @@
       }
     },
     "正在阅读当前文件…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1014,6 +1064,7 @@
       }
     },
     "测试连接" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1023,10 +1074,8 @@
         }
       }
     },
-    "浏览" : {
-
-    },
     "添加到分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1037,6 +1086,7 @@
       }
     },
     "添加文件夹" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1047,6 +1097,7 @@
       }
     },
     "清除" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1068,6 +1119,7 @@
       }
     },
     "版本" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1078,6 +1130,7 @@
       }
     },
     "生成建议" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1099,6 +1152,7 @@
       }
     },
     "界面语言" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1109,6 +1163,7 @@
       }
     },
     "确认应用" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1119,6 +1174,7 @@
       }
     },
     "移到废纸篓" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1129,6 +1185,7 @@
       }
     },
     "移到废纸篓？" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1139,6 +1196,7 @@
       }
     },
     "移动到…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1149,6 +1207,7 @@
       }
     },
     "移除 API Key" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1159,6 +1218,7 @@
       }
     },
     "移除 API Key…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1169,6 +1229,7 @@
       }
     },
     "移除…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1179,6 +1240,7 @@
       }
     },
     "移除文件夹授权？" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1189,6 +1251,7 @@
       }
     },
     "类型" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1221,6 +1284,7 @@
       }
     },
     "设置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1231,6 +1295,7 @@
       }
     },
     "请先在设置中配置当前 AI" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1241,6 +1306,7 @@
       }
     },
     "还没有分类" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1251,6 +1317,7 @@
       }
     },
     "还没有文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1261,6 +1328,7 @@
       }
     },
     "这个分类里还没有文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1271,6 +1339,7 @@
       }
     },
     "选择一个文件夹开始建立本地文件索引。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1281,6 +1350,7 @@
       }
     },
     "选择文件后可在这里查看详情。" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1291,6 +1361,7 @@
       }
     },
     "通用" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1312,6 +1383,7 @@
       }
     },
     "重命名" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1322,6 +1394,7 @@
       }
     },
     "重命名…" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1332,6 +1405,7 @@
       }
     },
     "重命名文件" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1341,10 +1415,8 @@
         }
       }
     },
-    "重复文件" : {
-
-    },
     "重新扫描" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1355,6 +1427,7 @@
       }
     },
     "重新扫描全部位置" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1365,6 +1438,7 @@
       }
     },
     "重新授权" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {
@@ -1397,6 +1471,7 @@
       }
     },
     "首页" : {
+      "extractionState" : "stale",
       "localizations" : {
         "en" : {
           "stringUnit" : {

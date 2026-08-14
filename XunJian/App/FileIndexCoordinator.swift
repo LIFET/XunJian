@@ -22,13 +22,18 @@ final class FileIndexCoordinator: ObservableObject {
     @Published private(set) var categories: [FileCategory] = [] {
         didSet { rebuildDerivedIndexes() }
     }
-    @Published private(set) var fileCategoryLinks: [String: Set<UUID>] = [:]
+    @Published private(set) var fileCategoryLinks: [String: Set<UUID>] = [:] {
+        didSet { rebuildDerivedIndexes() }
+    }
     @Published private(set) var savedSearches: [SavedSearch] = []
     @Published private(set) var searchResults: [IndexedFile]? = nil
     @Published private(set) var searchResultTotalCount: Int? = nil
     @Published private(set) var isSearching = false
-    @Published private(set) var scanProgress: ScanProgress?
+    /// High-frequency scan UI. Not `@Published` on this object: forwarding it
+    /// through `AppModel` rebuilt the whole window every 100 files.
+    let scanProgressStore = ScanProgressStore()
     @Published private(set) var isScanning = false
+    var scanProgress: ScanProgress? { scanProgressStore.progress }
     @Published private(set) var includesHiddenFiles = false
     @Published private(set) var isDatabaseAvailable = true
 
@@ -46,6 +51,9 @@ final class FileIndexCoordinator: ObservableObject {
     struct TrashUndo: Equatable, Sendable {
         let trashURL: URL
         let originalURL: URL
+        /// The matching entry on the general undo stack, so using the banner
+        /// and using ⌘Z cannot both restore the same item.
+        var undoEntryID: UUID?
     }
 
     @Published private(set) var lastTrashUndo: TrashUndo?
@@ -279,15 +287,11 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Queries
 
-    var recentFiles: [IndexedFile] {
-        files
-            .filter { $0.modifiedAt != nil }
-            .sorted {
-                ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
-            }
-            .prefix(8)
-            .map { $0 }
-    }
+    /// Cached: the home page reads this several times per body evaluation, and
+    /// recomputing meant a full filter + sort of the index each time.
+    private(set) var recentFiles: [IndexedFile] = []
+
+    private static let recentFileCount = 8
 
     var hasMoreSearchResults: Bool {
         searchResults != nil
@@ -296,7 +300,11 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func categories(for file: IndexedFile) -> [FileCategory] {
-        let assignedIDs = fileCategoryLinks[file.id] ?? []
+        guard let assignedIDs = fileCategoryLinks[file.id], !assignedIDs.isEmpty else {
+            return []
+        }
+        // Ordered by the canonical category order rather than set order so the
+        // label text is stable between renders.
         return categories.filter { assignedIDs.contains($0.id) }
     }
 
@@ -305,7 +313,7 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func fileCount(in category: FileCategory) -> Int {
-        files(in: category).count
+        fileCountsByCategoryID[category.id] ?? 0
     }
 
     func isCategory(_ category: FileCategory, assignedTo file: IndexedFile) -> Bool {
@@ -315,18 +323,41 @@ final class FileIndexCoordinator: ObservableObject {
     /// F12: O(1) per-kind counts instead of scanning `files` once per kind on
     /// the home page (7 scans of up to 100k files each).
     private var fileCountsByKind: [FileKind: Int] = [:]
+    /// Same idea for categories: the overview draws one card per category, and
+    /// counting by scanning `files` per card was O(categories × files).
+    private var fileCountsByCategoryID: [UUID: Int] = [:]
 
     func fileCount(for kind: FileKind) -> Int {
         fileCountsByKind[kind] ?? 0
     }
 
     /// Rebuilt once per `files`/`categories` change, not per row.
+    /// Bumped whenever the file set or its category links change. Views use it
+    /// as a cheap cache key instead of comparing the whole `files` array.
+    private(set) var filesRevision: UInt64 = 0
+
     private func rebuildDerivedIndexes() {
-        var counts: [FileKind: Int] = [:]
+        filesRevision &+= 1
+        var kindCounts: [FileKind: Int] = [:]
+        var categoryCounts: [UUID: Int] = [:]
         for file in files {
-            counts[file.kind, default: 0] += 1
+            kindCounts[file.kind, default: 0] += 1
+            if let assigned = fileCategoryLinks[file.id] {
+                for categoryID in assigned {
+                    categoryCounts[categoryID, default: 0] += 1
+                }
+            }
         }
-        fileCountsByKind = counts
+        fileCountsByKind = kindCounts
+        fileCountsByCategoryID = categoryCounts
+
+        recentFiles = files
+            .filter { $0.modifiedAt != nil }
+            .sorted {
+                ($0.modifiedAt ?? .distantPast) > ($1.modifiedAt ?? .distantPast)
+            }
+            .prefix(Self.recentFileCount)
+            .map { $0 }
     }
 
     // MARK: - Search
@@ -480,6 +511,10 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func removeSource(_ source: FileSource) {
+        // Pending undos capture files that may live in this source; once it is
+        // gone those reverts can no longer resolve.
+        undoCoordinator?.clear()
+        lastTrashUndo = nil
         pendingFullRescanSourceIDs.remove(source.id)
         if currentScanningSourceID == source.id {
             cancelScan(startsPendingFullRescan: false)
@@ -511,7 +546,7 @@ final class FileIndexCoordinator: ObservableObject {
         failedScanningSourceIDs.removeAll()
         currentScanningSourceID = source.id
         isScanning = true
-        scanProgress = ScanProgress(discoveredCount: 0, currentPath: source.path)
+        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: source.path))
         scanTask = Task { [weak self] in
             await self?.performScan(source, generation: generation)
         }
@@ -526,7 +561,7 @@ final class FileIndexCoordinator: ObservableObject {
         scanningSourceIDs = Set(sourcesToScan.map(\.id))
         failedScanningSourceIDs.removeAll()
         isScanning = true
-        scanProgress = ScanProgress(discoveredCount: 0, currentPath: sourcesToScan[0].path)
+        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: sourcesToScan[0].path))
         scanTask = Task { [weak self] in
             guard let self else { return }
             for source in sourcesToScan {
@@ -566,7 +601,7 @@ final class FileIndexCoordinator: ObservableObject {
         scanningSourceIDs.removeAll()
         currentScanningSourceID = nil
         isScanning = false
-        scanProgress = nil
+        scanProgressStore.update(nil)
         failedScanningSourceIDs.removeAll()
         if startsPendingFullRescan {
             startNextPendingFullRescanIfNeeded()
@@ -667,11 +702,15 @@ final class FileIndexCoordinator: ObservableObject {
                     // Keep one undo hop so an accidental delete can be
                     // reversed without digging through the Trash. Also pushed
                     // onto the general stack so ⌘Z covers it (N16).
-                    lastTrashUndo = TrashUndo(
+                    let entryID = recordTrashUndo(
                         trashURL: trashURL,
                         originalURL: file.url
                     )
-                    recordTrashUndo(trashURL: trashURL, originalURL: file.url)
+                    lastTrashUndo = TrashUndo(
+                        trashURL: trashURL,
+                        originalURL: file.url,
+                        undoEntryID: entryID
+                    )
                 }
                 onFilesChanged?()
                 await reconcileKnownFileChanges([file.url])
@@ -685,6 +724,9 @@ final class FileIndexCoordinator: ObservableObject {
     func undoLastTrash() {
         guard let undo = lastTrashUndo else { return }
         lastTrashUndo = nil
+        // Drop the twin stack entry, otherwise ⌘Z would try to restore an
+        // item that is already back in place.
+        undo.undoEntryID.map { undoCoordinator?.remove($0) }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -698,7 +740,7 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
-    private func recordTrashUndo(trashURL: URL, originalURL: URL) {
+    private func recordTrashUndo(trashURL: URL, originalURL: URL) -> UUID? {
         undoCoordinator?.record(title: UndoCoordinator.trashTitle) { [weak self] in
             guard let self else { return }
             // Clears the one-hop banner so it cannot restore the same item a
@@ -1140,7 +1182,7 @@ final class FileIndexCoordinator: ObservableObject {
     ) async {
         guard let database else { return reportDatabaseUnavailable() }
         isScanning = true
-        scanProgress = ScanProgress(discoveredCount: 0, currentPath: source.path)
+        scanProgressStore.update(ScanProgress(discoveredCount: 0, currentPath: source.path))
 
         do {
             let restored = try bookmarkManager.resolveBookmark(source.bookmark)
@@ -1168,7 +1210,7 @@ final class FileIndexCoordinator: ObservableObject {
             ) { [weak self] progress in
                 Task { @MainActor in
                     guard self?.scanGeneration == generation else { return }
-                    self?.scanProgress = progress
+                    self?.scanProgressStore.update(progress)
                 }
             }
             try Task.checkCancellation()
@@ -1206,7 +1248,7 @@ final class FileIndexCoordinator: ObservableObject {
             finishingGeneration: generation
         ) else { return }
         isScanning = false
-        scanProgress = nil
+        scanProgressStore.update(nil)
         scanTask = nil
         if !failedScanningSourceIDs.isEmpty {
             let failedNames = sources
@@ -1230,19 +1272,23 @@ final class FileIndexCoordinator: ObservableObject {
                 english: "Scan finished, but \(count) location(s) couldn’t be read and were skipped (for example \(sample)). Files there are not in the index."
             ))
         }
+        // Captured before the reset below, otherwise the notification's
+        // "did everything succeed?" check always saw an empty set.
+        let scanSucceeded = failedScanningSourceIDs.isEmpty && skippedScanPaths.isEmpty
         skippedScanPaths.removeAll()
         failedScanningSourceIDs.removeAll()
         scanningSourceIDs.removeAll()
         currentScanningSourceID = nil
         startNextPendingFullRescanIfNeeded()
-        notifyScanFinished()
+        notifyScanFinished(succeeded: scanSucceeded)
     }
 
-    /// Completion notification (N12), opt-in via Settings. Only fires for
-    /// full passes over every source, not single-folder rescans.
-    private func notifyScanFinished() {
-        guard UserDefaults.standard.bool(forKey: "notifications.scanComplete"),
-              failedScanningSourceIDs.isEmpty else { return }
+    /// Completion notification, opt-in via Settings. Suppressed when the scan
+    /// hit unreadable locations, since an on-screen error already explains
+    /// that the index is incomplete.
+    private func notifyScanFinished(succeeded: Bool) {
+        guard succeeded,
+              UserDefaults.standard.bool(forKey: "notifications.scanComplete") else { return }
         let content = UNMutableNotificationContent()
         content.title = AppLanguage.localized(
             "索引更新完成",

@@ -546,25 +546,15 @@ struct XunJianApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.simplifiedChinese.rawValue
-    @AppStorage(MenuBarSearchPreference.storageKey) private var showsMenuBarSearch = true
-
-    /// A MenuBarExtra in the scene tree hangs the XCTest runner before it can
-    /// establish its connection, so it is excluded entirely in that mode.
-    private let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
-
-    // NOTE: the menu bar search scene was removed from the scene list. A
-    // MenuBarExtra in the scene tree hangs the XCTest runner before it can
-    // establish its connection (even with isInserted false), and conditionally
-    // excluding it with `if` in SceneBuilder triggers a Swift compiler bug
-    // ("failed to produce diagnostic"). Re-add MenuBarSearchView via
-    // NSStatusItem or a separate mechanism when reworking this feature.
+    // Menu bar quick search is an `NSStatusItem` owned by the app delegate
+    // rather than a `MenuBarExtra` scene, which hangs the XCTest runner.
     var body: some Scene {
         mainWindow
         settingsScene
     }
 
     private var mainWindow: some Scene {
-        Window("寻简", id: "main") {
+        Window(AppLanguage.localized("寻简", english: "XunJian"), id: "main") {
             AppShellView()
                 .environmentObject(appModel)
                 .preferredColorScheme(
@@ -575,6 +565,7 @@ struct XunJianApp: App {
                     AppLanguage(rawValue: language)?.locale ?? Locale(identifier: "zh_CN")
                 )
                 .frame(minWidth: 360, minHeight: 600)
+                .task { appDelegate.attachMenuBarSearch(appModel: appModel) }
                 .onChange(of: scenePhase, initial: true) { _, newPhase in
                     switch newPhase {
                     case .active:
@@ -590,7 +581,8 @@ struct XunJianApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             SidebarCommands()
-            CommandGroup(replacing: .newItem) {}
+            // `XunJianCommands` supplies its own `.newItem` group; replacing it
+            // here as well would drop those items.
             XunJianCommands(appModel: appModel)
         }
     }

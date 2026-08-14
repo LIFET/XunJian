@@ -30,11 +30,20 @@ final class UndoCoordinator: ObservableObject {
     /// Title of the action that would be undone next.
     var nextTitle: String? { entries.last?.title }
 
-    func record(title: String, revert: @escaping () async throws -> Void) {
-        entries.append(Entry(title: title, revert: revert))
+    /// Returns the new entry's identifier so callers that expose their own
+    /// one-off undo affordance can drop it from the stack once used.
+    @discardableResult
+    func record(title: String, revert: @escaping () async throws -> Void) -> UUID {
+        let entry = Entry(title: title, revert: revert)
+        entries.append(entry)
         if entries.count > Self.maximumDepth {
             entries.removeFirst(entries.count - Self.maximumDepth)
         }
+        return entry.id
+    }
+
+    func remove(_ id: UUID) {
+        entries.removeAll { $0.id == id }
     }
 
     /// Pops and runs the most recent action. The entry is removed even when

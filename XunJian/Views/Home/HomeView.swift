@@ -44,14 +44,22 @@ struct HomeView: View {
     }
 
     private var recentFiles: some View {
-        section(title: "最近文件") {
+        section(title: AppLanguage.localized("最近文件", english: "Recent Files")) {
             if appModel.recentFiles.isEmpty {
                 ContentUnavailableView {
-                    Label("还没有文件", systemImage: "folder.badge.plus")
+                    Label(
+                        AppLanguage.localized("还没有文件", english: "No Files Yet"),
+                        systemImage: "folder.badge.plus"
+                    )
                 } description: {
-                    Text("选择一个文件夹开始建立本地文件索引。")
+                    Text(
+                        AppLanguage.localized(
+                            "选择一个文件夹开始建立本地文件索引。",
+                            english: "Choose a folder to start building a local file index."
+                        )
+                    )
                 } actions: {
-                    Button("添加文件夹") {
+                    Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                         appModel.chooseFolder()
                     }
                     .buttonStyle(.borderedProminent)
@@ -116,7 +124,7 @@ struct HomeView: View {
     }
 
     private var fileKinds: some View {
-        section(title: "文件分类概览") {
+        section(title: AppLanguage.localized("文件分类概览", english: "File Types")) {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                 ForEach(FileKind.allCases) { kind in
                     Button {
@@ -167,12 +175,17 @@ struct HomeView: View {
     }
 
     private var scanLocations: some View {
-        section(title: "扫描位置") {
+        section(title: AppLanguage.localized("扫描位置", english: "Scan Locations")) {
             if appModel.sources.isEmpty {
                 HStack(spacing: 10) {
                     Image(systemName: "folder.badge.questionmark")
                         .foregroundStyle(.secondary)
-                    Text("尚未添加扫描位置")
+                    Text(
+                        AppLanguage.localized(
+                            "尚未添加扫描位置",
+                            english: "No scan locations yet"
+                        )
+                    )
                         .foregroundStyle(.secondary)
                     Spacer(minLength: 0)
                 }
@@ -209,7 +222,7 @@ struct HomeView: View {
                                 }
                                 Spacer(minLength: 0)
                                 if source.accessState != .available {
-                                    Button("重新授权") {
+                                    Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
                                         appModel.reauthorizeSource(source)
                                     }
                                     .controlSize(.small)
@@ -229,7 +242,7 @@ struct HomeView: View {
     }
 
     private func section<Content: View>(
-        title: LocalizedStringKey,
+        title: String,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {

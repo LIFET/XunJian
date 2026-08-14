@@ -101,7 +101,109 @@ struct FileGridCard: View {
         ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
     }
 
-    static let gridColumns = [GridItem(.adaptive(minimum: 132), spacing: 14)]
+    static let minimumItemWidth: CGFloat = 132
+    static let gridSpacing: CGFloat = 14
+    static let gridColumns = [GridItem(.adaptive(minimum: minimumItemWidth), spacing: gridSpacing)]
+
+    /// Columns the adaptive grid fits at this width. Used so arrow-key
+    /// navigation moves a whole row rather than one item.
+    static func columnCount(forWidth width: CGFloat) -> Int {
+        max(Int(width / (minimumItemWidth + gridSpacing)), 1)
+    }
+}
+
+// MARK: - Keyboard navigation
+
+/// Arrow-key selection plus the standard file shortcuts, shared by every file
+/// list so the grid and the category page behave like the main table.
+///
+/// `columnCount` is 1 for vertical lists; grids pass their real column count so
+/// up/down moves a row rather than a single item.
+struct FileListKeyboardNavigation: ViewModifier {
+    @EnvironmentObject private var appModel: AppModel
+
+    let files: [IndexedFile]
+    var columnCount: Int = 1
+
+    @AppStorage(FileActivationBehavior.storageKey)
+    private var activationBehavior = FileActivationBehavior.open
+    @FocusState private var isListFocused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focusable(!files.isEmpty)
+            .focusEffectDisabled()
+            .focused($isListFocused)
+            .onChange(of: appModel.selectedFileID) { _, id in
+                guard id != nil, !files.isEmpty else { return }
+                isListFocused = true
+            }
+            .onKeyPress(phases: [.down, .repeat]) { press in
+                handleKeyPress(press)
+            }
+    }
+
+    private func handleKeyPress(_ press: KeyPress) -> KeyPress.Result {
+        let extending = press.modifiers.contains(.shift)
+        switch press.key {
+        case .upArrow:
+            return move(by: -columnCount, extending: extending)
+        case .downArrow:
+            return move(by: columnCount, extending: extending)
+        case .leftArrow:
+            return move(by: -1, extending: extending)
+        case .rightArrow:
+            return move(by: 1, extending: extending)
+        case .return:
+            guard let file = currentFile else { return .ignored }
+            activationBehavior.perform(on: file, using: appModel)
+            return .handled
+        case .space:
+            guard let file = currentFile else { return .ignored }
+            appModel.quickLook(file)
+            return .handled
+        case .delete, .deleteForward:
+            return requestTrash()
+        default:
+            guard press.modifiers.contains(.command),
+                  press.characters.lowercased() == "c",
+                  let file = currentFile else { return .ignored }
+            appModel.copyPath(file)
+            return .handled
+        }
+    }
+
+    private var currentFile: IndexedFile? {
+        appModel.selectedFile
+    }
+
+    /// Moves the selection, clamping at both ends rather than wrapping so
+    /// holding an arrow key cannot silently jump across the whole list.
+    private func move(by offset: Int, extending: Bool) -> KeyPress.Result {
+        guard !files.isEmpty else { return .ignored }
+        appModel.moveDisplayedSelection(by: offset, in: files, extending: extending)
+        return .handled
+    }
+
+    private func requestTrash() -> KeyPress.Result {
+        if appModel.selectedFileIDs.count > 1 {
+            appModel.requestBatchTrash()
+            return .handled
+        }
+        guard let file = currentFile else { return .ignored }
+        appModel.requestTrash(file)
+        return .handled
+    }
+}
+
+extension View {
+    func fileListKeyboardNavigation(
+        files: [IndexedFile],
+        columnCount: Int = 1
+    ) -> some View {
+        modifier(FileListKeyboardNavigation(files: files, columnCount: columnCount))
+    }
+
 }
 
 // MARK: - Compact browse toolbar

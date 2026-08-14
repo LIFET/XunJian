@@ -195,6 +195,7 @@ struct CommandPaletteView: View {
                 isHighlighted ? XunJianUI.Fill.selected : .clear,
                 in: RoundedRectangle(cornerRadius: XunJianUI.Radius.row, style: .continuous)
             )
+            .xunjianAnimation(XunJianUI.feedbackAnimation, value: isHighlighted)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -344,7 +345,9 @@ struct CommandPaletteView: View {
                 group: .file
             ) {
                 appModel.selectedFileID = file.id
-                appModel.open(file)
+                // Reveal in the file list rather than launching the file:
+                // the palette is a finder, and ⌘↓ / double-click still open.
+                selection = .allFiles
             }
         }
     }

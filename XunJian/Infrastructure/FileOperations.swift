@@ -138,9 +138,9 @@ struct ThumbnailFailure: Sendable {
     let error: any Error
 }
 
-@MainActor
-final class ThumbnailService {
+actor ThumbnailService {
     static let shared = ThumbnailService()
+    static let maxConcurrent = 4
 
     /// Most recent generation failure, for diagnostics. Thumbnails degrade
     /// gracefully to a symbol, so this is deliberately not surfaced as an alert.
@@ -148,11 +148,13 @@ final class ThumbnailService {
 
     private let cache: NSCache<NSString, NSImage> = {
         let cache = NSCache<NSString, NSImage>()
-        // Without limits the cache grows unbounded while browsing large folders.
         cache.countLimit = 600
         cache.totalCostLimit = 96 * 1_024 * 1_024
         return cache
     }()
+
+    private var running = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
 
     /// Approximate backing-store cost in bytes, used to bound the cache by memory
     /// rather than by entry count alone (a 512pt @2x thumbnail costs ~4MB).
@@ -164,6 +166,14 @@ final class ThumbnailService {
 
     func thumbnail(for file: IndexedFile, size: CGSize, scale: CGFloat) async -> NSImage? {
         let cacheKey = "\(file.id)-\(Int(size.width))-\(Int(size.height))" as NSString
+        if let cached = cache.object(forKey: cacheKey) {
+            return cached
+        }
+
+        await acquire()
+        defer { release() }
+        guard !Task.isCancelled else { return nil }
+
         if let cached = cache.object(forKey: cacheKey) {
             return cached
         }
@@ -182,12 +192,27 @@ final class ThumbnailService {
             cache.setObject(image, forKey: cacheKey, cost: cost(of: image, scale: scale))
             return image
         } catch {
-            // Thumbnail generation legitimately fails for unsupported or
-            // unreadable files. Callers fall back to the file-kind symbol, but
-            // record the reason so the failure is diagnosable instead of silent.
             lastFailure = ThumbnailFailure(fileID: file.id, error: error)
             return nil
         }
+    }
+
+    private func acquire() async {
+        if running < Self.maxConcurrent {
+            running += 1
+            return
+        }
+        await withCheckedContinuation { continuation in
+            waiters.append(continuation)
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty {
+            running -= 1
+            return
+        }
+        waiters.removeFirst().resume()
     }
 }
 
@@ -214,11 +239,13 @@ struct FileThumbnail: View {
         }
         .frame(width: size, height: size)
         .task(id: file.id) {
-            thumbnail = await ThumbnailService.shared.thumbnail(
+            let image = await ThumbnailService.shared.thumbnail(
                 for: file,
                 size: CGSize(width: size, height: size),
                 scale: displayScale
             )
+            guard !Task.isCancelled else { return }
+            thumbnail = image
         }
     }
 }

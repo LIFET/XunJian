@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct AllFilesView: View {
@@ -19,8 +20,6 @@ struct AllFilesView: View {
     @AppStorage("allFiles.searchSortAscending") private var searchSortAscending = false
     @AppStorage("allFiles.tableColumnCustomization")
     private var tableColumnCustomization = TableColumnCustomization<IndexedFile>()
-    @State private var displayedFilesSnapshot: [IndexedFile] = []
-    @State private var hasPreparedDisplayedFilesSnapshot = false
     @State private var hoveredGridFileID: String?
     @AppStorage("allFiles.listScrollPosition") private var listScrollPosition = ""
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
@@ -45,7 +44,7 @@ struct AllFilesView: View {
     }
 
     var body: some View {
-        let filesSnapshot = displayedFilesSnapshot
+        let filesSnapshot = appModel.browseSnapshot
         return content(filesSnapshot: filesSnapshot)
     }
 
@@ -56,9 +55,16 @@ struct AllFilesView: View {
             emptyState(files: filesSnapshot)
         }
         return content
-            .navigationTitle(AppLanguage.localized("所有文件", english: "All Files"))
             .task(id: displayedFilesRefreshKey) {
                 await refreshDisplayedFilesSnapshot()
+            }
+            .onChange(of: appModel.selectedFileID) { _, id in
+                guard let id else { return }
+                if viewMode == .list {
+                    listScrollPosition = id
+                } else {
+                    gridScrollPosition = id
+                }
             }
     }
 
@@ -74,7 +80,7 @@ struct AllFilesView: View {
                     .symbolRenderingMode(.hierarchical)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Button("清除") {
+                Button(AppLanguage.localized("清除", english: "Clear")) {
                     appModel.clearAISearch()
                 }
                 .buttonStyle(.link)
@@ -196,17 +202,23 @@ struct AllFilesView: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(AppLanguage.localized("修改时间不早于", english: "Modified no earlier than"))
                         .font(.caption)
-                    DatePicker(
-                        "",
-                        selection: Binding(
-                            get: { minimumFilterDate ?? Date() },
-                            set: { appModel.filterMinDate = $0.timeIntervalSince1970 }
-                        ),
-                        displayedComponents: .date
-                    )
-                    .datePickerStyle(.field)
-                    .labelsHidden()
-                    .frame(width: 160)
+                    if let date = minimumFilterDate {
+                        DatePicker(
+                            "",
+                            selection: Binding(
+                                get: { date },
+                                set: { appModel.filterMinDate = $0.timeIntervalSince1970 }
+                            ),
+                            displayedComponents: .date
+                        )
+                        .datePickerStyle(.field)
+                        .labelsHidden()
+                        .frame(width: 160)
+                    } else {
+                        Button(AppLanguage.localized("不限日期", english: "Any date")) {
+                            appModel.filterMinDate = Date().timeIntervalSince1970
+                        }
+                    }
                 }
 
                 HStack {
@@ -293,29 +305,37 @@ struct AllFilesView: View {
         let hasAIProvider = appModel.activeAIProviderKind != nil
         return Menu {
             if !hasAIProvider {
-                Text("请先在设置中配置当前 AI")
+                Text(
+                    AppLanguage.localized(
+                        "请先在设置中配置当前 AI",
+                        english: "Configure the current AI in Settings first"
+                    )
+                )
                 SettingsLink {
-                    Label("打开设置…", systemImage: "gearshape")
+                    Label(
+                        AppLanguage.localized("打开设置…", english: "Open Settings…"),
+                        systemImage: "gearshape"
+                    )
                 }
             }
-            Button("AI 搜文件…") {
+            Button(AppLanguage.localized("AI 搜文件…", english: "AI File Search…")) {
                 appModel.aiSheetRequest = .search
             }
             .disabled(!hasAIProvider)
             Divider()
-            Button("AI 看文件") {
+            Button(AppLanguage.localized("AI 看文件", english: "AI Explain File")) {
                 if let file = appModel.selectedFile {
                     appModel.aiSheetRequest = .explain(file)
                 }
             }
             .disabled(!hasAIProvider || appModel.selectedFile == nil)
-            Button("AI 问文件…") {
+            Button(AppLanguage.localized("AI 问文件…", english: "Ask AI About File…")) {
                 if let file = appModel.selectedFile {
                     appModel.aiSheetRequest = .ask(file)
                 }
             }
             .disabled(!hasAIProvider || appModel.selectedFile == nil)
-            Button("AI 分类…") {
+            Button(AppLanguage.localized("AI 分类…", english: "AI Classify…")) {
                 appModel.aiSheetRequest = .classify
             }
             .disabled(!hasAIProvider || appModel.files.isEmpty || appModel.categories.isEmpty)
@@ -434,9 +454,12 @@ struct AllFilesView: View {
                 appModel.selectedKind = nil
             } label: {
                 if appModel.selectedKind == nil {
-                    Label("所有类型", systemImage: "checkmark")
+                    Label(
+                        AppLanguage.localized("所有类型", english: "All Types"),
+                        systemImage: "checkmark"
+                    )
                 } else {
-                    Text("所有类型")
+                    Text(AppLanguage.localized("所有类型", english: "All Types"))
                 }
             }
 
@@ -517,7 +540,11 @@ struct AllFilesView: View {
                                 : Color.clear
                         )
                 }
-                .accessibilityLabel(mode == .list ? "列表" : "图标")
+                .accessibilityLabel(
+                    mode == .list
+                        ? AppLanguage.localized("列表", english: "List")
+                        : AppLanguage.localized("图标", english: "Icons")
+                )
                 .accessibilityAddTraits(viewMode == mode ? .isSelected : [])
             }
         }
@@ -538,7 +565,7 @@ struct AllFilesView: View {
 
     @ViewBuilder
     private var fileTypeChoices: some View {
-        Text("所有类型").tag(FileKind?.none)
+        Text(AppLanguage.localized("所有类型", english: "All Types")).tag(FileKind?.none)
         ForEach(FileKind.allCases) { kind in
             Text(kind.localizedTitle).tag(Optional(kind))
         }
@@ -587,12 +614,18 @@ struct AllFilesView: View {
     ) -> some View {
         Menu {
             if includesFileType {
-                Picker("文件类型", selection: $appModel.selectedKind) {
+                Picker(
+                    AppLanguage.localized("文件类型", english: "File Type"),
+                    selection: $appModel.selectedKind
+                ) {
                     fileTypeChoices
                 }
             }
             if includesSort {
-                Picker("排序", selection: activeSortOrderBinding) {
+                Picker(
+                    AppLanguage.localized("排序", english: "Sort"),
+                    selection: activeSortOrderBinding
+                ) {
                     sortChoices
                 }
             }
@@ -608,10 +641,19 @@ struct AllFilesView: View {
                 .disabled(activeSortOrder == .relevance)
             }
             if includesViewMode {
-                Picker("显示方式", selection: $viewMode) {
-                    Label("列表", systemImage: ViewMode.list.symbolName)
+                Picker(
+                    AppLanguage.localized("显示方式", english: "View"),
+                    selection: $viewMode
+                ) {
+                    Label(
+                        AppLanguage.localized("列表", english: "List"),
+                        systemImage: ViewMode.list.symbolName
+                    )
                         .tag(ViewMode.list)
-                    Label("图标", systemImage: ViewMode.grid.symbolName)
+                    Label(
+                        AppLanguage.localized("图标", english: "Icons"),
+                        systemImage: ViewMode.grid.symbolName
+                    )
                         .tag(ViewMode.grid)
                 }
             }
@@ -630,7 +672,7 @@ struct AllFilesView: View {
 
     private func emptyState(files: [IndexedFile]) -> some View {
         Group {
-            if !hasPreparedDisplayedFilesSnapshot, !sourceFilesForDisplay.isEmpty {
+            if appModel.browseSnapshotSignature == nil, !sourceFilesForDisplay.isEmpty {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(
@@ -665,6 +707,18 @@ struct AllFilesView: View {
                             appModel.searchText = ""
                         }
                         .buttonStyle(.borderedProminent)
+                    } else if hasActiveManualFilter, !appModel.files.isEmpty {
+                        // Size/date filters can hide everything on their own,
+                        // and the popover is not obvious once the list is
+                        // empty, so offer the reset here too.
+                        Button(
+                            AppLanguage.localized("清除过滤条件", english: "Clear Filters")
+                        ) {
+                            appModel.filterMinSizeMB = 0
+                            appModel.filterMinDate = 0
+                            appModel.selectedKind = nil
+                        }
+                        .buttonStyle(.borderedProminent)
                     } else if appModel.selectedKind != nil,
                               appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
                               appModel.aiSearchResults == nil,
@@ -675,7 +729,7 @@ struct AllFilesView: View {
                             appModel.selectedKind = nil
                         }
                     } else if appModel.sources.isEmpty {
-                        Button("添加文件夹") {
+                        Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                             appModel.chooseFolder()
                         }
                         .buttonStyle(.borderedProminent)
@@ -684,8 +738,6 @@ struct AllFilesView: View {
             }
         }
         .xunjianAnimation(value: viewMode)
-        .xunjianAnimation(value: hasPreparedDisplayedFilesSnapshot)
-        .xunjianAnimation(value: appModel.isSearching)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -795,7 +847,10 @@ struct AllFilesView: View {
             return aiSearchResults.filter { matchingFileIDs.contains($0.id) }
         }
         if !query.isEmpty {
-            return appModel.searchResults ?? (appModel.isSearching ? appModel.files : [])
+            // While the first query is still running there is nothing
+            // meaningful to show. Falling back to the whole index made the
+            // list flash every file before narrowing to the matches.
+            return appModel.searchResults ?? []
         }
         return appModel.files
     }
@@ -892,7 +947,11 @@ struct AllFilesView: View {
 
     private var displayedFilesRefreshKey: DisplayedFilesRefreshKey {
         DisplayedFilesRefreshKey(
-            sourceFiles: sourceFilesForDisplay,
+            filesRevision: appModel.filesRevision,
+            searchResultCount: appModel.searchResults?.count,
+            aiSearchResultCount: appModel.aiSearchResults?.count,
+            isSearching: appModel.isSearching,
+            query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
             selectedKind: appModel.selectedKind,
             sortOrder: activeSortOrder,
             sortAscending: activeSortAscending,
@@ -915,6 +974,11 @@ struct AllFilesView: View {
     }
 
     private func refreshDisplayedFilesSnapshot() async {
+        let signature = displayedFilesRefreshKey.signature
+        // Returning to this page with unchanged inputs reuses the cached list
+        // instead of re-sorting and flashing a placeholder.
+        guard appModel.browseSnapshotSignature != signature else { return }
+
         let sourceFiles = sourceFilesForDisplay
         let selectedKind = appModel.selectedKind
         let requestedSortOrder = activeSortOrder
@@ -933,8 +997,8 @@ struct AllFilesView: View {
             return requestedSortOrder.sorted(filteredFiles, ascending: requestedAscending)
         }.value
         guard !Task.isCancelled else { return }
-        displayedFilesSnapshot = result
-        hasPreparedDisplayedFilesSnapshot = true
+        appModel.browseSnapshot = result
+        appModel.browseSnapshotSignature = signature
         appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
     }
 
@@ -944,7 +1008,7 @@ struct AllFilesView: View {
             selection: $appModel.selectedFileIDs,
             columnCustomization: $tableColumnCustomization
         ) {
-            TableColumn("名称") { file in
+            TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
                 selectableTableCell(file: file) {
                     HStack(spacing: 8) {
                         FileThumbnail(file: file, size: 24)
@@ -962,7 +1026,7 @@ struct AllFilesView: View {
             .width(min: 150, ideal: nameColumnWidth, max: nameColumnWidth)
             .customizationID("name")
 
-            TableColumn("分类") { file in
+            TableColumn(AppLanguage.localized("分类", english: "Category")) { file in
                 let categoryNames = appModel.categories(for: file).map(\.localizedDisplayName)
                 selectableTableCell(file: file) {
                     Text(
@@ -978,7 +1042,7 @@ struct AllFilesView: View {
             .width(min: 45, ideal: categoryColumnWidth, max: categoryColumnWidth)
             .customizationID("category")
 
-            TableColumn("类型") { file in
+            TableColumn(AppLanguage.localized("类型", english: "Kind")) { file in
                 selectableTableCell(file: file) {
                     Text(file.kind.localizedTitle)
                         .lineLimit(1)
@@ -987,7 +1051,7 @@ struct AllFilesView: View {
             .width(min: 45, ideal: typeColumnWidth, max: typeColumnWidth)
             .customizationID("type")
 
-            TableColumn("大小") { file in
+            TableColumn(AppLanguage.localized("大小", english: "Size")) { file in
                 selectableTableCell(file: file) {
                     Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
                         .lineLimit(1)
@@ -996,7 +1060,7 @@ struct AllFilesView: View {
             .width(min: 50, ideal: sizeColumnWidth, max: sizeColumnWidth)
             .customizationID("size")
 
-            TableColumn("修改时间") { file in
+            TableColumn(AppLanguage.localized("修改时间", english: "Date Modified")) { file in
                 selectableTableCell(file: file) {
                     if let modifiedAt = file.modifiedAt {
                         Text(finderDateFormatter.string(from: modifiedAt))
@@ -1011,7 +1075,7 @@ struct AllFilesView: View {
             // Optional columns (N18). Hidden by default so the six-column
             // layout and its compression thresholds stay unchanged; users opt
             // in from the table header's context menu.
-            TableColumn("创建时间") { file in
+            TableColumn(AppLanguage.localized("创建时间", english: "Date Created")) { file in
                 selectableTableCell(file: file) {
                     if let createdAt = file.createdAt {
                         Text(finderDateFormatter.string(from: createdAt))
@@ -1025,7 +1089,7 @@ struct AllFilesView: View {
             .defaultVisibility(.hidden)
 
             // Read-only Finder metadata (N17): shown here, never written back.
-            TableColumn("标签") { file in
+            TableColumn(AppLanguage.localized("标签", english: "Tags")) { file in
                 selectableTableCell(file: file) {
                     FinderTagsLabel(file: file)
                 }
@@ -1034,7 +1098,7 @@ struct AllFilesView: View {
             .customizationID("finderTags")
             .defaultVisibility(.hidden)
 
-            TableColumn("位置") { file in
+            TableColumn(AppLanguage.localized("位置", english: "Where")) { file in
                 selectableTableCell(file: file) {
                     Text(file.parentPath)
                         .lineLimit(1)
@@ -1046,33 +1110,9 @@ struct AllFilesView: View {
         }
         .scrollPosition(id: listScrollPositionBinding)
         .frame(minWidth: Self.tableMinimumWidth, alignment: .leading)
-        .onKeyPress(.return) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.open(file)
-            return .handled
-        }
-        .onKeyPress(.space) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.quickLook(file)
-            return .handled
-        }
-        .onKeyPress(phases: .down) { press in
-            guard press.characters.lowercased() == "c",
-                  press.modifiers.contains(.command) else { return .ignored }
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.copyPath(file)
-            return .handled
-        }
-        .onKeyPress(.deleteForward) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.requestTrash(file)
-            return .handled
-        }
-        .onKeyPress(.delete) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.requestTrash(file)
-            return .handled
-        }
+        // Arrow keys are left to the table's own row navigation; this only
+        // adds the file actions on top.
+        .fileListKeyboardNavigation(files: [])
     }
 
     private func selectableTableCell<Content: View>(
@@ -1083,6 +1123,13 @@ struct AllFilesView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .onTapGesture {
+                // Plain clicks select immediately (no double-click wait), but
+                // ⌘/⇧ clicks must fall through to the table's own range and
+                // toggle selection — otherwise multi-select is impossible.
+                let modifiers = NSEvent.modifierFlags
+                guard !modifiers.contains(.command), !modifiers.contains(.shift) else {
+                    return
+                }
                 appModel.selectedFileID = file.id
             }
             .simultaneousGesture(
@@ -1157,51 +1204,26 @@ struct AllFilesView: View {
     private func fileGrid(files: [IndexedFile]) -> some View {
         ScrollView {
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 132), spacing: 14)],
-                spacing: 14
+                columns: FileGridCard.gridColumns,
+                spacing: FileGridCard.gridSpacing
             ) {
                 ForEach(files) { file in
-                    Button {
-                        appModel.selectedFileID = file.id
-                    } label: {
-                        VStack(spacing: 10) {
-                            FileThumbnail(file: file, size: 72)
-                            Text(file.name)
-                                .font(.callout)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.center)
-                            Text(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 122)
-                        .padding(12)
-                        .background {
-                            InteractiveCardBackground(
-                                isSelected: appModel.selectedFileID == file.id,
-                                isHovered: hoveredGridFileID == file.id,
-                                cornerRadius: XunJianUI.Radius.card
-                            )
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(SoftCardButtonStyle())
-                    .simultaneousGesture(
-                        TapGesture(count: 2).onEnded {
+                    FileGridCard(
+                        file: file,
+                        isSelected: appModel.selectedFileIDs.contains(file.id),
+                        isHovered: hoveredGridFileID == file.id,
+                        onSelect: { appModel.selectDisplayedFile(file, in: files) },
+                        onOpen: {
                             appModel.selectedFileID = file.id
                             doubleClickBehavior.perform(on: file, using: appModel)
+                        },
+                        onHover: { isHovering in
+                            hoveredGridFileID = isHovering ? file.id : nil
                         }
-                    )
-                    .onHover { isHovering in
-                        hoveredGridFileID = isHovering ? file.id : nil
-                    }
-                    .accessibilityLabel(
-                        "\(file.name)，\(ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file))"
                     )
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
-                    // Drag out to Finder or another app (F06).
                     .draggable(file.url)
                 }
             }
@@ -1209,43 +1231,45 @@ struct AllFilesView: View {
             .padding(XunJianUI.pagePadding(for: contentWidth))
         }
         .scrollPosition(id: gridScrollPositionBinding)
-        .onKeyPress(.return) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.open(file)
-            return .handled
-        }
-        .onKeyPress(.space) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.quickLook(file)
-            return .handled
-        }
-        .onKeyPress(phases: .down) { press in
-            guard press.characters.lowercased() == "c",
-                  press.modifiers.contains(.command) else { return .ignored }
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.copyPath(file)
-            return .handled
-        }
-        .onKeyPress(.deleteForward) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.requestTrash(file)
-            return .handled
-        }
-        .onKeyPress(.delete) {
-            guard let file = appModel.selectedFile else { return .ignored }
-            appModel.requestTrash(file)
-            return .handled
-        }
+        .fileListKeyboardNavigation(
+            files: files,
+            columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+        )
     }
 }
 
+/// Identifies the inputs a displayed-file snapshot was built from.
+///
+/// Deliberately free of the file array itself: this value is rebuilt on every
+/// `body` evaluation and compared by `.task(id:)`, so carrying the whole index
+/// made both the comparison and the allocation O(files). `filesRevision` from
+/// the coordinator stands in for "the file set changed".
 private struct DisplayedFilesRefreshKey: Equatable {
-    let sourceFiles: [IndexedFile]
+    let filesRevision: UInt64
+    let searchResultCount: Int?
+    let aiSearchResultCount: Int?
+    let isSearching: Bool
+    let query: String
     let selectedKind: FileKind?
     let sortOrder: FileSortOrder
     let sortAscending: Bool
     let minSizeBytes: Int64
     let minDate: Date?
+
+    var signature: Int {
+        var hasher = Hasher()
+        hasher.combine(filesRevision)
+        hasher.combine(searchResultCount)
+        hasher.combine(aiSearchResultCount)
+        hasher.combine(isSearching)
+        hasher.combine(query)
+        hasher.combine(selectedKind)
+        hasher.combine(sortOrder)
+        hasher.combine(sortAscending)
+        hasher.combine(minSizeBytes)
+        hasher.combine(minDate)
+        return hasher.finalize()
+    }
 }
 
 
@@ -1261,9 +1285,11 @@ struct FileContextMenu: View {
     }
 
     var body: some View {
-        Button("打开") { appModel.open(file) }
-        Button("快速查看") { appModel.quickLook(file) }
-        Button("在 Finder 中显示") { appModel.showInFinder(file) }
+        Button(AppLanguage.localized("打开", english: "Open")) { appModel.open(file) }
+        Button(AppLanguage.localized("快速查看", english: "Quick Look")) { appModel.quickLook(file) }
+        Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
+            appModel.showInFinder(file)
+        }
         Button(AppLanguage.localized("复制路径", english: "Copy Path")) {
             appModel.copyPath(file)
         }
@@ -1299,7 +1325,7 @@ struct FileContextMenu: View {
                 appModel.requestBatchTrash()
             }
         } else {
-            Menu("添加到分类") {
+            Menu(AppLanguage.localized("添加到分类", english: "Add to Category")) {
                 if appModel.categories.isEmpty {
                     Text(
                         AppLanguage.localized(
@@ -1335,9 +1361,18 @@ struct FileContextMenu: View {
 
             Divider()
 
-            Button("重命名…") { appModel.requestRename(file) }
-            Button("移动到…") { appModel.chooseMoveDestination(for: file) }
-            Button("移到废纸篓", role: .destructive) { appModel.requestTrash(file) }
+            Button(AppLanguage.localized("重命名…", english: "Rename…")) {
+                appModel.requestRename(file)
+            }
+            Button(AppLanguage.localized("移动到…", english: "Move To…")) {
+                appModel.chooseMoveDestination(for: file)
+            }
+            Button(
+                AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                role: .destructive
+            ) {
+                appModel.requestTrash(file)
+            }
         }
     }
 }

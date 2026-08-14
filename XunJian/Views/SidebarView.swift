@@ -8,12 +8,20 @@ struct SidebarView: View {
     var body: some View {
         List(selection: $selection) {
             Section {
-                navigationRow(Text("首页"), symbol: "house", destination: .home)
-                navigationRow(Text("所有文件"), symbol: "tray.full", destination: .allFiles)
+                navigationRow(
+                    Text(AppLanguage.localized("首页", english: "Home")),
+                    symbol: "house",
+                    destination: .home
+                )
+                navigationRow(
+                    Text(AppLanguage.localized("所有文件", english: "All Files")),
+                    symbol: "tray.full",
+                    destination: .allFiles
+                )
             }
 
             if !appModel.savedSearches.isEmpty {
-                Section("保存的搜索") {
+                Section(AppLanguage.localized("保存的搜索", english: "Saved Searches")) {
                     ForEach(appModel.savedSearches) { search in
                         Button {
                             appModel.applySavedSearch(search)
@@ -39,8 +47,12 @@ struct SidebarView: View {
                 }
             }
 
-            Section("分类") {
-                navigationRow(Text("全部分类"), symbol: "square.grid.2x2", destination: .categories)
+            Section(AppLanguage.localized("分类", english: "Categories")) {
+                navigationRow(
+                    Text(AppLanguage.localized("全部分类", english: "All Categories")),
+                    symbol: "square.grid.2x2",
+                    destination: .categories
+                )
 
                 ForEach(categories) { category in
                     navigationRow(
@@ -59,11 +71,15 @@ struct SidebarView: View {
             }
 
             Section {
-                navigationRow(Text("设置"), symbol: "gearshape", destination: .settings)
+                navigationRow(
+                    Text(AppLanguage.localized("设置", english: "Settings")),
+                    symbol: "gearshape",
+                    destination: .settings
+                )
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("寻简")
+        .navigationTitle(AppLanguage.localized("寻简", english: "XunJian"))
     }
 
     private func navigationRow(

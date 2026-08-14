@@ -10,12 +10,15 @@
 		020D5033E972785A0289B0CE /* AISheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4C5217CBB322159BCD24FB /* AISheets.swift */; };
 		021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
 		03EB7BAB7AF7E37CB4A48044 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0A8D34B3FC0AB62E82E71BB3 /* FileSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */; };
 		184566558FB095A703D5586B /* NavigationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43201D1654A730877ECBF75B /* NavigationModelTests.swift */; };
 		19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E475F5415CFA9FA8D939ECC /* StorageInsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2C0F72E7F91471EDA0A8BE /* StorageInsightsView.swift */; };
 		1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 96B78063D48252AA329210EC /* Localizable.xcstrings */; };
 		2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */; };
 		22E9496A7A36C9431166F813 /* IndexStatistics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36FB41C116A4A17878EE4F33 /* IndexStatistics.swift */; };
+		2464FC367BABE81518FFD73F /* ScanProgressStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */; };
+		26952E3B791B7A8E74E6C4BE /* ScanProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */; };
 		2EF552A035D80815291AA5BA /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
 		3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFD5F7C7584F04173E53789 /* SidebarView.swift */; };
 		3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B18C3237ECC61CD2CD82C /* FileKind.swift */; };
@@ -32,6 +35,7 @@
 		669256A4ACC0B68B89790184 /* ScanExclusions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACCC5F5D591DBF89FBCFFEE /* ScanExclusions.swift */; };
 		6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */; };
 		6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */; };
+		6B866C6CB6385CE7D72090D9 /* FileSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */; };
 		7146506008FC467A1A68E133 /* DuplicateFileFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */; };
 		7323293492E005D8D79D6727 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2517C73D7AE3DB0297377AD /* AppShellView.swift */; };
 		7756F1F1ECF5C61FC1858CA5 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
@@ -159,6 +163,7 @@
 		086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupervisedLineProcess.swift; sourceTree = "<group>"; };
 		0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProcessTests.swift; sourceTree = "<group>"; };
 		1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowsing.swift; sourceTree = "<group>"; };
+		1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanProgressStore.swift; sourceTree = "<group>"; };
 		1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianAppDelegate.swift; sourceTree = "<group>"; };
 		1E481ADF7812C450CC0CDB3D /* UndoCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCoordinator.swift; sourceTree = "<group>"; };
 		32BA6CDAA07D84F751BCB92A /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
@@ -174,13 +179,15 @@
 		518EAC055AAB2A35A145333E /* AllFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllFilesView.swift; sourceTree = "<group>"; };
 		52053B4077399D77DE88E777 /* MenuBarSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarSearchView.swift; sourceTree = "<group>"; };
 		52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		5368817005F77D5C8DE5DBA7 /* 寻简.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "寻简.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		5368817005F77D5C8DE5DBA7 /* XunJian.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJian.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		58F0A94816760C43F4DD25EC /* TextExtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextExtraction.swift; sourceTree = "<group>"; };
 		602050CB93CEC44748C253AF /* FileToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileToolbar.swift; sourceTree = "<group>"; };
 		628A1CBBBA38BBDDFB782D69 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
 		6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHistoryStore.swift; sourceTree = "<group>"; };
 		791384A682142EAF96CFCE58 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
 		797B5458753137204582954B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSelection.swift; sourceTree = "<group>"; };
+		7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanProgressStoreTests.swift; sourceTree = "<group>"; };
 		7E4EB796D3BAEFFBDBA8BB18 /* UndoCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCoordinatorTests.swift; sourceTree = "<group>"; };
 		7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianFakeJSONLServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		7F4C5217CBB322159BCD24FB /* AISheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISheets.swift; sourceTree = "<group>"; };
@@ -196,6 +203,7 @@
 		9F231F3122DD79257F7992DC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OAuthRuntimeNOTICE.txt; sourceTree = "<group>"; };
 		AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONLineRPC.swift; sourceTree = "<group>"; };
+		B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSelectionTests.swift; sourceTree = "<group>"; };
 		B2517C73D7AE3DB0297377AD /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
 		BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		BE43A33E45E0575433513A26 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
@@ -288,7 +296,9 @@
 				98687EB9C90408470170D710 /* AISessionCoordinator.swift */,
 				628A1CBBBA38BBDDFB782D69 /* AppModel.swift */,
 				483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */,
+				7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */,
 				3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */,
+				1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */,
 				1E481ADF7812C450CC0CDB3D /* UndoCoordinator.swift */,
 				CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */,
 				1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */,
@@ -299,11 +309,13 @@
 		617C9F78CF80FAB1E9D179EE /* XunJianTests */ = {
 			isa = PBXGroup;
 			children = (
+				B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */,
 				43201D1654A730877ECBF75B /* NavigationModelTests.swift */,
 				4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */,
 				0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */,
 				D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */,
 				C689E47940D0B91075283169 /* ScanExclusionsTests.swift */,
+				7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */,
 				7E4EB796D3BAEFFBDBA8BB18 /* UndoCoordinatorTests.swift */,
 			);
 			path = XunJianTests;
@@ -321,7 +333,7 @@
 		A2E8AD2C9A171802BDB7B256 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				5368817005F77D5C8DE5DBA7 /* 寻简.app */,
+				5368817005F77D5C8DE5DBA7 /* XunJian.app */,
 				7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */,
 				BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */,
 				F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */,
@@ -445,7 +457,7 @@
 			packageProductDependencies = (
 			);
 			productName = XunJian;
-			productReference = 5368817005F77D5C8DE5DBA7 /* 寻简.app */;
+			productReference = 5368817005F77D5C8DE5DBA7 /* XunJian.app */;
 			productType = "com.apple.product-type.application";
 		};
 		472D90853C4BDB16093B56D0 /* XunJianUnauthorizedClient */ = {
@@ -564,7 +576,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 2660;
+				LastUpgradeCheck = 1430;
 				TargetAttributes = {
 					0DC24C3952ED54BC312DD31C = {
 						DevelopmentTeam = "";
@@ -673,6 +685,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				CAB3CF4320831BC6C3172382 /* CodexAppServerClient.swift in Sources */,
+				6B866C6CB6385CE7D72090D9 /* FileSelectionTests.swift in Sources */,
 				B04D26217B80AB7F8F316521 /* GrokACPClient.swift in Sources */,
 				AC06C23ACF76B36631C58C29 /* JSONLineRPC.swift in Sources */,
 				8A807105F69189CF70AB62DC /* ManagedRuntimeStore.swift in Sources */,
@@ -680,6 +693,7 @@
 				82868119562B300BF678DF23 /* OAuthBridgeTests.swift in Sources */,
 				8A599208D1689D51A4A99787 /* OAuthProtocolClientTests.swift in Sources */,
 				C625E98387905928BD6F07A1 /* ScanExclusionsTests.swift in Sources */,
+				2464FC367BABE81518FFD73F /* ScanProgressStoreTests.swift in Sources */,
 				D7EF2E9A2E2CF71AECA915F5 /* SupervisedLineProcess.swift in Sources */,
 				47F404FDA7091F77CA315B55 /* UndoCoordinatorTests.swift in Sources */,
 			);
@@ -728,6 +742,7 @@
 				3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */,
 				C242CE92605AD831522D5454 /* FileListExport.swift in Sources */,
 				BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */,
+				0A8D34B3FC0AB62E82E71BB3 /* FileSelection.swift in Sources */,
 				6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */,
 				58BD9C1146DAC6CB708FF79A /* FileToolbar.swift in Sources */,
 				E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */,
@@ -741,6 +756,7 @@
 				021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */,
 				49E9F7AE170B03D5EF343ABD /* OAuthCoordinator.swift in Sources */,
 				669256A4ACC0B68B89790184 /* ScanExclusions.swift in Sources */,
+				26952E3B791B7A8E74E6C4BE /* ScanProgressStore.swift in Sources */,
 				CE49BD91715B9A6C2BC715B3 /* SearchField.swift in Sources */,
 				65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */,
 				C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */,
@@ -803,8 +819,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -837,13 +851,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = dwarf;
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_DYNAMIC_NO_PIC = NO;
 				GCC_NO_COMMON_BLOCKS = YES;
@@ -870,7 +882,6 @@
 				ONLY_ACTIVE_ARCH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -884,7 +895,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -904,7 +914,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -923,7 +932,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
@@ -944,8 +952,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_LOCALIZABILITY_NONLOCALIZED = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -978,13 +984,11 @@
 				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				CURRENT_PROJECT_VERSION = 1;
-				DEAD_CODE_STRIPPING = YES;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = "";
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
 				GCC_NO_COMMON_BLOCKS = YES;
 				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
@@ -1004,7 +1008,6 @@
 				MTL_FAST_MATH = YES;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = macosx;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
@@ -1018,7 +1021,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1036,7 +1038,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1056,7 +1057,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_KEY_LSBackgroundOnly = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1075,7 +1075,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
@@ -1097,7 +1096,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1116,7 +1114,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJian/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1135,7 +1132,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1152,7 +1148,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1173,7 +1168,6 @@
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = XunJian/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1192,7 +1186,6 @@
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -1209,7 +1202,6 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				COMBINE_HIDPI_IMAGES = YES;
-				DEAD_CODE_STRIPPING = YES;
 				ENABLE_APP_SANDBOX = NO;
 				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

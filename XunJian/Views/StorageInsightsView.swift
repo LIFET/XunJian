@@ -120,6 +120,10 @@ struct StorageInsightsView: View {
     @State private var duplicateGroups: [DuplicateGroup] = []
     @State private var isFindingDuplicates = false
     @State private var duplicateProgress = (hashed: 0, total: 0)
+    /// Distinguishes "not searched yet" from "searched and found nothing", so
+    /// a clean result is reported instead of showing an empty section.
+    @State private var hasSearchedDuplicates = false
+    @State private var duplicateSearchTask: Task<Void, Never>?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -147,13 +151,19 @@ struct StorageInsightsView: View {
             }
         }
         .frame(minWidth: 460, idealWidth: 620, minHeight: 420, idealHeight: 640)
-        .task {
-            guard !hasComputed else { return }
+        // Keyed on the index revision so figures stay correct if a scan
+        // finishes while the panel is open.
+        .task(id: appModel.filesRevision) {
             hasComputed = true
             snapshot = StorageInsightsSnapshot.make(
                 files: appModel.files,
                 sources: appModel.sources
             )
+        }
+        .onDisappear {
+            duplicateSearchTask?.cancel()
+            duplicateSearchTask = nil
+            isFindingDuplicates = false
         }
     }
 
@@ -222,7 +232,7 @@ struct StorageInsightsView: View {
 
     private var kindSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-            SectionHeader(title: "按类型分布")
+            SectionHeader(title: AppLanguage.localized("按类型分布", english: "By Kind"))
             GroupedSurface(padding: 10) {
                 VStack(spacing: 10) {
                     ForEach(snapshot.kinds) { breakdown in
@@ -240,7 +250,7 @@ struct StorageInsightsView: View {
 
     private var sourceSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-            SectionHeader(title: "按位置分布")
+            SectionHeader(title: AppLanguage.localized("按位置分布", english: "By Location"))
             GroupedSurface(padding: 10) {
                 VStack(spacing: 10) {
                     ForEach(snapshot.sources) { breakdown in
@@ -306,7 +316,7 @@ struct StorageInsightsView: View {
 
     private var largestSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-            SectionHeader(title: "最大的文件")
+            SectionHeader(title: AppLanguage.localized("最大的文件", english: "Largest Files"))
             fileList(snapshot.largestFiles) { file in
                 Self.sizeText(file.size)
             }
@@ -315,7 +325,7 @@ struct StorageInsightsView: View {
 
     private var oldestSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-            SectionHeader(title: "最久未修改")
+            SectionHeader(title: AppLanguage.localized("最久未修改", english: "Least Recently Modified"))
             fileList(snapshot.oldestFiles) { file in
                 file.modifiedAt.map(FinderDateFormatting.string(for:)) ?? "—"
             }
@@ -327,7 +337,7 @@ struct StorageInsightsView: View {
     private var duplicateSection: some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             HStack {
-                SectionHeader(title: "重复文件")
+                SectionHeader(title: AppLanguage.localized("重复文件", english: "Duplicate Files"))
                 Spacer()
                 Button(
                     AppLanguage.localized("查找重复文件", english: "Find Duplicates")
@@ -335,6 +345,14 @@ struct StorageInsightsView: View {
                     findDuplicates()
                 }
                 .disabled(isFindingDuplicates)
+
+                if isFindingDuplicates {
+                    Button(AppLanguage.localized("取消", english: "Cancel")) {
+                        duplicateSearchTask?.cancel()
+                        duplicateSearchTask = nil
+                        isFindingDuplicates = false
+                    }
+                }
             }
 
             if isFindingDuplicates {
@@ -349,7 +367,14 @@ struct StorageInsightsView: View {
                     )
                 )
                 .controlSize(.small)
-            } else if hasComputed && !duplicateGroups.isEmpty {
+            } else if hasSearchedDuplicates, duplicateGroups.isEmpty {
+                Text(verbatim: AppLanguage.localized(
+                    "未发现内容相同的文件。",
+                    english: "No files with identical content were found."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            } else if !duplicateGroups.isEmpty {
                 ForEach(duplicateGroups) { group in
                     VStack(alignment: .leading, spacing: 4) {
                         Text(
@@ -393,16 +418,20 @@ struct StorageInsightsView: View {
 
     private func findDuplicates() {
         guard !isFindingDuplicates else { return }
+        duplicateSearchTask?.cancel()
         isFindingDuplicates = true
+        hasSearchedDuplicates = false
         duplicateProgress = (0, 0)
         let files = appModel.files
-        Task {
+        duplicateSearchTask = Task {
             let groups = await DuplicateFileFinder.find(in: files) { hashed, total in
                 Task { @MainActor in
                     duplicateProgress = (hashed, total)
                 }
             }
+            guard !Task.isCancelled else { return }
             duplicateGroups = groups
+            hasSearchedDuplicates = true
             isFindingDuplicates = false
         }
     }

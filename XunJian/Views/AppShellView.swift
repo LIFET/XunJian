@@ -42,69 +42,25 @@ struct AppShellView: View {
                             .padding(.bottom, 10)
                     }
 
-                    if appModel.isScanning, let progress = appModel.scanProgress {
-                        ScanStatusView(progress: progress) {
-                            appModel.cancelScan()
-                        }
-                        .transition(.move(edge: .top).combined(with: .opacity))
+                    ScanStatusBanner(store: appModel.scanProgressStore) {
+                        appModel.cancelScan()
                     }
 
-                    // One-hop undo for move-to-Trash (N10).
-                    if let undo = appModel.lastTrashUndo {
-                        HStack(spacing: 8) {
-                            Label(
-                                AppLanguage.localized(
-                                    "“\(undo.originalURL.lastPathComponent)”已移到废纸篓。",
-                                    english: "“\(undo.originalURL.lastPathComponent)” was moved to the Trash."
-                                ),
-                                systemImage: "arrow.uturn.backward.circle"
-                            )
-                            Spacer(minLength: 8)
-                            Button(AppLanguage.localized("撤销", english: "Undo")) {
-                                appModel.undoLastTrash()
-                            }
-                            .controlSize(.small)
-                            .keyboardShortcut("z", modifiers: .command)
-                        }
-                        .font(.caption)
-                        .padding(.horizontal, XunJianUI.Spacing.page)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(XunJianUI.Fill.accentWash)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
+                    TrashUndoBanner(
+                        undo: appModel.lastTrashUndo,
+                        onUndo: { appModel.undoLastTrash() }
+                    )
 
-                    if !appModel.isDatabaseAvailable {
-                        HStack(spacing: 8) {
-                            Label(
-                                AppLanguage.localized(
-                                    "本地索引不可用，文件操作已暂停。",
-                                    english: "The local index is unavailable. File actions are paused."
-                                ),
-                                systemImage: "exclamationmark.triangle.fill"
-                            )
-                            Spacer(minLength: 8)
-                            Button(AppLanguage.localized("重试", english: "Retry")) {
-                                Task { await appModel.retryDatabase() }
-                            }
-                            .controlSize(.small)
-                        }
-                        .font(.caption)
-                        .foregroundStyle(XunJianUI.Semantic.warning)
-                        .padding(.horizontal, XunJianUI.Spacing.page)
-                        .padding(.vertical, 8)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .transition(.move(edge: .top).combined(with: .opacity))
-                    }
+                    DatabaseUnavailableBanner(
+                        isAvailable: appModel.isDatabaseAvailable,
+                        onRetry: { Task { await appModel.retryDatabase() } }
+                    )
 
                     Divider()
                         .opacity(0.7)
 
                     selectedContent(contentWidth: detailGeometry.size.width)
                 }
-                .xunjianAnimation(value: appModel.isScanning)
-                .xunjianAnimation(value: appModel.isDatabaseAvailable)
-                .xunjianAnimation(value: selection)
                 .background(Color(nsColor: .windowBackgroundColor))
             }
         }
@@ -127,7 +83,10 @@ struct AppShellView: View {
                     }
                     inspectorWasAutoCollapsed = false
                 } label: {
-                    Label("文件详情", systemImage: "sidebar.right")
+                    Label(
+                        AppLanguage.localized("文件详情", english: "File Details"),
+                        systemImage: "sidebar.right"
+                    )
                 }
                 .disabled(!supportsInspector)
                 .help(
@@ -139,6 +98,19 @@ struct AppShellView: View {
             }
         }
         return navigation
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearch)) { _ in
+                selection = .allFiles
+                Task { @MainActor in
+                    NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
+                }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianToggleInspector)) { _ in
+                guard supportsInspector else { return }
+                withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) {
+                    showsInspector.toggle()
+                }
+                inspectorWasAutoCollapsed = false
+            }
             .onChange(of: columnVisibility) { oldValue, newValue in
                 handleColumnVisibilityChange(oldValue, newValue)
             }
@@ -158,13 +130,13 @@ struct AppShellView: View {
             }
             .modifier(GlobalPresentations(selection: $selection))
             .alert(
-                "操作未完成",
+                AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
                 isPresented: Binding(
                     get: { appModel.errorMessage != nil },
                     set: { if !$0 { appModel.clearError() } }
                 )
             ) {
-                Button("好") { appModel.clearError() }
+                Button(AppLanguage.localized("好", english: "OK")) { appModel.clearError() }
             } message: {
                 Text(AppLanguage.localizedRuntimeMessage(appModel.errorMessage ?? ""))
             }
@@ -193,22 +165,27 @@ struct AppShellView: View {
                 .background(.ultraThinMaterial)
             }
             .sheet(isPresented: $showsGlobalNewCategory) {
-                CategoryEditorSheet(title: "新建分类") { name, symbolName in
+                CategoryEditorSheet(
+                    title: AppLanguage.localized("新建分类", english: "New Category")
+                ) { name, symbolName in
                     try await appModel.createCategory(name: name, symbolName: symbolName)
                 }
                 .environment(\.locale, locale)
             }
             .alert(
-                "移到废纸篓？",
+                AppLanguage.localized("移到废纸篓？", english: "Move to Trash?"),
                 isPresented: Binding(
                     get: { appModel.trashRequest != nil },
                     set: { if !$0 { appModel.trashRequest = nil } }
                 )
             ) {
-                Button("取消", role: .cancel) {
+                Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
                     appModel.trashRequest = nil
                 }
-                Button("移到废纸篓", role: .destructive) {
+                Button(
+                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                    role: .destructive
+                ) {
                     appModel.confirmTrash()
                 }
             } message: {
@@ -339,7 +316,33 @@ struct AppShellView: View {
 
     @ViewBuilder
     private func selectedContent(contentWidth: CGFloat) -> some View {
-        switch selection ?? .home {
+        let current = selection ?? .home
+        let showsAllFiles = current == .allFiles
+        ZStack {
+            // Keep the file list mounted. Recreating the table on every
+            // sidebar click was the remaining page-switch hitch after the
+            // global selection animation was removed.
+            AllFilesView(windowWidth: windowWidth, contentWidth: contentWidth)
+                .disabled(!showsAllFiles || !appModel.isDatabaseAvailable)
+                .opacity(showsAllFiles ? 1 : 0)
+                .allowsHitTesting(showsAllFiles)
+                .accessibilityHidden(!showsAllFiles)
+                .zIndex(showsAllFiles ? 1 : 0)
+
+            if !showsAllFiles {
+                overlayContent(current, contentWidth: contentWidth)
+                    .zIndex(2)
+            }
+        }
+        .navigationTitle(current.title(categories: appModel.categories))
+    }
+
+    @ViewBuilder
+    private func overlayContent(
+        _ current: NavigationDestination,
+        contentWidth: CGFloat
+    ) -> some View {
+        switch current {
         case .home:
             HomeView { kind in
                 appModel.selectedKind = kind
@@ -347,8 +350,7 @@ struct AppShellView: View {
             }
             .disabled(!appModel.isDatabaseAvailable)
         case .allFiles:
-            AllFilesView(windowWidth: windowWidth, contentWidth: contentWidth)
-                .disabled(!appModel.isDatabaseAvailable)
+            EmptyView()
         case .categories:
             CategoriesView(selectedCategory: nil) { category in
                 selection = .category(category.id)
@@ -391,14 +393,17 @@ private struct RenameFileSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("重命名文件")
+            Text(AppLanguage.localized("重命名文件", english: "Rename File"))
                 .font(.title2.weight(.semibold))
             Text(verbatim: file.parentPath)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            TextField("文件名", text: $name)
+            TextField(
+                AppLanguage.localized("文件名", english: "File Name"),
+                text: $name
+            )
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFocused)
                 .onSubmit(rename)
@@ -409,9 +414,9 @@ private struct RenameFileSheet: View {
             }
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
+                Button(AppLanguage.localized("取消", english: "Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("重命名", action: rename)
+                Button(AppLanguage.localized("重命名", english: "Rename"), action: rename)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .disabled(isSaving)
@@ -435,6 +440,86 @@ private struct RenameFileSheet: View {
                 isSaving = false
             }
         }
+    }
+}
+
+private struct ScanStatusBanner: View {
+    @ObservedObject var store: ScanProgressStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let cancel: () -> Void
+
+    var body: some View {
+        Group {
+            if let progress = store.progress {
+                ScanStatusView(progress: progress, cancel: cancel)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: store.isActive)
+    }
+}
+
+private struct TrashUndoBanner: View {
+    let undo: FileIndexCoordinator.TrashUndo?
+    let onUndo: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if let undo {
+                HStack(spacing: 8) {
+                    Label(
+                        AppLanguage.localized(
+                            "“\(undo.originalURL.lastPathComponent)”已移到废纸篓。",
+                            english: "“\(undo.originalURL.lastPathComponent)” was moved to the Trash."
+                        ),
+                        systemImage: "arrow.uturn.backward.circle"
+                    )
+                    Spacer(minLength: 8)
+                    Button(AppLanguage.localized("撤销", english: "Undo"), action: onUndo)
+                        .controlSize(.small)
+                }
+                .font(.caption)
+                .padding(.horizontal, XunJianUI.Spacing.page)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(XunJianUI.Fill.accentWash)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: undo != nil)
+    }
+}
+
+private struct DatabaseUnavailableBanner: View {
+    let isAvailable: Bool
+    let onRetry: () -> Void
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        Group {
+            if !isAvailable {
+                HStack(spacing: 8) {
+                    Label(
+                        AppLanguage.localized(
+                            "本地索引不可用，文件操作已暂停。",
+                            english: "The local index is unavailable. File actions are paused."
+                        ),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    Spacer(minLength: 8)
+                    Button(AppLanguage.localized("重试", english: "Retry"), action: onRetry)
+                        .controlSize(.small)
+                }
+                .font(.caption)
+                .foregroundStyle(XunJianUI.Semantic.warning)
+                .padding(.horizontal, XunJianUI.Spacing.page)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: isAvailable)
     }
 }
 
@@ -489,7 +574,7 @@ private struct ScanStatusView: View {
     }
 
     private var cancelButton: some View {
-        Button("取消", action: cancel)
+        Button(AppLanguage.localized("取消", english: "Cancel"), action: cancel)
             .controlSize(.small)
             .buttonStyle(.bordered)
     }

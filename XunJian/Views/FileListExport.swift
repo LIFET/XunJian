@@ -28,19 +28,19 @@ enum FileListExport {
         }
     }
 
-    /// The list the user is currently looking at, reproduced from app state:
-    /// an explicit multi-selection wins, otherwise the active search results
-    /// or the full index, narrowed by the type filter.
+    /// The list the user is currently looking at.
+    ///
+    /// An explicit multi-selection wins; otherwise this reuses the exact
+    /// snapshot the file list renders, so the export always matches what is
+    /// on screen including search, type, size, and date narrowing. Falls back
+    /// to the raw index only before the first snapshot has been prepared.
     @MainActor
     static func currentFiles(from appModel: AppModel) -> [IndexedFile] {
         if appModel.selectedFileIDs.count > 1 {
             return appModel.selectedFiles
         }
-        let base = appModel.aiSearchResults
-            ?? appModel.searchResults
-            ?? appModel.files
-        guard let kind = appModel.selectedKind else { return base }
-        return base.filter { $0.kind == kind }
+        guard appModel.browseSnapshotSignature != nil else { return appModel.files }
+        return appModel.browseSnapshot
     }
 
     @MainActor

@@ -46,7 +46,7 @@ struct CategoriesView: View {
                     header
 
                     if let selectedCategory {
-                        categoryFiles(selectedCategory)
+                        categoryFiles(selectedCategory, contentWidth: geometry.size.width)
                     } else {
                         categoryOverview
                     }
@@ -59,21 +59,23 @@ struct CategoriesView: View {
             selectedCategory?.localizedDisplayName
                 ?? AppLanguage.localized("分类", english: "Categories")
         )
-        .onAppear {
-            appModel.clearSelectionIfHidden(from: Set(selectedCategoryFileIDs))
-        }
-        .onChange(of: selectedCategoryFileIDs) { _, fileIDs in
-            appModel.clearSelectionIfHidden(from: Set(fileIDs))
-        }
+        .onAppear { clearSelectionIfHidden() }
+        // Keyed on the things that can actually hide a file, rather than on a
+        // freshly built ID array (which allocated and compared on every render).
+        .onChange(of: selectedCategory?.id) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: selectedKind) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
         .sheet(isPresented: $showsNewCategory) {
-            CategoryEditorSheet(title: "新建分类") { name, symbolName in
+            CategoryEditorSheet(
+                title: AppLanguage.localized("新建分类", english: "New Category")
+            ) { name, symbolName in
                 try await appModel.createCategory(name: name, symbolName: symbolName)
             }
             .environment(\.locale, locale)
         }
         .sheet(item: $categoryToRename) { category in
             CategoryEditorSheet(
-                title: "修改分类名称",
+                title: AppLanguage.localized("修改分类名称", english: "Rename Category"),
                 initialName: category.name,
                 initialSymbol: category.symbolName,
                 allowsSymbolEditing: false
@@ -83,14 +85,19 @@ struct CategoriesView: View {
             .environment(\.locale, locale)
         }
         .alert(
-            "删除分类？",
+            AppLanguage.localized("删除分类？", english: "Delete Category?"),
             isPresented: Binding(
                 get: { categoryToDelete != nil },
                 set: { if !$0 { categoryToDelete = nil } }
             )
         ) {
-            Button("取消", role: .cancel) { categoryToDelete = nil }
-            Button("删除分类", role: .destructive) {
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
+                categoryToDelete = nil
+            }
+            Button(
+                AppLanguage.localized("删除分类", english: "Delete Category"),
+                role: .destructive
+            ) {
                 if let categoryToDelete {
                     appModel.deleteCategory(categoryToDelete)
                 }
@@ -105,7 +112,10 @@ struct CategoriesView: View {
         VStack(alignment: .leading, spacing: 10) {
             if selectedCategory != nil {
                 Button(action: showAllCategories) {
-                    Label("全部分类", systemImage: "chevron.left")
+                    Label(
+                        AppLanguage.localized("全部分类", english: "All Categories"),
+                        systemImage: "chevron.left"
+                    )
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
@@ -141,11 +151,14 @@ struct CategoriesView: View {
     private var headerAction: some View {
         if let selectedCategory {
             Menu {
-                Button("修改名称…") {
+                Button(AppLanguage.localized("修改名称…", english: "Rename…")) {
                     categoryToRename = selectedCategory
                 }
                 Divider()
-                Button("删除分类", role: .destructive) {
+                Button(
+                    AppLanguage.localized("删除分类", english: "Delete Category"),
+                    role: .destructive
+                ) {
                     categoryToDelete = selectedCategory
                 }
             } label: {
@@ -164,7 +177,10 @@ struct CategoriesView: View {
             Button {
                 showsNewCategory = true
             } label: {
-                Label("新建分类", systemImage: "plus")
+                Label(
+                    AppLanguage.localized("新建分类", english: "New Category"),
+                    systemImage: "plus"
+                )
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
@@ -175,9 +191,14 @@ struct CategoriesView: View {
     private var categoryOverview: some View {
         if appModel.categories.isEmpty {
             ContentUnavailableView(
-                "还没有分类",
+                AppLanguage.localized("还没有分类", english: "No Categories Yet"),
                 systemImage: "folder.badge.plus",
-                description: Text("创建分类后，可以从文件右键菜单或详情栏添加。")
+                description: Text(
+                    AppLanguage.localized(
+                        "创建分类后，可以从文件右键菜单或详情栏添加。",
+                        english: "After you create a category, add files from the context menu or inspector."
+                    )
+                )
             )
             .frame(
                 maxWidth: .infinity,
@@ -236,9 +257,14 @@ struct CategoriesView: View {
                         "\(category.localizedDisplayName)，\(AppLanguage.fileCount(appModel.fileCount(in: category)))"
                     )
                     .contextMenu {
-                        Button("修改名称…") { categoryToRename = category }
+                        Button(AppLanguage.localized("修改名称…", english: "Rename…")) {
+                            categoryToRename = category
+                        }
                         Divider()
-                        Button("删除分类", role: .destructive) { categoryToDelete = category }
+                        Button(
+                            AppLanguage.localized("删除分类", english: "Delete Category"),
+                            role: .destructive
+                        ) { categoryToDelete = category }
                     }
                 }
             }
@@ -246,15 +272,33 @@ struct CategoriesView: View {
     }
 
     @ViewBuilder
-    private func categoryFiles(_ category: FileCategory) -> some View {
+    private func categoryFiles(
+        _ category: FileCategory,
+        contentWidth: CGFloat
+    ) -> some View {
+        // Scanned and sorted once per render. Previously this ran three times
+        // (empty check, list, and selection cleanup), each a full filter+sort.
         let allFiles = appModel.files(in: category)
-        let files = displayedFiles(in: category)
+        let files = Self.displayed(
+            allFiles,
+            kind: selectedKind,
+            sortOrder: sortOrder,
+            ascending: sortAscending
+        )
 
         if allFiles.isEmpty {
             ContentUnavailableView(
-                "这个分类里还没有文件",
+                AppLanguage.localized(
+                    "这个分类里还没有文件",
+                    english: "No Files in This Category"
+                ),
                 systemImage: category.symbolName,
-                description: Text("从文件右键菜单或详情栏为文件添加分类。")
+                description: Text(
+                    AppLanguage.localized(
+                        "从文件右键菜单或详情栏为文件添加分类。",
+                        english: "Add files to this category from the context menu or inspector."
+                    )
+                )
             )
             .frame(
                 maxWidth: .infinity,
@@ -277,12 +321,16 @@ struct CategoriesView: View {
                     kindFilterEmptyState
                 } else if viewMode == .grid {
                     categoryFileGrid(files)
+                        .fileListKeyboardNavigation(
+                            files: files,
+                            columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+                        )
                 } else {
                     categoryFileList(files)
+                        .fileListKeyboardNavigation(files: files)
                 }
             }
             .xunjianAnimation(value: viewMode)
-            .xunjianAnimation(value: files.map(\.id))
         }
     }
 
@@ -319,9 +367,9 @@ struct CategoriesView: View {
             ForEach(files) { file in
                 FileGridCard(
                     file: file,
-                    isSelected: appModel.selectedFileID == file.id,
+                    isSelected: appModel.selectedFileIDs.contains(file.id),
                     isHovered: hoveredFileID == file.id,
-                    onSelect: { appModel.selectedFileID = file.id },
+                    onSelect: { appModel.selectDisplayedFile(file, in: files) },
                     onOpen: {
                         appModel.selectedFileID = file.id
                         doubleClickBehavior.perform(on: file, using: appModel)
@@ -343,7 +391,7 @@ struct CategoriesView: View {
             LazyVStack(spacing: 0) {
                 ForEach(files) { file in
                     Button {
-                        appModel.selectedFileID = file.id
+                        appModel.selectDisplayedFile(file, in: files)
                     } label: {
                         HStack(spacing: 12) {
                             FileThumbnail(file: file, size: 34)
@@ -398,21 +446,35 @@ struct CategoriesView: View {
         }
     }
 
-    /// Applies the page's type filter and sort order. Kept separate from the
-    /// view body so the selection-cleanup path can use the same result.
-    private func displayedFiles(in category: FileCategory) -> [IndexedFile] {
-        let files = appModel.files(in: category)
-        let filtered = selectedKind.map { kind in
+    /// Applies the page's type filter and sort order.
+    static func displayed(
+        _ files: [IndexedFile],
+        kind: FileKind?,
+        sortOrder: FileSortOrder,
+        ascending: Bool
+    ) -> [IndexedFile] {
+        let filtered = kind.map { kind in
             files.filter { $0.kind == kind }
         } ?? files
-        return sortOrder.sorted(filtered, ascending: sortAscending)
+        return sortOrder.sorted(filtered, ascending: ascending)
     }
 
-    /// Drives selection cleanup. Uses the filtered list so a file hidden by
-    /// the type filter cannot stay selected in the inspector.
-    private var selectedCategoryFileIDs: [String] {
-        guard let selectedCategory else { return appModel.files.map(\.id) }
-        return displayedFiles(in: selectedCategory).map(\.id)
+    /// Drops a selection the user can no longer see, so the inspector never
+    /// describes a file that is filtered out of the current category.
+    ///
+    /// Only the visible ID set matters here, so this skips the sort the list
+    /// itself performs.
+    private func clearSelectionIfHidden() {
+        guard let selectedCategory else {
+            appModel.clearSelectionIfHidden(from: Set(appModel.files.map(\.id)))
+            return
+        }
+        var visible = Set<String>()
+        for file in appModel.files(in: selectedCategory)
+        where selectedKind == nil || file.kind == selectedKind {
+            visible.insert(file.id)
+        }
+        appModel.clearSelectionIfHidden(from: visible)
     }
 
     private var deleteMessage: String {
@@ -425,7 +487,7 @@ struct CategoriesView: View {
     }
 
     private func categoryFileBackground(for file: IndexedFile) -> Color {
-        if appModel.selectedFileID == file.id {
+        if appModel.selectedFileIDs.contains(file.id) {
             return XunJianUI.Fill.selectedSoft
         }
         return hoveredFileID == file.id ? XunJianUI.Fill.hover : .clear
@@ -433,7 +495,7 @@ struct CategoriesView: View {
 }
 
 struct CategoryEditorSheet: View {
-    let title: LocalizedStringKey
+    let title: String
     let allowsSymbolEditing: Bool
     let submit: (String, String) async throws -> Void
 
@@ -453,7 +515,7 @@ struct CategoryEditorSheet: View {
     ]
 
     init(
-        title: LocalizedStringKey,
+        title: String,
         initialName: String = "",
         initialSymbol: String = "folder",
         allowsSymbolEditing: Bool = true,
@@ -468,9 +530,12 @@ struct CategoryEditorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            Text(title)
+            Text(verbatim: title)
                 .font(.title2.weight(.semibold))
-            TextField("分类名称", text: $name)
+            TextField(
+                AppLanguage.localized("分类名称", english: "Category Name"),
+                text: $name
+            )
                 .textFieldStyle(.roundedBorder)
                 .focused($isNameFocused)
                 .onSubmit(save)
@@ -481,7 +546,7 @@ struct CategoryEditorSheet: View {
             }
 
             if allowsSymbolEditing {
-                Text("图标")
+                Text(AppLanguage.localized("图标", english: "Icon"))
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 40))], spacing: 8) {
@@ -520,9 +585,9 @@ struct CategoryEditorSheet: View {
 
             HStack {
                 Spacer()
-                Button("取消") { dismiss() }
+                Button(AppLanguage.localized("取消", english: "Cancel")) { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("保存", action: save)
+                Button(AppLanguage.localized("保存", english: "Save"), action: save)
                     .keyboardShortcut(.defaultAction)
                     .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .disabled(isSaving)

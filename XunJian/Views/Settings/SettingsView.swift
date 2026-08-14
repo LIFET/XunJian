@@ -24,15 +24,15 @@ struct SettingsView: View {
 
     var body: some View {
         Form {
-            Section("通用") {
-                Picker("外观", selection: $appearance) {
+            Section(AppLanguage.localized("通用", english: "General")) {
+                Picker(AppLanguage.localized("外观", english: "Appearance"), selection: $appearance) {
                     ForEach(AppAppearance.allCases) { option in
                         Text(verbatim: option.title).tag(option.rawValue)
                     }
                 }
                 .pickerStyle(.menu)
                 .id(language)
-                Picker("界面语言", selection: $language) {
+                Picker(AppLanguage.localized("界面语言", english: "Language"), selection: $language) {
                     ForEach(AppLanguage.allCases) { option in
                         Text(verbatim: option.title).tag(option.rawValue)
                     }
@@ -74,7 +74,7 @@ struct SettingsView: View {
                 .toggleStyle(.switch)
             }
 
-            Section("浏览") {
+            Section(AppLanguage.localized("浏览", english: "Browsing")) {
                 Picker(
                     AppLanguage.localized("默认排序", english: "Default Sort"),
                     selection: $defaultSortOrder
@@ -119,7 +119,7 @@ struct SettingsView: View {
                 .id(language)
             }
 
-            Section("文件位置") {
+            Section(AppLanguage.localized("文件位置", english: "Locations")) {
                 Toggle(
                     AppLanguage.localized(
                         "显示以点号开头的隐藏文件",
@@ -143,16 +143,22 @@ struct SettingsView: View {
 
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) {
-                        LabeledContent("已授权目录", value: "\(appModel.sources.count)")
-                        Button("添加文件夹") {
+                        LabeledContent(
+                            AppLanguage.localized("已授权目录", english: "Authorized Folders"),
+                            value: "\(appModel.sources.count)"
+                        )
+                        Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                             appModel.chooseFolder()
                         }
                         .disabled(!appModel.isDatabaseAvailable)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
-                        LabeledContent("已授权目录", value: "\(appModel.sources.count)")
-                        Button("添加文件夹") {
+                        LabeledContent(
+                            AppLanguage.localized("已授权目录", english: "Authorized Folders"),
+                            value: "\(appModel.sources.count)"
+                        )
+                        Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                             appModel.chooseFolder()
                         }
                         .disabled(!appModel.isDatabaseAvailable)
@@ -201,7 +207,10 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .disabled(!appModel.isDatabaseAvailable)
-                            Button("移除…", role: .destructive) {
+                            Button(
+                                AppLanguage.localized("移除…", english: "Remove…"),
+                                role: .destructive
+                            ) {
                                 sourcePendingRemoval = source
                             }
                             .disabled(!appModel.isDatabaseAvailable)
@@ -212,11 +221,17 @@ struct SettingsView: View {
                             HStack(spacing: 8) {
                                 sourcePrimaryAction(source)
                                 Menu {
-                                    Button("移除…", role: .destructive) {
+                                    Button(
+                                        AppLanguage.localized("移除…", english: "Remove…"),
+                                        role: .destructive
+                                    ) {
                                         sourcePendingRemoval = source
                                     }
                                 } label: {
-                                    Label("更多", systemImage: "ellipsis.circle")
+                                    Label(
+                                        AppLanguage.localized("更多", english: "More"),
+                                        systemImage: "ellipsis.circle"
+                                    )
                                         .contentShape(Rectangle())
                                 }
                                 .menuStyle(.borderlessButton)
@@ -227,7 +242,7 @@ struct SettingsView: View {
                 }
 
                 if !appModel.sources.isEmpty {
-                    Button("重新扫描全部位置") {
+                    Button(AppLanguage.localized("重新扫描全部位置", english: "Rescan All Locations")) {
                         appModel.refreshAllSources()
                     }
                     .disabled(appModel.isScanning)
@@ -237,7 +252,7 @@ struct SettingsView: View {
 
             Section {
                 LabeledContent(
-                    "当前 AI",
+                    AppLanguage.localized("当前 AI", english: "Current AI"),
                     value: activeProviderSummary
                 )
 
@@ -245,7 +260,7 @@ struct SettingsView: View {
                     AIProviderSettingsRow(kind: kind)
                 }
             } header: {
-                Text("AI 服务")
+                Text(AppLanguage.localized("AI 服务", english: "AI Services"))
             } footer: {
                 Text(
                     verbatim: AppLanguage.localized(
@@ -344,18 +359,22 @@ struct SettingsView: View {
                 indexStatistics = await IndexStatistics.make(files: appModel.files)
             }
 
-            Section("关于") {
+            Section(AppLanguage.localized("关于", english: "About")) {
                 LabeledContent(
-                    "应用",
+                    AppLanguage.localized("应用", english: "App"),
                     value: AppLanguage.localized("寻简", english: "XunJian")
                 )
-                LabeledContent("版本", value: "0.1.0")
+                LabeledContent(
+                    AppLanguage.localized("版本", english: "Version"),
+                    value: "0.1.0"
+                )
             }
         }
         .formStyle(.grouped)
+        .id(language)
         .navigationTitle(AppLanguage.localized("设置", english: "Settings"))
         .confirmationDialog(
-            "移除文件夹授权？",
+            AppLanguage.localized("移除文件夹授权？", english: "Remove Folder Access?"),
             isPresented: Binding(
                 get: { sourcePendingRemoval != nil },
                 set: { if !$0 { sourcePendingRemoval = nil } }
@@ -373,11 +392,16 @@ struct SettingsView: View {
                 appModel.removeSource(source)
                 sourcePendingRemoval = nil
             }
-            Button("取消", role: .cancel) {
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
                 sourcePendingRemoval = nil
             }
         } message: { _ in
-            Text("只会移除寻简保存的授权与本地索引，不会删除原文件夹或其中的文件。")
+            Text(
+                AppLanguage.localized(
+                    "只会移除寻简保存的授权与本地索引，不会删除原文件夹或其中的文件。",
+                    english: "This removes XunJian’s saved access and local index. The original folder and its files stay on disk."
+                )
+            )
         }
     }
 
@@ -425,13 +449,13 @@ struct SettingsView: View {
     @ViewBuilder
     private func sourcePrimaryAction(_ source: FileSource) -> some View {
         if source.accessState == .available {
-            Button("重新扫描") {
+            Button(AppLanguage.localized("重新扫描", english: "Rescan")) {
                 appModel.scanSource(source)
             }
             .disabled(appModel.isScanning)
             .disabled(!appModel.isDatabaseAvailable)
         } else {
-            Button("重新授权") {
+            Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
                 appModel.reauthorizeSource(source)
             }
             .disabled(!appModel.isDatabaseAvailable)
@@ -460,6 +484,7 @@ private struct AIProviderSettingsRow: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
     @Environment(\.openURL) private var openURL
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let kind: AIProviderKind
 
@@ -504,7 +529,10 @@ private struct AIProviderSettingsRow: View {
                 }
 
                 responsiveField("Model") {
-                    TextField("模型名称", text: $model)
+                    TextField(
+                        AppLanguage.localized("模型名称", english: "Model name"),
+                        text: $model
+                    )
                         .textFieldStyle(.roundedBorder)
                         .labelsHidden()
                         .frame(maxWidth: .infinity)
@@ -591,7 +619,7 @@ private struct AIProviderSettingsRow: View {
         }
         .onChange(of: activeExpansionID) { _, newValue in
             guard let newValue else { return }
-            withAnimation(.easeInOut(duration: 0.16)) {
+            withAnimation(XunJianUI.motion(.easeInOut(duration: 0.16), reduceMotion: reduceMotion)) {
                 isExpanded = newValue == kind
             }
         }
@@ -607,10 +635,13 @@ private struct AIProviderSettingsRow: View {
             isPresented: $showsDeleteConfirmation,
             titleVisibility: .visible
         ) {
-            Button("移除 API Key", role: .destructive) {
+            Button(
+                AppLanguage.localized("移除 API Key", english: "Remove API Key"),
+                role: .destructive
+            ) {
                 appModel.deleteAIKey(for: kind)
             }
-            Button("取消", role: .cancel) {}
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {}
         } message: {
             Text(
                 verbatim: AppLanguage.localized(
@@ -635,7 +666,7 @@ private struct AIProviderSettingsRow: View {
             ) {
                 Task { await appModel.verifyOAuthConnection(for: kind) }
             }
-            Button("取消", role: .cancel) {}
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {}
         } message: {
             Text(
                 verbatim: AppLanguage.localized(
@@ -658,7 +689,7 @@ private struct AIProviderSettingsRow: View {
             ) {
                 Task { await appModel.logoutOAuthProvider(for: kind) }
             }
-            Button("取消", role: .cancel) {}
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {}
         } message: {
             Text(
                 verbatim: AppLanguage.localized(
@@ -911,7 +942,7 @@ private struct AIProviderSettingsRow: View {
 
     @ViewBuilder
     private var apiKeyActionItems: some View {
-            Button("保存") {
+            Button(AppLanguage.localized("保存", english: "Save")) {
                 guard appModel.saveAIProvider(
                     kind,
                     baseURL: baseURL,
@@ -919,11 +950,11 @@ private struct AIProviderSettingsRow: View {
                     apiKey: apiKey
                 ) else { return }
                 apiKey = ""
-                withAnimation { showsSavedConfirmation = true }
+                withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) { showsSavedConfirmation = true }
                 Task {
                     try? await Task.sleep(for: .seconds(2))
                     guard !Task.isCancelled else { return }
-                    withAnimation { showsSavedConfirmation = false }
+                    withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) { showsSavedConfirmation = false }
                 }
             }
             if connectionState == .testing {
@@ -932,7 +963,9 @@ private struct AIProviderSettingsRow: View {
                     role: .cancel
                 ) { appModel.cancelAIProviderTest(kind) }
             } else {
-                Button("测试连接") { appModel.testAIProvider(kind) }
+                Button(AppLanguage.localized("测试连接", english: "Test Connection")) {
+                    appModel.testAIProvider(kind)
+                }
                     .disabled(!settings.hasAPIKey || hasUnsavedConfigurationChanges)
             }
             Button(
@@ -951,7 +984,10 @@ private struct AIProviderSettingsRow: View {
             ) { appModel.setActiveAIProvider(kind) }
                 .disabled(!canSetCurrentAPIKey || isActiveAPIKey)
             if settings.hasAPIKey {
-                Button("移除 API Key…", role: .destructive) {
+                Button(
+                    AppLanguage.localized("移除 API Key…", english: "Remove API Key…"),
+                    role: .destructive
+                ) {
                     showsDeleteConfirmation = true
                 }
             }

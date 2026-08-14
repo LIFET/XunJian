@@ -26,14 +26,25 @@ struct AISearchSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("AI 搜文件")
+            Text(AppLanguage.localized("AI 搜文件", english: "AI File Search"))
                 .font(.title2.weight(.semibold))
-            Text("AI 只理解你的描述并生成检索条件；文件候选筛选和结果匹配均在本地完成。")
+            Text(
+                AppLanguage.localized(
+                    "AI 只理解你的描述并生成检索条件；文件候选筛选和结果匹配均在本地完成。",
+                    english: "AI only understands your description and turns it into search criteria. Matching files stays on this Mac."
+                )
+            )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            TextField("例如：找我去年保存的合同", text: $query)
+            TextField(
+                AppLanguage.localized(
+                    "例如：找我去年保存的合同",
+                    english: "e.g. contracts I saved last year"
+                ),
+                text: $query
+            )
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(search)
 
@@ -47,7 +58,7 @@ struct AISearchSheet: View {
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
-                    Text("正在理解查找条件…")
+                    Text(AppLanguage.localized("正在理解查找条件…", english: "Understanding the search…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -59,7 +70,7 @@ struct AISearchSheet: View {
                     )
                 ) { cancelAndDismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("查找", action: search)
+                Button(AppLanguage.localized("查找", english: "Search"), action: search)
                     .keyboardShortcut(.defaultAction)
                     .disabled(
                         isWorking
@@ -111,7 +122,7 @@ struct AIExplainSheet: View {
 
     var body: some View {
         AITextResultSheet(
-            title: "AI 看文件",
+            title: AppLanguage.localized("AI 看文件", english: "AI Explain File"),
             subtitle: file.name,
             output: output,
             failure: failure,
@@ -158,20 +169,31 @@ struct AIQuestionSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("AI 问文件")
+            Text(AppLanguage.localized("AI 问文件", english: "Ask AI About File"))
                 .font(.title2.weight(.semibold))
             Text(file.name)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
-            TextField("例如：这个合同什么时候到期？", text: $question)
+            TextField(
+                AppLanguage.localized(
+                    "例如：这个合同什么时候到期？",
+                    english: "e.g. When does this contract expire?"
+                ),
+                text: $question
+            )
                 .textFieldStyle(.roundedBorder)
                 .onSubmit(ask)
 
             Group {
                 if isWorking {
-                    ProgressView("正在阅读当前文件…")
+                    ProgressView(
+                        AppLanguage.localized(
+                            "正在阅读当前文件…",
+                            english: "Reading this file…"
+                        )
+                    )
                 } else if let failure {
                     Text(AppLanguage.localizedRuntimeMessage(failure))
                         .foregroundStyle(XunJianUI.Semantic.danger)
@@ -182,7 +204,12 @@ struct AIQuestionSheet: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else {
-                    Text("仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。")
+                    Text(
+                        AppLanguage.localized(
+                            "仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。",
+                            english: "Only the text needed to answer is sent from this file. Paths and other files are not."
+                        )
+                    )
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -206,7 +233,7 @@ struct AIQuestionSheet: View {
                     dismiss()
                 }
                     .keyboardShortcut(.cancelAction)
-                Button("提问", action: ask)
+                Button(AppLanguage.localized("提问", english: "Ask"), action: ask)
                     .keyboardShortcut(.defaultAction)
                     .disabled(
                         isWorking
@@ -241,7 +268,7 @@ struct AIQuestionSheet: View {
 }
 
 struct AITextResultSheet: View {
-    let title: LocalizedStringKey
+    let title: String
     let subtitle: String
     let output: String
     let failure: String?
@@ -252,7 +279,7 @@ struct AITextResultSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text(title)
+            Text(verbatim: title)
                 .font(.title2.weight(.semibold))
             Text(subtitle)
                 .font(.subheadline)
@@ -261,7 +288,12 @@ struct AITextResultSheet: View {
 
             Group {
                 if isWorking {
-                    ProgressView("正在读取必要文本…")
+                    ProgressView(
+                        AppLanguage.localized(
+                            "正在读取必要文本…",
+                            english: "Reading the necessary text…"
+                        )
+                    )
                 } else if let failure {
                     Text(AppLanguage.localizedRuntimeMessage(failure))
                         .foregroundStyle(XunJianUI.Semantic.danger)
@@ -293,7 +325,7 @@ struct AITextResultSheet: View {
 
             HStack {
                 Spacer()
-                Button("关闭", action: dismiss)
+                Button(AppLanguage.localized("关闭", english: "Close"), action: dismiss)
                     .keyboardShortcut(.cancelAction)
                 if showsStart {
                     Button(
@@ -332,16 +364,24 @@ struct AIClassificationSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("AI 分类")
+            Text(AppLanguage.localized("AI 分类", english: "AI Classify"))
                 .font(.title2.weight(.semibold))
-            Text("最多选择 8 个文件。AI 只会建议已有分类，确认后才写入本地索引。")
+            Text(
+                AppLanguage.localized(
+                    "最多选择 8 个文件。AI 只会建议已有分类，确认后才写入本地索引。",
+                    english: "Choose up to 8 files. AI only suggests existing categories, and writes them after you confirm."
+                )
+            )
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if appModel.categories.isEmpty {
                 ContentUnavailableView {
-                    Label("还没有分类", systemImage: "square.grid.2x2")
+                    Label(
+                        AppLanguage.localized("还没有分类", english: "No Categories Yet"),
+                        systemImage: "square.grid.2x2"
+                    )
                 } description: {
                     Text(
                         verbatim: AppLanguage.localized(
@@ -378,7 +418,7 @@ struct AIClassificationSheet: View {
                 AppLanguage.localized("撤销本次分类", english: "Undo Classification"),
                 role: .destructive
             ) { undoAppliedChanges() }
-            Button("完成") { dismiss() }
+            Button(AppLanguage.localized("完成", english: "Done")) { dismiss() }
         } message: {
             Text(
                 verbatim: AppLanguage.localized(
@@ -486,13 +526,13 @@ struct AIClassificationSheet: View {
                 .keyboardShortcut(.cancelAction)
                 .disabled(isCommittingChanges)
             if let suggestions {
-                Button("确认应用") {
+                Button(AppLanguage.localized("确认应用", english: "Apply")) {
                     apply(suggestions)
                 }
                 .keyboardShortcut(.defaultAction)
                 .disabled(isWorking || suggestions.allSatisfy(\.categoryIDs.isEmpty))
             } else {
-                Button("生成建议", action: classify)
+                Button(AppLanguage.localized("生成建议", english: "Suggest"), action: classify)
                     .keyboardShortcut(.defaultAction)
                     .disabled(isWorking || selectedFileIDs.isEmpty)
             }
@@ -513,7 +553,7 @@ struct AIClassificationSheet: View {
                         .lineLimit(1)
                     Spacer()
                     if suggestion.categoryIDs.isEmpty {
-                        Text("不建议分类")
+                        Text(AppLanguage.localized("不建议分类", english: "No category suggested"))
                             .foregroundStyle(.secondary)
                     } else {
                         Text(verbatim: displayNames.joined(separator: " / "))
