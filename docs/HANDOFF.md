@@ -24,3 +24,11 @@
 ## 下一步
 
 按 `docs/MANUAL_ACCEPTANCE.md` 人工验证 VoiceOver 导出取消、AI 新建分类、保存搜索确认、登录启动取消后立即重试与运行中退出。用户确认稳定后再另行构建、公证 DMG。
+
+## 第五轮（继续全面检查 · 最终落地，含与并行编辑合并）
+
+- **All Files 卡顿**：列表分支的 `EquatableSnapshotList` 不再携带选择修订号——每次点击/方向键不再重建 10 万行 Table 视图树（高亮由 Table 绑定驱动）；网格分支保留选择令牌（卡片需要重绘选中态）。
+- **OAuth 超时叠层**：RPC 单请求可超过默认 45s（上限 75s）；验证外层窗口 45s→60s；Grok session/new 5s→15s；session/prompt 与 Codex turn/start 显式 75s 上限，冷启动慢响应不再被内层超时先杀。
+- **扫描速度**：单源扫描后按该源增量发布（不再全库 reloadIndex）；增量 FSEvents 正文提取移出枚举串行路径（元数据先行、4 路并发、取消丢弃 staging）；枚举加 skipsHiddenFiles、缓存 resourceKeys 集合、取消检查 64 步一查；canonical 缓存未命中只解析父目录一次。
+- **验证严格性（项目契约，与并行编辑一致）**：Grok 目录/通知序列/模型/完成判定维持严格校验（测试锁定），模型 ID 已随真实协议更新（grok-4.5→4.6）；验证成功不依赖会话历史删除的改动未保留，保持原契约。
+- 验证：arm64 Debug 构建通过；App 298/298（2 项发布门禁按设计跳过）+ OAuth Process 37/37，0 失败；发布门禁 50k 0.850s / 100k 2.116s。
