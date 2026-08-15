@@ -2,6 +2,14 @@ import AppKit
 import Combine
 import Foundation
 
+struct PaginatedSelectAllContext: Equatable {
+    let query: String
+    let kind: FileKind?
+    let minimumSizeMB: Double
+    let minimumDate: Double
+    let aiSearchRevision: UInt64
+}
+
 enum AIOAuthState: Equatable, Sendable {
     case unavailable(OAuthCLIProbe.Status)
     case statusUnknown
@@ -237,7 +245,6 @@ final class AppModel: ObservableObject {
     @Published private(set) var hasPublishedCommandTarget = false
     @Published private(set) var commandTargetUsesGlobalSearchPagination = false
     private var commandTargetSignature: Int?
-    private var commandTargetGeneration: UInt64 = 0
 
     func updateCommandTargetFiles(
         _ files: [IndexedFile],
@@ -263,7 +270,6 @@ final class AppModel: ObservableObject {
         commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
         commandTargetSignature = signature
         hasPublishedCommandTarget = true
-        commandTargetGeneration &+= 1
     }
 
     var filesRevision: UInt64 { index.filesRevision }
@@ -273,37 +279,32 @@ final class AppModel: ObservableObject {
     /// ⌘A means to the user — not every file in the index.
     func selectAllDisplayedFiles() {
         if commandTargetUsesGlobalSearchPagination, hasMoreSearchResults {
-            let targetSignature = commandTargetSignature
-            let targetGeneration = commandTargetGeneration
-            let query = searchText
-            let kind = selectedKind
-            let minSize = filterMinSizeMB
-            let minDate = filterMinDate
+            let context = paginatedSelectAllContext
             Task { [weak self] in
                 guard let self else { return }
-                guard await self.index.loadAllSearchResults(query: query),
-                      self.searchText == query,
-                      self.selectedKind == kind,
-                      self.filterMinSizeMB == minSize,
-                      self.filterMinDate == minDate,
-                      self.commandTargetGeneration == targetGeneration,
+                guard await self.index.loadAllSearchResults(query: context.query),
+                      self.paginatedSelectAllContext == context,
                       self.hasPublishedCommandTarget,
-                      self.commandTargetUsesGlobalSearchPagination,
-                      self.commandTargetSignature == targetSignature else { return }
+                      self.commandTargetUsesGlobalSearchPagination else { return }
                 let files = await self.filesMatchingCurrentBrowseFilters()
-                guard self.searchText == query,
-                      self.selectedKind == kind,
-                      self.filterMinSizeMB == minSize,
-                      self.filterMinDate == minDate,
-                      self.commandTargetGeneration == targetGeneration,
+                guard self.paginatedSelectAllContext == context,
                       self.hasPublishedCommandTarget,
-                      self.commandTargetUsesGlobalSearchPagination,
-                      self.commandTargetSignature == targetSignature else { return }
+                      self.commandTargetUsesGlobalSearchPagination else { return }
                 self.applySelectAll(to: files)
             }
             return
         }
         applySelectAll(to: commandTargetFiles)
+    }
+
+    private var paginatedSelectAllContext: PaginatedSelectAllContext {
+        PaginatedSelectAllContext(
+            query: searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+            kind: selectedKind,
+            minimumSizeMB: filterMinSizeMB,
+            minimumDate: filterMinDate,
+            aiSearchRevision: aiSearchRevision
+        )
     }
 
     func loadAllSearchResults() async -> Bool {

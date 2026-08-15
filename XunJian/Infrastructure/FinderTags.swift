@@ -58,6 +58,15 @@ actor FinderTagService {
     }
 }
 
+enum FinderTagRefreshPolicy {
+    static func shouldClearExistingTags(
+        loadedFileID: String?,
+        currentFileID: String
+    ) -> Bool {
+        loadedFileID != currentFileID
+    }
+}
+
 /// Displays a file's Finder tags, loading them off the main actor.
 struct FinderTagsLabel: View {
     let file: IndexedFile
@@ -65,6 +74,7 @@ struct FinderTagsLabel: View {
 
     @State private var tags: [String] = []
     @State private var hasLoaded = false
+    @State private var loadedFileID: String?
     @State private var refreshRevision: UInt64 = 0
 
     var body: some View {
@@ -73,11 +83,20 @@ struct FinderTagsLabel: View {
             .truncationMode(.tail)
             .foregroundStyle(tags.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
             .task(id: "\(file.id)|\(file.indexedAt.timeIntervalSince1970)|\(refreshRevision)") {
-                hasLoaded = false
-                tags = await FinderTagService.shared.tags(
+                if FinderTagRefreshPolicy.shouldClearExistingTags(
+                    loadedFileID: loadedFileID,
+                    currentFileID: file.id
+                ) {
+                    hasLoaded = false
+                    tags = []
+                }
+                let refreshedTags = await FinderTagService.shared.tags(
                     forFileID: file.id,
                     path: file.path
                 )
+                guard !Task.isCancelled else { return }
+                tags = refreshedTags
+                loadedFileID = file.id
                 hasLoaded = true
             }
             .onReceive(

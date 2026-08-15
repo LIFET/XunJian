@@ -3,6 +3,52 @@ import XCTest
 @testable import XunJian
 
 final class RemainingReviewTests: XCTestCase {
+    func testPaginatedSelectAllContextIgnoresResultPublicationButTracksFilters() {
+        let original = PaginatedSelectAllContext(
+            query: "report",
+            kind: .document,
+            minimumSizeMB: 2,
+            minimumDate: 100,
+            aiSearchRevision: 7
+        )
+        let afterSearchResultPublication = PaginatedSelectAllContext(
+            query: "report",
+            kind: .document,
+            minimumSizeMB: 2,
+            minimumDate: 100,
+            aiSearchRevision: 7
+        )
+        let changedFilter = PaginatedSelectAllContext(
+            query: "report",
+            kind: .document,
+            minimumSizeMB: 4,
+            minimumDate: 100,
+            aiSearchRevision: 7
+        )
+
+        XCTAssertEqual(original, afterSearchResultPublication)
+        XCTAssertNotEqual(original, changedFilter)
+    }
+
+    func testFinderTagRefreshPreservesExistingContentForSameFile() throws {
+        XCTAssertFalse(FinderTagRefreshPolicy.shouldClearExistingTags(
+            loadedFileID: "file-a",
+            currentFileID: "file-a"
+        ))
+        XCTAssertTrue(FinderTagRefreshPolicy.shouldClearExistingTags(
+            loadedFileID: "file-a",
+            currentFileID: "file-b"
+        ))
+
+        let sourceURL = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "XunJian/Views/Components/FileInspectorEmptyView.swift")
+        let source = try String(contentsOf: sourceURL, encoding: .utf8)
+        XCTAssertTrue(source.contains(#".task(id: "\(file?.id ?? "")-\(previewRetry)")"#))
+        XCTAssertFalse(source.contains(#"previewRetry)-\(finderTagRefreshRevision)"#))
+    }
+
     func testBrowseFilterCombinesAIKeywordKindSizeAndDate() {
         let oldDocument = makeFile(
             name: "old.pdf",

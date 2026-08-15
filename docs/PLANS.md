@@ -275,9 +275,10 @@
 ### 7U 最终性能发布与 XPC 测试稳定性（已完成）
 
 - [x] 增量索引只在用户可见内容变化时发布；正文异步提取完成后刷新当前搜索，Finder 标签元数据事件精准刷新对应行与 Inspector。
+- [x] 分页搜索全选按查询与筛选语义复验，不再被自身的结果 revision 取消；Finder 标签刷新不再清空或重载 Inspector 正文预览。
 - [x] 大列表命令目标、网格选择视觉状态和缩略图表示保持稳定；特殊文件与 OAuth Provider 抢占继续 fail closed。
 - [x] Xcode 26.6 连续覆盖率会把嵌入式 XPC 卡在 LLVM 初始化的 `open()`；共享测试方案关闭覆盖率采集后，真实 XPC 能力、签名拒绝及协议不兼容测试恢复稳定。
-- [x] App 296 项（2 项发布门禁跳过）+ OAuth Process 37 项，合计 333 项、0 失败；OAuthBridge 62/62、OAuthProtocol 64/64；显式 10 万文件门禁 2.094 秒；arm64 Debug 与 Services 英文资源验证通过。未运行真实 OAuth、AI 或外部网络，未生成 DMG。
+- [x] App 298 项（2 项发布门禁跳过）+ OAuth Process 37 项，合计 335 项、0 失败；OAuthBridge 62/62、OAuthProtocol 64/64；显式 10 万文件门禁 2.094 秒；arm64 Debug 与 Services 英文资源验证通过。未运行真实 OAuth、AI 或外部网络，未生成 DMG。
 
 ## 风险
 

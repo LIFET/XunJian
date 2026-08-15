@@ -16,6 +16,7 @@ struct FileInspectorView: View {
     @State private var previewRetry = 0
     // Read-only Finder tags, fetched live rather than indexed (N11).
     @State private var finderTags: [String] = []
+    @State private var loadedFinderTagFileID: String?
     @State private var finderTagRefreshRevision: UInt64 = 0
 
     private var finderDateFormatter: DateFormatter {
@@ -358,24 +359,12 @@ struct FileInspectorView: View {
             }
         }
         .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
-        .task(id: "\(file?.id ?? "")-\(previewRetry)-\(finderTagRefreshRevision)") {
+        .task(id: "\(file?.id ?? "")-\(previewRetry)") {
             // N08: load text content on demand for the inline preview.
             previewText = nil
             previewLimit = 2_000
             previewFailed = false
-            finderTags = []
             guard appModel.selectedFileIDs.count <= 1, let file else { return }
-
-            // N11: live Finder tags. The metadata read is a synchronous
-            // filesystem call, so it runs off the main actor: network volumes
-            // or not-yet-downloaded iCloud items must not stall the UI.
-            let fileURL = file.url
-            let tagNames = await Task.detached(priority: .utility) {
-                (try? fileURL.resourceValues(forKeys: [.tagNamesKey]))?.tagNames
-            }.value
-            if let tagNames {
-                finderTags = tagNames
-            }
 
             guard file.kind.supportsTextExtraction else { return }
             isLoadingPreview = true
@@ -387,6 +376,29 @@ struct FileInspectorView: View {
             } catch {
                 previewFailed = true
             }
+        }
+        .task(id: "\(file?.id ?? "")-\(finderTagRefreshRevision)") {
+            guard appModel.selectedFileIDs.count <= 1, let file else {
+                finderTags = []
+                loadedFinderTagFileID = nil
+                return
+            }
+            if FinderTagRefreshPolicy.shouldClearExistingTags(
+                loadedFileID: loadedFinderTagFileID,
+                currentFileID: file.id
+            ) {
+                finderTags = []
+            }
+            // N11: live Finder tags. The metadata read is a synchronous
+            // filesystem call, so it runs off the main actor: network volumes
+            // or not-yet-downloaded iCloud items must not stall the UI.
+            let fileURL = file.url
+            let tagNames = await Task.detached(priority: .utility) {
+                (try? fileURL.resourceValues(forKeys: [.tagNamesKey]))?.tagNames ?? []
+            }.value
+            guard !Task.isCancelled, self.file?.id == file.id else { return }
+            finderTags = tagNames
+            loadedFinderTagFileID = file.id
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .xunJianFinderTagsDidChange)
