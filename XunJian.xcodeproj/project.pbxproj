@@ -1,0 +1,1367 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		020D5033E972785A0289B0CE /* AISheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7F4C5217CBB322159BCD24FB /* AISheets.swift */; };
+		021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		03EB7BAB7AF7E37CB4A48044 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		0A8D34B3FC0AB62E82E71BB3 /* FileSelection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */; };
+		0CB474EF414DBD6662698CC1 /* RemainingReviewTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5CEDDFB194DF8F0914B0A43 /* RemainingReviewTests.swift */; };
+		184566558FB095A703D5586B /* NavigationModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43201D1654A730877ECBF75B /* NavigationModelTests.swift */; };
+		19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		1E475F5415CFA9FA8D939ECC /* StorageInsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2C0F72E7F91471EDA0A8BE /* StorageInsightsView.swift */; };
+		1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 96B78063D48252AA329210EC /* Localizable.xcstrings */; };
+		2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */; };
+		22E9496A7A36C9431166F813 /* IndexStatistics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36FB41C116A4A17878EE4F33 /* IndexStatistics.swift */; };
+		2464FC367BABE81518FFD73F /* ScanProgressStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */; };
+		26952E3B791B7A8E74E6C4BE /* ScanProgressStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */; };
+		2A1F4E59CC4D74FC80A9ACA2 /* CategoryIndexStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BEE73E1D67E8135A4DC4BE9B /* CategoryIndexStore.swift */; };
+		2D914505C799E55D75A6725B /* LagIsolationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 70E5F589B6D4A8934D759A83 /* LagIsolationTests.swift */; };
+		2EF552A035D80815291AA5BA /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
+		33103C66511C3E8E8CA198D1 /* AIProviderSettingsRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = C52CB7F1B003376CCA25F171 /* AIProviderSettingsRow.swift */; };
+		3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEFD5F7C7584F04173E53789 /* SidebarView.swift */; };
+		3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = C10B18C3237ECC61CD2CD82C /* FileKind.swift */; };
+		443F35855CCF7702D7C8F6E7 /* MenuBarSearchView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 52053B4077399D77DE88E777 /* MenuBarSearchView.swift */; };
+		47F404FDA7091F77CA315B55 /* UndoCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E4EB796D3BAEFFBDBA8BB18 /* UndoCoordinatorTests.swift */; };
+		49E9F7AE170B03D5EF343ABD /* OAuthCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */; };
+		49F358D13DBBFEAD620B3CA5 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = CB560888DFD147C6941EA726 /* Sparkle */; };
+		4E63E44E4F62D5954A25E6D6 /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		52544038226A3498EB8D9C1D /* FileBrowsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */; };
+		584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA348B0B0255D42446072A13 /* AIServices.swift */; };
+		58AED1013622198E23D4277F /* TextExtraction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 58F0A94816760C43F4DD25EC /* TextExtraction.swift */; };
+		58BD9C1146DAC6CB708FF79A /* FileToolbar.swift in Sources */ = {isa = PBXBuildFile; fileRef = 602050CB93CEC44748C253AF /* FileToolbar.swift */; };
+		5B1C4F4504E6F6FECB1A8BD3 /* GlobalPresentations.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9EE6923D1299791BC5598005 /* GlobalPresentations.swift */; };
+		65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */; };
+		669256A4ACC0B68B89790184 /* ScanExclusions.swift in Sources */ = {isa = PBXBuildFile; fileRef = CACCC5F5D591DBF89FBCFFEE /* ScanExclusions.swift */; };
+		6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */; };
+		6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */; };
+		6B866C6CB6385CE7D72090D9 /* FileSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */; };
+		7146506008FC467A1A68E133 /* DuplicateFileFinder.swift in Sources */ = {isa = PBXBuildFile; fileRef = E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */; };
+		7323293492E005D8D79D6727 /* AppShellView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2517C73D7AE3DB0297377AD /* AppShellView.swift */; };
+		7756F1F1ECF5C61FC1858CA5 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
+		792F5D29C8BED402315A3910 /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
+		7DAD9104063A21B9909B4174 /* CodexAppServer in Resources */ = {isa = PBXBuildFile; fileRef = FE0D9EBF00FF7A650608C6F6 /* CodexAppServer */; };
+		7ECDB13F25574E8381854C71 /* CommandPalette.swift in Sources */ = {isa = PBXBuildFile; fileRef = 791384A682142EAF96CFCE58 /* CommandPalette.swift */; };
+		809B684CC4A548E9AA8F5185 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3DD241E98D39A705F43263E /* main.swift */; };
+		82868119562B300BF678DF23 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
+		87FA06B46B89AF69D4E738AA /* FileInspectorEmptyView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */; };
+		8814C8D4EC92666AF6EFD69D /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BE43A33E45E0575433513A26 /* HomeView.swift */; };
+		8A599208D1689D51A4A99787 /* OAuthProtocolClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */; };
+		8A807105F69189CF70AB62DC /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
+		8BB0DAF2A11BE40E5F3F7A38 /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
+		8C72C77B1541CE2111201966 /* AppModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 628A1CBBBA38BBDDFB782D69 /* AppModel.swift */; };
+		9A71EA08EEF5A50302CD022B /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		A208401A30F11677FE0F1E35 /* ServicesMenu.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */; };
+		A43029B3B16C6CB6F5CFEEA6 /* FinderTags.swift in Sources */ = {isa = PBXBuildFile; fileRef = D07223EC9BA6ECCF122F1789 /* FinderTags.swift */; };
+		A9ED913BE4459E41F70FDAA9 /* NavigationDestination.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC26C3607C36523F2A235CF2 /* NavigationDestination.swift */; };
+		AC06C23ACF76B36631C58C29 /* JSONLineRPC.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */; };
+		AE2456407282E09FFA5C1669 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
+		AE84157F73CC62210F744673 /* AllFilesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 518EAC055AAB2A35A145333E /* AllFilesView.swift */; };
+		B04D26217B80AB7F8F316521 /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
+		B13DCBAB43B4DB756D910325 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */; };
+		B22C04F47508A32EC410208C /* XunJianAppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */; };
+		B288C41B54D14A72162975D6 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
+		B438F35583E3A4D5D1DD3407 /* QuickSearchMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D95E48306FACC18FC520AD8 /* QuickSearchMatching.swift */; };
+		BD01EC4B8740C85BF3F4A0B5 /* AppUpdateCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1621B0EDE98BD2039F3E3971 /* AppUpdateCoordinator.swift */; };
+		BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */; };
+		BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */ = {isa = PBXBuildFile; fileRef = C54468C80E1522D1A0C77957 /* FileOperations.swift */; };
+		C096C42C0B1988B0BEBC644F /* TextPreviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF821E7CE830C20286C8DA85 /* TextPreviewView.swift */; };
+		C242CE92605AD831522D5454 /* FileListExport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 870A8944B3281DD0A95392FA /* FileListExport.swift */; };
+		C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9F231F3122DD79257F7992DC /* SettingsView.swift */; };
+		C625E98387905928BD6F07A1 /* ScanExclusionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C689E47940D0B91075283169 /* ScanExclusionsTests.swift */; };
+		C7482C648B7A04231D00D4BE /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
+		C8A56C9BB0CCAA7E8C0C54B9 /* GrokRuntime in Resources */ = {isa = PBXBuildFile; fileRef = EC52269BC8BB801B1B84E170 /* GrokRuntime */; };
+		CAB3CF4320831BC6C3172382 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */; };
+		CABFA51632A187E2EE195E5F /* GrokACPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */; };
+		CE49BD91715B9A6C2BC715B3 /* SearchField.swift in Sources */ = {isa = PBXBuildFile; fileRef = 32BA6CDAA07D84F751BCB92A /* SearchField.swift */; };
+		D19031A4C9A3C546C43901D9 /* UndoCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E481ADF7812C450CC0CDB3D /* UndoCoordinator.swift */; };
+		D31131EFD9936B501A29E50B /* FileCategory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 887A0DAB00610B8EA25FC3BD /* FileCategory.swift */; };
+		D31ADA7641699B13EB7F24F9 /* XunJianCommands.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9C46E3A2E8BA0FE9C6FBF5D9 /* XunJianCommands.swift */; };
+		D55ACD6E5676D333840CF92C /* AISessionCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 98687EB9C90408470170D710 /* AISessionCoordinator.swift */; };
+		D7EF2E9A2E2CF71AECA915F5 /* SupervisedLineProcess.swift in Sources */ = {isa = PBXBuildFile; fileRef = 086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */; };
+		E08E6B0F9333A1D0E48AC76A /* OAuthBridgeProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */; };
+		E1159BEEC47C0B9D05EB3293 /* OAuthProcessTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */; };
+		E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */ = {isa = PBXBuildFile; fileRef = C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */; };
+		EB24E7CAAAD7B9C1B82029D1 /* OAuthBridgeTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */; };
+		F00045592B3AB2B2298D20E0 /* ManagedRuntimeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */; };
+		F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92B314F97E88A0CC522217B1 /* CategoriesView.swift */; };
+		F84BE89AFC79E41CB630C2C2 /* OAuthProtocolClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */; };
+		F96C493B149FC7C24661A1E6 /* OAuthRuntimeNOTICE.txt in Resources */ = {isa = PBXBuildFile; fileRef = AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */; };
+		FD512A7006438C8BA0FD2922 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 07683A9FCD41A8E130B68004 /* Assets.xcassets */; };
+		FDBA47E30EAE388F63E23AF1 /* FileIndexInfrastructure.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */; };
+		FF3FC573E3914E946BBB9758 /* CodexAppServerClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		2EC0D09F19A2043B77CCB078 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 0DC24C3952ED54BC312DD31C;
+			remoteInfo = XunJian;
+		};
+		3828F7E1B5B16E5818C3B74D /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = B985253A846C85140ECC0D88;
+			remoteInfo = XunJianFakeJSONLServer;
+		};
+		4AD4AEEB0040D81C7557F5B1 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 85145A6DC568D41EFB8A4F8C;
+			remoteInfo = XunJianUntrustedOAuthBridge;
+		};
+		7E2CF9CA9A6A79C9C84F0FB9 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 472D90853C4BDB16093B56D0;
+			remoteInfo = XunJianUnauthorizedClient;
+		};
+		8130F5E1FF2D3891EB2EB2BF /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EF3E84C532BC428C7B01CE45;
+			remoteInfo = XunJianOAuthBridge;
+		};
+		B02A5E484921FC095D7EBC79 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = EF3E84C532BC428C7B01CE45;
+			remoteInfo = XunJianOAuthBridge;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		B6EEBBB83928AE2CAADA1BBF /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
+			dstSubfolderSpec = 16;
+			files = (
+				19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D711EE27432CD60416FFFB44 /* CopyFiles */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
+			dstSubfolderSpec = 16;
+			files = (
+				03EB7BAB7AF7E37CB4A48044 /* XunJianOAuthBridge.xpc in CopyFiles */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0470136E7C3B47D86571CCE7 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		07683A9FCD41A8E130B68004 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupervisedLineProcess.swift; sourceTree = "<group>"; };
+		0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProcessTests.swift; sourceTree = "<group>"; };
+		1621B0EDE98BD2039F3E3971 /* AppUpdateCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppUpdateCoordinator.swift; sourceTree = "<group>"; };
+		1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileBrowsing.swift; sourceTree = "<group>"; };
+		1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanProgressStore.swift; sourceTree = "<group>"; };
+		1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianAppDelegate.swift; sourceTree = "<group>"; };
+		1E481ADF7812C450CC0CDB3D /* UndoCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCoordinator.swift; sourceTree = "<group>"; };
+		1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ServicesMenu.strings; path = en.lproj/ServicesMenu.strings; sourceTree = "<group>"; };
+		32BA6CDAA07D84F751BCB92A /* SearchField.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchField.swift; sourceTree = "<group>"; };
+		36FB41C116A4A17878EE4F33 /* IndexStatistics.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IndexStatistics.swift; sourceTree = "<group>"; };
+		3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthCoordinator.swift; sourceTree = "<group>"; };
+		3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianUnauthorizedClient.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexInfrastructure.swift; sourceTree = "<group>"; };
+		3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CodexAppServerClient.swift; sourceTree = "<group>"; };
+		3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ManagedRuntimeStore.swift; sourceTree = "<group>"; };
+		43201D1654A730877ECBF75B /* NavigationModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationModelTests.swift; sourceTree = "<group>"; };
+		483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileIndexCoordinator.swift; sourceTree = "<group>"; };
+		4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeTests.swift; sourceTree = "<group>"; };
+		518EAC055AAB2A35A145333E /* AllFilesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AllFilesView.swift; sourceTree = "<group>"; };
+		52053B4077399D77DE88E777 /* MenuBarSearchView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarSearchView.swift; sourceTree = "<group>"; };
+		52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		5368817005F77D5C8DE5DBA7 /* XunJian.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJian.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		58F0A94816760C43F4DD25EC /* TextExtraction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextExtraction.swift; sourceTree = "<group>"; };
+		602050CB93CEC44748C253AF /* FileToolbar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileToolbar.swift; sourceTree = "<group>"; };
+		628A1CBBBA38BBDDFB782D69 /* AppModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppModel.swift; sourceTree = "<group>"; };
+		6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SearchHistoryStore.swift; sourceTree = "<group>"; };
+		70E5F589B6D4A8934D759A83 /* LagIsolationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LagIsolationTests.swift; sourceTree = "<group>"; };
+		791384A682142EAF96CFCE58 /* CommandPalette.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CommandPalette.swift; sourceTree = "<group>"; };
+		797B5458753137204582954B /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSelection.swift; sourceTree = "<group>"; };
+		7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanProgressStoreTests.swift; sourceTree = "<group>"; };
+		7D95E48306FACC18FC520AD8 /* QuickSearchMatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickSearchMatching.swift; sourceTree = "<group>"; };
+		7E4EB796D3BAEFFBDBA8BB18 /* UndoCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UndoCoordinatorTests.swift; sourceTree = "<group>"; };
+		7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = XunJianFakeJSONLServer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7F4C5217CBB322159BCD24FB /* AISheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISheets.swift; sourceTree = "<group>"; };
+		83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeProtocol.swift; sourceTree = "<group>"; };
+		870A8944B3281DD0A95392FA /* FileListExport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileListExport.swift; sourceTree = "<group>"; };
+		887A0DAB00610B8EA25FC3BD /* FileCategory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileCategory.swift; sourceTree = "<group>"; };
+		9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthBridgeClient.swift; sourceTree = "<group>"; };
+		92B314F97E88A0CC522217B1 /* CategoriesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoriesView.swift; sourceTree = "<group>"; };
+		96B78063D48252AA329210EC /* Localizable.xcstrings */ = {isa = PBXFileReference; lastKnownFileType = text.json.xcstrings; path = Localizable.xcstrings; sourceTree = "<group>"; };
+		98687EB9C90408470170D710 /* AISessionCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AISessionCoordinator.swift; sourceTree = "<group>"; };
+		9C46E3A2E8BA0FE9C6FBF5D9 /* XunJianCommands.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianCommands.swift; sourceTree = "<group>"; };
+		9EE6923D1299791BC5598005 /* GlobalPresentations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalPresentations.swift; sourceTree = "<group>"; };
+		9F231F3122DD79257F7992DC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OAuthRuntimeNOTICE.txt; sourceTree = "<group>"; };
+		AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONLineRPC.swift; sourceTree = "<group>"; };
+		B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSelectionTests.swift; sourceTree = "<group>"; };
+		B2517C73D7AE3DB0297377AD /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
+		BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		BE43A33E45E0575433513A26 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		BEE73E1D67E8135A4DC4BE9B /* CategoryIndexStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CategoryIndexStore.swift; sourceTree = "<group>"; };
+		C10B18C3237ECC61CD2CD82C /* FileKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileKind.swift; sourceTree = "<group>"; };
+		C3DD241E98D39A705F43263E /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		C52CB7F1B003376CCA25F171 /* AIProviderSettingsRow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIProviderSettingsRow.swift; sourceTree = "<group>"; };
+		C54468C80E1522D1A0C77957 /* FileOperations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileOperations.swift; sourceTree = "<group>"; };
+		C689E47940D0B91075283169 /* ScanExclusionsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanExclusionsTests.swift; sourceTree = "<group>"; };
+		C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSystemMonitoring.swift; sourceTree = "<group>"; };
+		C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderDateFormatting.swift; sourceTree = "<group>"; };
+		CACCC5F5D591DBF89FBCFFEE /* ScanExclusions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScanExclusions.swift; sourceTree = "<group>"; };
+		CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XunJianApp.swift; sourceTree = "<group>"; };
+		CD6732F8837352F32453893E /* XunJianUntrustedOAuthBridge.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = XunJianUntrustedOAuthBridge.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
+		D07223EC9BA6ECCF122F1789 /* FinderTags.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FinderTags.swift; sourceTree = "<group>"; };
+		D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OAuthProtocolClientTests.swift; sourceTree = "<group>"; };
+		DC26C3607C36523F2A235CF2 /* NavigationDestination.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NavigationDestination.swift; sourceTree = "<group>"; };
+		DF821E7CE830C20286C8DA85 /* TextPreviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TextPreviewView.swift; sourceTree = "<group>"; };
+		E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DuplicateFileFinder.swift; sourceTree = "<group>"; };
+		E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GrokACPClient.swift; sourceTree = "<group>"; };
+		E5CEDDFB194DF8F0914B0A43 /* RemainingReviewTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RemainingReviewTests.swift; sourceTree = "<group>"; };
+		E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileInspectorEmptyView.swift; sourceTree = "<group>"; };
+		EC52269BC8BB801B1B84E170 /* GrokRuntime */ = {isa = PBXFileReference; lastKnownFileType = folder; name = GrokRuntime; path = XunJianOAuthBridge/Resources/GrokRuntime; sourceTree = SOURCE_ROOT; };
+		EEFD5F7C7584F04173E53789 /* SidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarView.swift; sourceTree = "<group>"; };
+		F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = XunJianOAuthProcessTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FA348B0B0255D42446072A13 /* AIServices.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AIServices.swift; sourceTree = "<group>"; };
+		FE0D9EBF00FF7A650608C6F6 /* CodexAppServer */ = {isa = PBXFileReference; lastKnownFileType = folder; name = CodexAppServer; path = XunJianOAuthBridge/Resources/CodexAppServer; sourceTree = SOURCE_ROOT; };
+		FE2C0F72E7F91471EDA0A8BE /* StorageInsightsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StorageInsightsView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		849B6D1D0227CF5927DFA7D2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				49F358D13DBBFEAD620B3CA5 /* Sparkle in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		1232636EDB796D8E9DCB1ED7 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				B2517C73D7AE3DB0297377AD /* AppShellView.swift */,
+				791384A682142EAF96CFCE58 /* CommandPalette.swift */,
+				870A8944B3281DD0A95392FA /* FileListExport.swift */,
+				9EE6923D1299791BC5598005 /* GlobalPresentations.swift */,
+				52053B4077399D77DE88E777 /* MenuBarSearchView.swift */,
+				EEFD5F7C7584F04173E53789 /* SidebarView.swift */,
+				FE2C0F72E7F91471EDA0A8BE /* StorageInsightsView.swift */,
+				DF821E7CE830C20286C8DA85 /* TextPreviewView.swift */,
+				9C46E3A2E8BA0FE9C6FBF5D9 /* XunJianCommands.swift */,
+				39D47F512BD27211B62EC9F3 /* AI */,
+				C5902F9F55294ED09AC54373 /* Categories */,
+				F763909B60DCA2CA69BC1B03 /* Components */,
+				F87B3EC7D71B8BB8E0B102E8 /* Files */,
+				2C6C2785B5403ABA3AA22F44 /* Home */,
+				9C511909F003B399F1947174 /* Settings */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		2C6C2785B5403ABA3AA22F44 /* Home */ = {
+			isa = PBXGroup;
+			children = (
+				BE43A33E45E0575433513A26 /* HomeView.swift */,
+			);
+			path = Home;
+			sourceTree = "<group>";
+		};
+		39D47F512BD27211B62EC9F3 /* AI */ = {
+			isa = PBXGroup;
+			children = (
+				7F4C5217CBB322159BCD24FB /* AISheets.swift */,
+			);
+			path = AI;
+			sourceTree = "<group>";
+		};
+		4016D66AB7EE360878005E19 /* XunJianOAuthBridge */ = {
+			isa = PBXGroup;
+			children = (
+				797B5458753137204582954B /* Info.plist */,
+				C3DD241E98D39A705F43263E /* main.swift */,
+				FC428FF16567491AB2D54F81 /* Core */,
+			);
+			path = XunJianOAuthBridge;
+			sourceTree = "<group>";
+		};
+		42DFC650FB061307E12E9828 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				07683A9FCD41A8E130B68004 /* Assets.xcassets */,
+				96B78063D48252AA329210EC /* Localizable.xcstrings */,
+				AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */,
+				1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		5C7276D0C6539B67760793FB /* App */ = {
+			isa = PBXGroup;
+			children = (
+				98687EB9C90408470170D710 /* AISessionCoordinator.swift */,
+				628A1CBBBA38BBDDFB782D69 /* AppModel.swift */,
+				BEE73E1D67E8135A4DC4BE9B /* CategoryIndexStore.swift */,
+				483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */,
+				7B7BE2E81DA4050E55DE0AD4 /* FileSelection.swift */,
+				3711F00878BF38B1B34A7D53 /* OAuthCoordinator.swift */,
+				7D95E48306FACC18FC520AD8 /* QuickSearchMatching.swift */,
+				1BD417A0742AE79ADFDB822A /* ScanProgressStore.swift */,
+				1E481ADF7812C450CC0CDB3D /* UndoCoordinator.swift */,
+				CD5C8FA1A68837DC346B0ED6 /* XunJianApp.swift */,
+				1D9DC1E7F6CD3AFFFC337252 /* XunJianAppDelegate.swift */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		617C9F78CF80FAB1E9D179EE /* XunJianTests */ = {
+			isa = PBXGroup;
+			children = (
+				B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */,
+				70E5F589B6D4A8934D759A83 /* LagIsolationTests.swift */,
+				43201D1654A730877ECBF75B /* NavigationModelTests.swift */,
+				4F95E10B9ADDBEEAA8B72DC0 /* OAuthBridgeTests.swift */,
+				0FA5626BB249441A1A857F8A /* OAuthProcessTests.swift */,
+				D84EC663783A00398E61634A /* OAuthProtocolClientTests.swift */,
+				E5CEDDFB194DF8F0914B0A43 /* RemainingReviewTests.swift */,
+				C689E47940D0B91075283169 /* ScanExclusionsTests.swift */,
+				7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */,
+				7E4EB796D3BAEFFBDBA8BB18 /* UndoCoordinatorTests.swift */,
+			);
+			path = XunJianTests;
+			sourceTree = "<group>";
+		};
+		9C511909F003B399F1947174 /* Settings */ = {
+			isa = PBXGroup;
+			children = (
+				C52CB7F1B003376CCA25F171 /* AIProviderSettingsRow.swift */,
+				36FB41C116A4A17878EE4F33 /* IndexStatistics.swift */,
+				9F231F3122DD79257F7992DC /* SettingsView.swift */,
+			);
+			path = Settings;
+			sourceTree = "<group>";
+		};
+		A2E8AD2C9A171802BDB7B256 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				5368817005F77D5C8DE5DBA7 /* XunJian.app */,
+				7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */,
+				BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */,
+				F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */,
+				52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */,
+				3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */,
+				CD6732F8837352F32453893E /* XunJianUntrustedOAuthBridge.xpc */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		B9538AB57CEB50D148BA2D34 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				887A0DAB00610B8EA25FC3BD /* FileCategory.swift */,
+				C10B18C3237ECC61CD2CD82C /* FileKind.swift */,
+				DC26C3607C36523F2A235CF2 /* NavigationDestination.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		B95608992BF274A2512DF915 /* Infrastructure */ = {
+			isa = PBXGroup;
+			children = (
+				FA348B0B0255D42446072A13 /* AIServices.swift */,
+				1621B0EDE98BD2039F3E3971 /* AppUpdateCoordinator.swift */,
+				E487F72BD9140EC51AF08F5A /* DuplicateFileFinder.swift */,
+				3CF0C4804075D2562242EBF9 /* FileIndexInfrastructure.swift */,
+				C54468C80E1522D1A0C77957 /* FileOperations.swift */,
+				C6DCEF24B3714A93AB224072 /* FileSystemMonitoring.swift */,
+				D07223EC9BA6ECCF122F1789 /* FinderTags.swift */,
+				9062246450DFBC59B42705C5 /* OAuthBridgeClient.swift */,
+				83CBB144D10C3B79FD51E6A3 /* OAuthBridgeProtocol.swift */,
+				CACCC5F5D591DBF89FBCFFEE /* ScanExclusions.swift */,
+				6DC637249F5E7D008C0E5DB7 /* SearchHistoryStore.swift */,
+				58F0A94816760C43F4DD25EC /* TextExtraction.swift */,
+			);
+			path = Infrastructure;
+			sourceTree = "<group>";
+		};
+		C5902F9F55294ED09AC54373 /* Categories */ = {
+			isa = PBXGroup;
+			children = (
+				92B314F97E88A0CC522217B1 /* CategoriesView.swift */,
+			);
+			path = Categories;
+			sourceTree = "<group>";
+		};
+		D0081E9DFDAB429AE37C8A75 /* XunJian */ = {
+			isa = PBXGroup;
+			children = (
+				0470136E7C3B47D86571CCE7 /* Info.plist */,
+				5C7276D0C6539B67760793FB /* App */,
+				B95608992BF274A2512DF915 /* Infrastructure */,
+				B9538AB57CEB50D148BA2D34 /* Models */,
+				42DFC650FB061307E12E9828 /* Resources */,
+				1232636EDB796D8E9DCB1ED7 /* Views */,
+			);
+			path = XunJian;
+			sourceTree = "<group>";
+		};
+		D08D3E27ED3FFC7514C46258 = {
+			isa = PBXGroup;
+			children = (
+				FE0D9EBF00FF7A650608C6F6 /* CodexAppServer */,
+				EC52269BC8BB801B1B84E170 /* GrokRuntime */,
+				D0081E9DFDAB429AE37C8A75 /* XunJian */,
+				4016D66AB7EE360878005E19 /* XunJianOAuthBridge */,
+				617C9F78CF80FAB1E9D179EE /* XunJianTests */,
+				A2E8AD2C9A171802BDB7B256 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F763909B60DCA2CA69BC1B03 /* Components */ = {
+			isa = PBXGroup;
+			children = (
+				1AD76F007B7D837DDE8A9CED /* FileBrowsing.swift */,
+				E7B1474EB4482DB499F82086 /* FileInspectorEmptyView.swift */,
+				602050CB93CEC44748C253AF /* FileToolbar.swift */,
+				C8A001F8DE996CD696B0A1B5 /* FinderDateFormatting.swift */,
+				32BA6CDAA07D84F751BCB92A /* SearchField.swift */,
+			);
+			path = Components;
+			sourceTree = "<group>";
+		};
+		F87B3EC7D71B8BB8E0B102E8 /* Files */ = {
+			isa = PBXGroup;
+			children = (
+				518EAC055AAB2A35A145333E /* AllFilesView.swift */,
+			);
+			path = Files;
+			sourceTree = "<group>";
+		};
+		FC428FF16567491AB2D54F81 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				3DD6973662CDDC809734B4AB /* CodexAppServerClient.swift */,
+				E5508D48EF7FED1A99DAFA13 /* GrokACPClient.swift */,
+				AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */,
+				3DF54001BA0FE1FFA8C9740F /* ManagedRuntimeStore.swift */,
+				086AAB53F452578DBF0C793F /* SupervisedLineProcess.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		0DC24C3952ED54BC312DD31C /* XunJian */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C8F3DFB3332611622CE9B8B5 /* Build configuration list for PBXNativeTarget "XunJian" */;
+			buildPhases = (
+				D6C93D59DFF837E999154798 /* Sources */,
+				9B58577BFF1CED349526213F /* Resources */,
+				D711EE27432CD60416FFFB44 /* CopyFiles */,
+				849B6D1D0227CF5927DFA7D2 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				09491BE7F504DEB6DC522BAC /* PBXTargetDependency */,
+			);
+			name = XunJian;
+			packageProductDependencies = (
+				CB560888DFD147C6941EA726 /* Sparkle */,
+			);
+			productName = XunJian;
+			productReference = 5368817005F77D5C8DE5DBA7 /* XunJian.app */;
+			productType = "com.apple.product-type.application";
+		};
+		472D90853C4BDB16093B56D0 /* XunJianUnauthorizedClient */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FCAF2734580048CA5BDEE775 /* Build configuration list for PBXNativeTarget "XunJianUnauthorizedClient" */;
+			buildPhases = (
+				7F5E20A742C0871A1D96912F /* Sources */,
+				B6EEBBB83928AE2CAADA1BBF /* CopyFiles */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				F5F84DFCD4491CB4991329A5 /* PBXTargetDependency */,
+			);
+			name = XunJianUnauthorizedClient;
+			packageProductDependencies = (
+			);
+			productName = XunJianUnauthorizedClient;
+			productReference = 3924F12F3FC1E6537F729616 /* XunJianUnauthorizedClient.app */;
+			productType = "com.apple.product-type.application";
+		};
+		5378F319F07EE5F1608EF698 /* XunJianOAuthProcessTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 2E7114D1EC53C76F00D69295 /* Build configuration list for PBXNativeTarget "XunJianOAuthProcessTests" */;
+			buildPhases = (
+				4DAF3D05FFEF96437C2616A6 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = XunJianOAuthProcessTests;
+			packageProductDependencies = (
+			);
+			productName = XunJianOAuthProcessTests;
+			productReference = F4959B685347EDC9E7917063 /* XunJianOAuthProcessTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		85145A6DC568D41EFB8A4F8C /* XunJianUntrustedOAuthBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 14E9155C5DFD5DCDE4658233 /* Build configuration list for PBXNativeTarget "XunJianUntrustedOAuthBridge" */;
+			buildPhases = (
+				04DB51232A05EFAD314C219F /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = XunJianUntrustedOAuthBridge;
+			packageProductDependencies = (
+			);
+			productName = XunJianUntrustedOAuthBridge;
+			productReference = CD6732F8837352F32453893E /* XunJianUntrustedOAuthBridge.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
+		B514FB30D1D49B7253B55EC7 /* XunJianTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = F4751F1689305C564993CB30 /* Build configuration list for PBXNativeTarget "XunJianTests" */;
+			buildPhases = (
+				4CC714FADA3DFFB82A74101D /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				B24C5A41FA357938D8CCCE75 /* PBXTargetDependency */,
+				526E0BF54DAA8D5212604D26 /* PBXTargetDependency */,
+				6769F45A3C4D1FB9E2DDA324 /* PBXTargetDependency */,
+				71AEE5C7968FB494C8B95AD8 /* PBXTargetDependency */,
+			);
+			name = XunJianTests;
+			packageProductDependencies = (
+			);
+			productName = XunJianTests;
+			productReference = 52A26FA55CDE1218D87A3A52 /* XunJianTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+		B985253A846C85140ECC0D88 /* XunJianFakeJSONLServer */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7715726B789691AA4375843C /* Build configuration list for PBXNativeTarget "XunJianFakeJSONLServer" */;
+			buildPhases = (
+				FEA70F357A49846FA59AB0E7 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = XunJianFakeJSONLServer;
+			packageProductDependencies = (
+			);
+			productName = XunJianFakeJSONLServer;
+			productReference = 7F43959FDAE44E874AE83D8A /* XunJianFakeJSONLServer.app */;
+			productType = "com.apple.product-type.application";
+		};
+		EF3E84C532BC428C7B01CE45 /* XunJianOAuthBridge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 35950211C2689ACD77299463 /* Build configuration list for PBXNativeTarget "XunJianOAuthBridge" */;
+			buildPhases = (
+				03F134672A22BEF1E15F216F /* Sources */,
+				5D88A9C1EE5B245E79A2C76A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = XunJianOAuthBridge;
+			packageProductDependencies = (
+			);
+			productName = XunJianOAuthBridge;
+			productReference = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		E5A1DC4E4847A1375EDFE6BB /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					0DC24C3952ED54BC312DD31C = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					472D90853C4BDB16093B56D0 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					5378F319F07EE5F1608EF698 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					85145A6DC568D41EFB8A4F8C = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					B514FB30D1D49B7253B55EC7 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					B985253A846C85140ECC0D88 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+					EF3E84C532BC428C7B01CE45 = {
+						DevelopmentTeam = "";
+						ProvisioningStyle = Automatic;
+					};
+				};
+			};
+			buildConfigurationList = 3CD4D4A3A3766964A02CAE10 /* Build configuration list for PBXProject "XunJian" */;
+			developmentRegion = "zh-Hans";
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+				"zh-Hans",
+			);
+			mainGroup = D08D3E27ED3FFC7514C46258;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5306546D0316C7AD6C36C41A /* XCRemoteSwiftPackageReference "Sparkle" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = A2E8AD2C9A171802BDB7B256 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				0DC24C3952ED54BC312DD31C /* XunJian */,
+				B985253A846C85140ECC0D88 /* XunJianFakeJSONLServer */,
+				EF3E84C532BC428C7B01CE45 /* XunJianOAuthBridge */,
+				5378F319F07EE5F1608EF698 /* XunJianOAuthProcessTests */,
+				B514FB30D1D49B7253B55EC7 /* XunJianTests */,
+				472D90853C4BDB16093B56D0 /* XunJianUnauthorizedClient */,
+				85145A6DC568D41EFB8A4F8C /* XunJianUntrustedOAuthBridge */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		5D88A9C1EE5B245E79A2C76A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7DAD9104063A21B9909B4174 /* CodexAppServer in Resources */,
+				C8A56C9BB0CCAA7E8C0C54B9 /* GrokRuntime in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		9B58577BFF1CED349526213F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FD512A7006438C8BA0FD2922 /* Assets.xcassets in Resources */,
+				1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */,
+				F96C493B149FC7C24661A1E6 /* OAuthRuntimeNOTICE.txt in Resources */,
+				A208401A30F11677FE0F1E35 /* ServicesMenu.strings in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		03F134672A22BEF1E15F216F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				B13DCBAB43B4DB756D910325 /* CodexAppServerClient.swift in Sources */,
+				CABFA51632A187E2EE195E5F /* GrokACPClient.swift in Sources */,
+				8BB0DAF2A11BE40E5F3F7A38 /* JSONLineRPC.swift in Sources */,
+				F00045592B3AB2B2298D20E0 /* ManagedRuntimeStore.swift in Sources */,
+				4E63E44E4F62D5954A25E6D6 /* OAuthBridgeProtocol.swift in Sources */,
+				C7482C648B7A04231D00D4BE /* SupervisedLineProcess.swift in Sources */,
+				809B684CC4A548E9AA8F5185 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		04DB51232A05EFAD314C219F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9A71EA08EEF5A50302CD022B /* OAuthBridgeProtocol.swift in Sources */,
+				AE2456407282E09FFA5C1669 /* OAuthBridgeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4CC714FADA3DFFB82A74101D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				CAB3CF4320831BC6C3172382 /* CodexAppServerClient.swift in Sources */,
+				6B866C6CB6385CE7D72090D9 /* FileSelectionTests.swift in Sources */,
+				B04D26217B80AB7F8F316521 /* GrokACPClient.swift in Sources */,
+				AC06C23ACF76B36631C58C29 /* JSONLineRPC.swift in Sources */,
+				2D914505C799E55D75A6725B /* LagIsolationTests.swift in Sources */,
+				8A807105F69189CF70AB62DC /* ManagedRuntimeStore.swift in Sources */,
+				184566558FB095A703D5586B /* NavigationModelTests.swift in Sources */,
+				82868119562B300BF678DF23 /* OAuthBridgeTests.swift in Sources */,
+				8A599208D1689D51A4A99787 /* OAuthProtocolClientTests.swift in Sources */,
+				0CB474EF414DBD6662698CC1 /* RemainingReviewTests.swift in Sources */,
+				C625E98387905928BD6F07A1 /* ScanExclusionsTests.swift in Sources */,
+				2464FC367BABE81518FFD73F /* ScanProgressStoreTests.swift in Sources */,
+				D7EF2E9A2E2CF71AECA915F5 /* SupervisedLineProcess.swift in Sources */,
+				47F404FDA7091F77CA315B55 /* UndoCoordinatorTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4DAF3D05FFEF96437C2616A6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FF3FC573E3914E946BBB9758 /* CodexAppServerClient.swift in Sources */,
+				7756F1F1ECF5C61FC1858CA5 /* GrokACPClient.swift in Sources */,
+				2EF552A035D80815291AA5BA /* JSONLineRPC.swift in Sources */,
+				B288C41B54D14A72162975D6 /* ManagedRuntimeStore.swift in Sources */,
+				E1159BEEC47C0B9D05EB3293 /* OAuthProcessTests.swift in Sources */,
+				792F5D29C8BED402315A3910 /* SupervisedLineProcess.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7F5E20A742C0871A1D96912F /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				E08E6B0F9333A1D0E48AC76A /* OAuthBridgeProtocol.swift in Sources */,
+				EB24E7CAAAD7B9C1B82029D1 /* OAuthBridgeTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D6C93D59DFF837E999154798 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				33103C66511C3E8E8CA198D1 /* AIProviderSettingsRow.swift in Sources */,
+				584C48B2CA46F684F34AB884 /* AIServices.swift in Sources */,
+				D55ACD6E5676D333840CF92C /* AISessionCoordinator.swift in Sources */,
+				020D5033E972785A0289B0CE /* AISheets.swift in Sources */,
+				AE84157F73CC62210F744673 /* AllFilesView.swift in Sources */,
+				8C72C77B1541CE2111201966 /* AppModel.swift in Sources */,
+				7323293492E005D8D79D6727 /* AppShellView.swift in Sources */,
+				BD01EC4B8740C85BF3F4A0B5 /* AppUpdateCoordinator.swift in Sources */,
+				F758F44A6E1708CA64528F4F /* CategoriesView.swift in Sources */,
+				2A1F4E59CC4D74FC80A9ACA2 /* CategoryIndexStore.swift in Sources */,
+				7ECDB13F25574E8381854C71 /* CommandPalette.swift in Sources */,
+				7146506008FC467A1A68E133 /* DuplicateFileFinder.swift in Sources */,
+				52544038226A3498EB8D9C1D /* FileBrowsing.swift in Sources */,
+				D31131EFD9936B501A29E50B /* FileCategory.swift in Sources */,
+				2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */,
+				FDBA47E30EAE388F63E23AF1 /* FileIndexInfrastructure.swift in Sources */,
+				87FA06B46B89AF69D4E738AA /* FileInspectorEmptyView.swift in Sources */,
+				3DE4BEDB472E66FD3CD29CFF /* FileKind.swift in Sources */,
+				C242CE92605AD831522D5454 /* FileListExport.swift in Sources */,
+				BF0B2EABE0C463319E59E7CE /* FileOperations.swift in Sources */,
+				0A8D34B3FC0AB62E82E71BB3 /* FileSelection.swift in Sources */,
+				6A2459A687CC925113EA6BAA /* FileSystemMonitoring.swift in Sources */,
+				58BD9C1146DAC6CB708FF79A /* FileToolbar.swift in Sources */,
+				E826DF327E42AB5C5E62DF53 /* FinderDateFormatting.swift in Sources */,
+				A43029B3B16C6CB6F5CFEEA6 /* FinderTags.swift in Sources */,
+				5B1C4F4504E6F6FECB1A8BD3 /* GlobalPresentations.swift in Sources */,
+				8814C8D4EC92666AF6EFD69D /* HomeView.swift in Sources */,
+				22E9496A7A36C9431166F813 /* IndexStatistics.swift in Sources */,
+				443F35855CCF7702D7C8F6E7 /* MenuBarSearchView.swift in Sources */,
+				A9ED913BE4459E41F70FDAA9 /* NavigationDestination.swift in Sources */,
+				6934EC48737089F636E15668 /* OAuthBridgeClient.swift in Sources */,
+				021261253C13F614BC13E53C /* OAuthBridgeProtocol.swift in Sources */,
+				49E9F7AE170B03D5EF343ABD /* OAuthCoordinator.swift in Sources */,
+				B438F35583E3A4D5D1DD3407 /* QuickSearchMatching.swift in Sources */,
+				669256A4ACC0B68B89790184 /* ScanExclusions.swift in Sources */,
+				26952E3B791B7A8E74E6C4BE /* ScanProgressStore.swift in Sources */,
+				CE49BD91715B9A6C2BC715B3 /* SearchField.swift in Sources */,
+				65DEB05C555C6A1B37CCE080 /* SearchHistoryStore.swift in Sources */,
+				C27C00EE8183EE02426C3847 /* SettingsView.swift in Sources */,
+				3389CA7EA30A2A142C56D529 /* SidebarView.swift in Sources */,
+				1E475F5415CFA9FA8D939ECC /* StorageInsightsView.swift in Sources */,
+				58AED1013622198E23D4277F /* TextExtraction.swift in Sources */,
+				C096C42C0B1988B0BEBC644F /* TextPreviewView.swift in Sources */,
+				D19031A4C9A3C546C43901D9 /* UndoCoordinator.swift in Sources */,
+				BDC4C69254433791591BAAC3 /* XunJianApp.swift in Sources */,
+				B22C04F47508A32EC410208C /* XunJianAppDelegate.swift in Sources */,
+				D31ADA7641699B13EB7F24F9 /* XunJianCommands.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FEA70F357A49846FA59AB0E7 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				F84BE89AFC79E41CB630C2C2 /* OAuthProtocolClientTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		09491BE7F504DEB6DC522BAC /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EF3E84C532BC428C7B01CE45 /* XunJianOAuthBridge */;
+			targetProxy = 8130F5E1FF2D3891EB2EB2BF /* PBXContainerItemProxy */;
+		};
+		526E0BF54DAA8D5212604D26 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 472D90853C4BDB16093B56D0 /* XunJianUnauthorizedClient */;
+			targetProxy = 7E2CF9CA9A6A79C9C84F0FB9 /* PBXContainerItemProxy */;
+		};
+		6769F45A3C4D1FB9E2DDA324 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 85145A6DC568D41EFB8A4F8C /* XunJianUntrustedOAuthBridge */;
+			targetProxy = 4AD4AEEB0040D81C7557F5B1 /* PBXContainerItemProxy */;
+		};
+		71AEE5C7968FB494C8B95AD8 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = B985253A846C85140ECC0D88 /* XunJianFakeJSONLServer */;
+			targetProxy = 3828F7E1B5B16E5818C3B74D /* PBXContainerItemProxy */;
+		};
+		B24C5A41FA357938D8CCCE75 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 0DC24C3952ED54BC312DD31C /* XunJian */;
+			targetProxy = 2EC0D09F19A2043B77CCB078 /* PBXContainerItemProxy */;
+		};
+		F5F84DFCD4491CB4991329A5 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = EF3E84C532BC428C7B01CE45 /* XunJianOAuthBridge */;
+			targetProxy = B02A5E484921FC095D7EBC79 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		076022CC16B45C3A3B0D9965 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "寻简";
+				INFOPLIST_KEY_CFBundleName = "寻简";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				XUNJIAN_UPDATE_FEED_URL = "";
+				XUNJIAN_UPDATE_PUBLIC_ED_KEY = "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q=";
+			};
+			name = Debug;
+		};
+		1A5760DF1BE06555C24516FA /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianUnauthorizedClient;
+				PRODUCT_NAME = XunJianUnauthorizedClient;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_UNAUTHORIZED_CLIENT;
+			};
+			name = Release;
+		};
+		2CAC249E43FF00CA51602C5E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianFakeJSONLServer;
+				PRODUCT_NAME = XunJianFakeJSONLServer;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_FAKE_JSONL_SERVER;
+			};
+			name = Release;
+		};
+		2EBBE869BD2EBFCC7B279EC2 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianUntrustedOAuthBridge;
+				PRODUCT_MODULE_NAME = XunJianUntrustedOAuthBridge;
+				PRODUCT_NAME = XunJianUntrustedOAuthBridge;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_UNTRUSTED_BRIDGE;
+			};
+			name = Release;
+		};
+		3D05A138F25904F77590817F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				CURRENT_PROJECT_VERSION = 1;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_CFBundleDisplayName = "寻简";
+				INFOPLIST_KEY_CFBundleName = "寻简";
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 0.1.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 6.0;
+				XUNJIAN_UPDATE_FEED_URL = "";
+				XUNJIAN_UPDATE_PUBLIC_ED_KEY = "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q=";
+			};
+			name = Release;
+		};
+		3D802DBC0CEE7E84F0AD1DDE /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJianTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/寻简.app/Contents/MacOS/寻简";
+			};
+			name = Release;
+		};
+		4225536E7F2C6048B54161DE /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianFakeJSONLServer;
+				PRODUCT_NAME = XunJianFakeJSONLServer;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_FAKE_JSONL_SERVER;
+			};
+			name = Debug;
+		};
+		58C307F9C97BA29A84C99DE1 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_KEY_LSBackgroundOnly = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianUnauthorizedClient;
+				PRODUCT_NAME = XunJianUnauthorizedClient;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_UNAUTHORIZED_CLIENT;
+			};
+			name = Debug;
+		};
+		5DA261C46593467155167CBB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.example.XunJianUntrustedOAuthBridge;
+				PRODUCT_MODULE_NAME = XunJianUntrustedOAuthBridge;
+				PRODUCT_NAME = XunJianUntrustedOAuthBridge;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = XUNJIAN_UNTRUSTED_BRIDGE;
+			};
+			name = Debug;
+		};
+		733FAA688AC18169B2B21677 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJianTests;
+				SDKROOT = macosx;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/寻简.app/Contents/MacOS/寻简";
+			};
+			name = Debug;
+		};
+		98EB8E2D439813FC9423C30E /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJian/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJian;
+				PRODUCT_MODULE_NAME = XunJian;
+				PRODUCT_NAME = "寻简";
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		A0A4099C10A73BB2E95B9DCF /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJianOAuthProcessTests;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		A69475AEA05D8FC8B198EF4F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJian.OAuthBridge;
+				PRODUCT_MODULE_NAME = XunJianOAuthBridge;
+				PRODUCT_NAME = XunJianOAuthBridge;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Release;
+		};
+		E0815A40CD6F0D4E13050F22 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = XunJian/XunJian.entitlements;
+				COMBINE_HIDPI_IMAGES = YES;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = XunJian/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJian;
+				PRODUCT_MODULE_NAME = XunJian;
+				PRODUCT_NAME = "寻简";
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		EE54CFC9E7CE783ECCAE2E22 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@loader_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJianOAuthProcessTests;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
+		F880AC27309345F0FBC44C90 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				COMBINE_HIDPI_IMAGES = YES;
+				ENABLE_APP_SANDBOX = NO;
+				INFOPLIST_FILE = XunJianOAuthBridge/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.xingmingbo.XunJian.OAuthBridge;
+				PRODUCT_MODULE_NAME = XunJianOAuthBridge;
+				PRODUCT_NAME = XunJianOAuthBridge;
+				SDKROOT = macosx;
+				SKIP_INSTALL = YES;
+			};
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		14E9155C5DFD5DCDE4658233 /* Build configuration list for PBXNativeTarget "XunJianUntrustedOAuthBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5DA261C46593467155167CBB /* Debug */,
+				2EBBE869BD2EBFCC7B279EC2 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		2E7114D1EC53C76F00D69295 /* Build configuration list for PBXNativeTarget "XunJianOAuthProcessTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0A4099C10A73BB2E95B9DCF /* Debug */,
+				EE54CFC9E7CE783ECCAE2E22 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		35950211C2689ACD77299463 /* Build configuration list for PBXNativeTarget "XunJianOAuthBridge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				F880AC27309345F0FBC44C90 /* Debug */,
+				A69475AEA05D8FC8B198EF4F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		3CD4D4A3A3766964A02CAE10 /* Build configuration list for PBXProject "XunJian" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				076022CC16B45C3A3B0D9965 /* Debug */,
+				3D05A138F25904F77590817F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7715726B789691AA4375843C /* Build configuration list for PBXNativeTarget "XunJianFakeJSONLServer" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				4225536E7F2C6048B54161DE /* Debug */,
+				2CAC249E43FF00CA51602C5E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C8F3DFB3332611622CE9B8B5 /* Build configuration list for PBXNativeTarget "XunJian" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				E0815A40CD6F0D4E13050F22 /* Debug */,
+				98EB8E2D439813FC9423C30E /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		F4751F1689305C564993CB30 /* Build configuration list for PBXNativeTarget "XunJianTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				733FAA688AC18169B2B21677 /* Debug */,
+				3D802DBC0CEE7E84F0AD1DDE /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		FCAF2734580048CA5BDEE775 /* Build configuration list for PBXNativeTarget "XunJianUnauthorizedClient" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				58C307F9C97BA29A84C99DE1 /* Debug */,
+				1A5760DF1BE06555C24516FA /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5306546D0316C7AD6C36C41A /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle.git";
+			requirement = {
+				kind = exactVersion;
+				version = 2.9.5;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		CB560888DFD147C6941EA726 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5306546D0316C7AD6C36C41A /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = E5A1DC4E4847A1375EDFE6BB /* Project object */;
+}
