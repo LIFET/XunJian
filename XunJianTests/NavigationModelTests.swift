@@ -5,6 +5,115 @@ import XCTest
 
 final class NavigationModelTests: XCTestCase {
     @MainActor
+    func testIndexReloadRetriesAfterAnIncrementalPublication() {
+        XCTAssertEqual(
+            FileIndexCoordinator.reloadPublicationDecision(
+                isCancelled: false,
+                capturedDatabaseGeneration: 4,
+                currentDatabaseGeneration: 4,
+                requestedReloadGeneration: 7,
+                currentReloadGeneration: 7,
+                capturedPublicationGeneration: 10,
+                currentPublicationGeneration: 11
+            ),
+            .retry
+        )
+        XCTAssertEqual(
+            FileIndexCoordinator.reloadPublicationDecision(
+                isCancelled: false,
+                capturedDatabaseGeneration: 4,
+                currentDatabaseGeneration: 4,
+                requestedReloadGeneration: 7,
+                currentReloadGeneration: 7,
+                capturedPublicationGeneration: 11,
+                currentPublicationGeneration: 11
+            ),
+            .publish
+        )
+        XCTAssertEqual(
+            FileIndexCoordinator.reloadPublicationDecision(
+                isCancelled: false,
+                capturedDatabaseGeneration: 4,
+                currentDatabaseGeneration: 5,
+                requestedReloadGeneration: 7,
+                currentReloadGeneration: 7,
+                capturedPublicationGeneration: 10,
+                currentPublicationGeneration: 10
+            ),
+            .discard
+        )
+    }
+
+    @MainActor
+    func testFileSystemChangesWaitForTheSameSourceScanToFinish() {
+        let scanningSourceID = UUID()
+        XCTAssertTrue(FileIndexCoordinator.shouldDeferFileSystemChanges(
+            scanningSourceIDs: [scanningSourceID],
+            sourceID: scanningSourceID
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldDeferFileSystemChanges(
+            scanningSourceIDs: [scanningSourceID],
+            sourceID: UUID()
+        ))
+    }
+
+    @MainActor
+    func testPreservedHiddenPathUsesTheSameCanonicalRootAlias() {
+        let sourceID = UUID()
+        let hidden = IndexedFile(
+            id: "hidden-alias", sourceID: sourceID, name: ".hidden.txt",
+            path: "/tmp/xunjian-alias/.hidden.txt",
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+
+        XCTAssertTrue(FileIndexCoordinator.shouldPreserveUnscannedFile(
+            hidden,
+            sourceRoot: URL(fileURLWithPath: "/private/tmp/xunjian-alias"),
+            includesHiddenFiles: false,
+            excludedDirectoryNames: []
+        ))
+    }
+
+    func testDescendantScopeReplacesTheDocumentPackageRowAtTheExactPath() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "Packages", path: directory.path, bookmark: Data([1])
+        )
+        let packagePath = directory.appendingPathComponent("Report.pages").path
+        let oldPackage = IndexedFile(
+            id: "old-package", sourceID: source.id, name: "Report.pages",
+            path: packagePath, fileExtension: "pages", kind: .document, size: 10,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "old package phrase"
+        )
+        let replacement = IndexedFile(
+            id: "new-package", sourceID: source.id, name: "Report.pages",
+            path: packagePath, fileExtension: "pages", kind: .document, size: 20,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "new package phrase"
+        )
+        try await database.replaceFiles(for: source.id, with: [oldPackage])
+
+        try await database.reconcileFiles(
+            for: source.id,
+            scopes: [FileIndexScope(path: packagePath, includesDescendants: true)],
+            with: [replacement]
+        )
+
+        let persistedIDs = try await database.fetchFiles().map(\.id)
+        let oldMatches = try await database.searchFiles(matching: "old")
+        let newIDs = try await database.searchFiles(matching: "new").map(\.id)
+        XCTAssertEqual(persistedIDs, [replacement.id])
+        XCTAssertTrue(oldMatches.isEmpty)
+        XCTAssertEqual(newIDs, [replacement.id])
+    }
+
+    @MainActor
     func testAISearchRevisionChangesEvenWhenResultCountCanStayTheSame() {
         let model = AppModel()
         let initialRevision = model.aiSearchRevision
@@ -12,6 +121,20 @@ final class NavigationModelTests: XCTestCase {
         model.clearAISearch()
 
         XCTAssertGreaterThan(model.aiSearchRevision, initialRevision)
+    }
+
+    @MainActor
+    func testGlobalErrorsArePresentedInFIFOOrderWithoutDuplicateEntries() {
+        let model = AppModel()
+        model.reportError("first")
+        model.reportError("second")
+        model.reportError("second")
+
+        XCTAssertEqual(model.errorMessage, "first")
+        model.clearError()
+        XCTAssertEqual(model.errorMessage, "second")
+        model.clearError()
+        XCTAssertNil(model.errorMessage)
     }
 
     @MainActor
@@ -438,22 +561,6 @@ final class NavigationModelTests: XCTestCase {
                 finishingGeneration: newGeneration
             )
         )
-    }
-
-    @MainActor
-    func testMissingFileSweepIsSkippedWhenAnyIncrementalScopeFailed() {
-        XCTAssertTrue(AppModel.shouldRemoveMissingFiles(
-            failedScopeCount: 0,
-            hasRemovalEvents: true
-        ))
-        XCTAssertFalse(AppModel.shouldRemoveMissingFiles(
-            failedScopeCount: 1,
-            hasRemovalEvents: true
-        ))
-        XCTAssertFalse(AppModel.shouldRemoveMissingFiles(
-            failedScopeCount: 0,
-            hasRemovalEvents: false
-        ))
     }
 
     @MainActor
@@ -974,6 +1081,102 @@ final class FileOperationServiceTests: XCTestCase {
             XCTAssertEqual(error, .fileIdentityChanged)
         }
         XCTAssertEqual(try String(contentsOf: url, encoding: .utf8), "replacement")
+    }
+
+    func testMoveRejectsDestinationDirectoryReplacedAfterApproval() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source.txt")
+        let destination = root.appendingPathComponent("destination", isDirectory: true)
+        try Data("source".utf8).write(to: source)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: false
+        )
+
+        let service = FileOperationService()
+        let sourceIdentity = try await service.identity(of: source)
+        let approvedDestinationIdentity = try await service.directoryIdentity(of: destination)
+        try FileManager.default.removeItem(at: destination)
+        try FileManager.default.createDirectory(
+            at: destination,
+            withIntermediateDirectories: false
+        )
+
+        do {
+            _ = try await service.move(
+                fileAt: source,
+                expectedIdentity: sourceIdentity,
+                expectedDestinationIdentity: approvedDestinationIdentity,
+                to: destination
+            )
+            XCTFail("被替换的目标目录不得接收文件")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .fileIdentityChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: destination.appendingPathComponent(source.lastPathComponent).path
+            )
+        )
+    }
+
+    func testMoveRejectsDirectoryIntoItsOwnDescendant() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source", isDirectory: true)
+        let child = source.appendingPathComponent("child", isDirectory: true)
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+
+        do {
+            _ = try await FileOperationService().move(fileAt: source, to: child)
+            XCTFail("文件夹不得移动到自身后代")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .invalidDestination)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: child.path))
+    }
+
+    func testRenameUndoRejectsReplacedParentEvenWhenFileIdentityMatches() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent", isDirectory: true)
+        let movedParent = root.appendingPathComponent("moved-parent", isDirectory: true)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let original = parent.appendingPathComponent("original.txt")
+        try Data("content".utf8).write(to: original)
+
+        let service = FileOperationService()
+        let expectedParentIdentity = try await service.directoryIdentity(of: parent)
+        let renamed = try await service.rename(fileAt: original, to: "renamed.txt")
+        let expectedFileIdentity = try await service.identity(of: renamed)
+        try FileManager.default.moveItem(at: parent, to: movedParent)
+        try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: false)
+        let replacementPath = parent.appendingPathComponent("renamed.txt")
+        try FileManager.default.linkItem(
+            at: movedParent.appendingPathComponent("renamed.txt"),
+            to: replacementPath
+        )
+
+        do {
+            _ = try await service.rename(
+                fileAt: replacementPath,
+                expectedIdentity: expectedFileIdentity,
+                expectedParentIdentity: expectedParentIdentity,
+                to: "original.txt"
+            )
+            XCTFail("撤销不得写入已被替换的父目录")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .fileIdentityChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: replacementPath.path))
+        XCTAssertFalse(
+            FileManager.default.fileExists(
+                atPath: parent.appendingPathComponent("original.txt").path
+            )
+        )
     }
 }
 
@@ -1901,6 +2104,104 @@ final class FileIndexDatabaseTests: XCTestCase {
         XCTAssertNil(links[invalidDestination.id])
     }
 
+    func testDeleteCategoryReturnsEveryMembershipIncludingHiddenFiles() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "隐藏分类",
+            path: "/tmp/隐藏分类",
+            bookmark: Data([31])
+        )
+        let visible = IndexedFile(
+            id: "visible-id", sourceID: source.id, name: "visible.txt",
+            path: "/tmp/隐藏分类/visible.txt", fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let hidden = IndexedFile(
+            id: "hidden-id", sourceID: source.id, name: ".hidden.txt",
+            path: "/tmp/隐藏分类/.hidden.txt", fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [visible, hidden])
+        let category = try await database.createCategory(name: "完整成员", symbolName: "folder")
+        try await database.setCategory(category.id, assigned: true, toFile: visible.id)
+        try await database.setCategory(category.id, assigned: true, toFile: hidden.id)
+
+        let deletedMemberships = try await database.deleteCategory(category.id)
+
+        let categoriesAfterDelete = try await database.fetchCategories()
+        XCTAssertEqual(Set(deletedMemberships), [visible.id, hidden.id])
+        XCTAssertFalse(categoriesAfterDelete.contains(where: { $0.id == category.id }))
+    }
+
+    func testMoveReconciliationIgnoresCategoryDeletedAfterSnapshot() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "来源",
+            path: "/tmp/来源",
+            bookmark: Data([32])
+        )
+        let destination = try await database.upsertSource(
+            displayName: "目标",
+            path: "/tmp/目标",
+            bookmark: Data([33])
+        )
+        let original = IndexedFile(
+            id: "old-id", sourceID: source.id, name: "a.txt", path: "/tmp/来源/a.txt",
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let moved = IndexedFile(
+            id: "new-id", sourceID: destination.id, name: "a.txt", path: "/tmp/目标/a.txt",
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [original])
+        let category = try await database.createCategory(name: "临时分类", symbolName: "folder")
+        try await database.setCategory(category.id, assigned: true, toFile: original.id)
+        let staleSnapshot = try await database.fetchCategoryIDs(forFile: original.id)
+        _ = try await database.deleteCategory(category.id)
+
+        try await database.reconcileMovedFile(
+            fromFile: original.id,
+            to: moved,
+            preserving: staleSnapshot
+        )
+
+        let filesAfterMove = try await database.fetchFiles()
+        let categoriesAfterMove = try await database.fetchCategoryIDs(forFile: moved.id)
+        XCTAssertEqual(filesAfterMove.map(\.id), [moved.id])
+        XCTAssertTrue(categoriesAfterMove.isEmpty)
+    }
+
+    func testDatabaseRejectsSymlinkAndHardLinkedStoreFiles() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target.sqlite3")
+        try Data("do-not-touch".utf8).write(to: target)
+
+        let symlinkContainer = root.appendingPathComponent("symlink", isDirectory: true)
+        try FileManager.default.createDirectory(at: symlinkContainer, withIntermediateDirectories: false)
+        let symlinkDatabase = symlinkContainer.appendingPathComponent("index.sqlite3")
+        try FileManager.default.createSymbolicLink(at: symlinkDatabase, withDestinationURL: target)
+        XCTAssertThrowsError(try FileIndexDatabase(databaseURL: symlinkDatabase))
+        XCTAssertEqual(try Data(contentsOf: target), Data("do-not-touch".utf8))
+
+        let hardLinkContainer = root.appendingPathComponent("hardlink", isDirectory: true)
+        try FileManager.default.createDirectory(at: hardLinkContainer, withIntermediateDirectories: false)
+        let hardLinkedDatabase = hardLinkContainer.appendingPathComponent("index.sqlite3")
+        try FileManager.default.linkItem(at: target, to: hardLinkedDatabase)
+        XCTAssertThrowsError(try FileIndexDatabase(databaseURL: hardLinkedDatabase))
+        XCTAssertEqual(try Data(contentsOf: target), Data("do-not-touch".utf8))
+    }
+
     func testMissingFileConsistencyCheckRemovesOnlyMissingRows() async throws {
         let container = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -1973,6 +2274,7 @@ final class FileSortOrderTests: XCTestCase {
         XCTAssertEqual(FileSortOrder.createdAt.sorted(files, ascending: true).map(\.id), ["a", "b"])
         XCTAssertEqual(FileSortOrder.size.sorted(files, ascending: true).map(\.id), ["a", "b"])
         XCTAssertEqual(FileSortOrder.kind.sorted(files, ascending: true).map(\.id), ["a", "b"])
+        XCTAssertEqual(FileSortOrder.kind.sorted(files, ascending: false).map(\.id), ["b", "a"])
     }
 }
 
@@ -2163,6 +2465,79 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertEqual(response, "你好")
         XCTAssertEqual(payload["stream"] as? Bool, true)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Accept"), "text/event-stream")
+    }
+
+    func testOpenAICompatibleProviderRejectsStreamWithoutDoneEvent() async throws {
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: StreamingAITransport(lines: [
+                #"data: {"choices":[{"delta":{"content":"partial"}}]}"#
+            ])
+        )
+
+        let stream = try await provider.chatStream([
+            AIMessage(role: .user, content: "test")
+        ])
+        var partial = ""
+        do {
+            for try await chunk in stream { partial += chunk }
+            XCTFail("Expected a stream without [DONE] to be rejected")
+        } catch let error as AIServiceError {
+            guard case .invalidResponse = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+        XCTAssertEqual(partial, "partial")
+    }
+
+    func testOpenAICompatibleProviderRejectsOversizedGeneratedText() async throws {
+        let oversized = String(repeating: "x", count: AIResponseLimits.maximumGeneratedTextBytes + 1)
+        let payload = try JSONSerialization.data(withJSONObject: [
+            "choices": [["message": ["content": oversized]]]
+        ])
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: RecordingAITransport(data: payload, statusCode: 200)
+        )
+
+        do {
+            _ = try await provider.chat([AIMessage(role: .user, content: "test")])
+            XCTFail("Expected oversized response to be rejected")
+        } catch let error as AIServiceError {
+            guard case .responseTooLarge = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
+    }
+
+    func testOpenAICompatibleProviderRejectsOversizedStreamAggregate() async throws {
+        let chunk = String(repeating: "x", count: AIResponseLimits.maximumGeneratedTextBytes / 2 + 1)
+        let line = #"data: {"choices":[{"delta":{"content":"\#(chunk)"}}]}"#
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: StreamingAITransport(lines: [line, line, "data: [DONE]"])
+        )
+
+        do {
+            let stream = try await provider.chatStream([
+                AIMessage(role: .user, content: "test")
+            ])
+            for try await _ in stream {}
+            XCTFail("Expected oversized stream to be rejected")
+        } catch let error as AIServiceError {
+            guard case .responseTooLarge = error else {
+                return XCTFail("Unexpected error: \(error)")
+            }
+        }
     }
 
     func testAIStreamParserIgnoresMetadataAndRejectsMalformedJSON() throws {

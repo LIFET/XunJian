@@ -436,6 +436,13 @@ protocol AIStreamingHTTPTransport: AIHTTPTransport {
     ) async throws -> (AsyncThrowingStream<String, any Error>, HTTPURLResponse)
 }
 
+enum AIResponseLimits {
+    static let maximumJSONBytes = 262_144
+    static let maximumStreamBytes = 1_048_576
+    static let maximumStreamLineBytes = 262_144
+    static let maximumGeneratedTextBytes = 131_072
+}
+
 struct URLSessionAITransport: AIHTTPTransport {
     private let session: URLSession
 
@@ -452,9 +459,24 @@ struct URLSessionAITransport: AIHTTPTransport {
     }
 
     func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        let (data, response) = try await session.data(for: request)
+        let (bytes, response) = try await session.bytes(for: request)
         guard let response = response as? HTTPURLResponse else {
             throw AIServiceError.invalidResponse
+        }
+        guard response.expectedContentLength < 0
+                || response.expectedContentLength <= Int64(AIResponseLimits.maximumJSONBytes) else {
+            throw AIServiceError.responseTooLarge
+        }
+        var data = Data()
+        data.reserveCapacity(
+            min(max(Int(response.expectedContentLength), 0), AIResponseLimits.maximumJSONBytes)
+        )
+        for try await byte in bytes {
+            try Task.checkCancellation()
+            guard data.count < AIResponseLimits.maximumJSONBytes else {
+                throw AIServiceError.responseTooLarge
+            }
+            data.append(byte)
         }
         return (data, response)
     }
@@ -471,8 +493,33 @@ extension URLSessionAITransport: AIStreamingHTTPTransport {
         let stream = AsyncThrowingStream<String, any Error> { continuation in
             let producer = Task {
                 do {
-                    for try await line in bytes.lines {
+                    var totalBytes = 0
+                    var lineBytes = Data()
+                    for try await byte in bytes {
                         try Task.checkCancellation()
+                        totalBytes += 1
+                        guard totalBytes <= AIResponseLimits.maximumStreamBytes else {
+                            throw AIServiceError.responseTooLarge
+                        }
+                        if byte == 0x0A {
+                            if lineBytes.last == 0x0D { lineBytes.removeLast() }
+                            guard let line = String(data: lineBytes, encoding: .utf8) else {
+                                throw AIServiceError.invalidResponse
+                            }
+                            continuation.yield(line)
+                            lineBytes.removeAll(keepingCapacity: true)
+                        } else {
+                            guard lineBytes.count < AIResponseLimits.maximumStreamLineBytes else {
+                                throw AIServiceError.responseTooLarge
+                            }
+                            lineBytes.append(byte)
+                        }
+                    }
+                    if !lineBytes.isEmpty {
+                        if lineBytes.last == 0x0D { lineBytes.removeLast() }
+                        guard let line = String(data: lineBytes, encoding: .utf8) else {
+                            throw AIServiceError.invalidResponse
+                        }
                         continuation.yield(line)
                     }
                     continuation.finish()
@@ -500,6 +547,7 @@ enum AIServiceError: LocalizedError, Sendable {
     case invalidSelection
     case invalidConversation
     case noCategories
+    case responseTooLarge
 
     var errorDescription: String? {
         switch self {
@@ -514,6 +562,7 @@ enum AIServiceError: LocalizedError, Sendable {
         case .invalidSelection: AppLanguage.localized("请选择 1 到 8 个文件。", english: "Select 1 to 8 files.")
         case .invalidConversation: AppLanguage.localized("AI 请求必须包含一条系统指令和一条用户消息。", english: "An AI request must contain one system instruction and one user message.")
         case .noCategories: AppLanguage.localized("请先创建至少一个分类，再使用 AI 分类。", english: "Create at least one category before using AI classification.")
+        case .responseTooLarge: AppLanguage.localized("AI 响应超过安全大小限制。", english: "The AI response exceeded the safe size limit.")
         }
     }
 }
@@ -562,6 +611,9 @@ private struct OpenAICompatibleProvider: Sendable {
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                       !content.isEmpty else {
                     throw AIServiceError.invalidResponse
+                }
+                guard content.utf8.count <= AIResponseLimits.maximumGeneratedTextBytes else {
+                    throw AIServiceError.responseTooLarge
                 }
                 return content
             } catch is CancellationError {
@@ -633,6 +685,7 @@ private struct OpenAICompatibleProvider: Sendable {
         return AsyncThrowingStream { continuation in
             let parser = Task {
                 var receivedContent = false
+                var receivedContentBytes = 0
                 do {
                     for try await line in lines {
                         try Task.checkCancellation()
@@ -646,12 +699,20 @@ private struct OpenAICompatibleProvider: Sendable {
                             continuation.finish()
                             return
                         case let .content(content):
+                            let contentBytes = content.utf8.count
+                            guard contentBytes
+                                    <= AIResponseLimits.maximumGeneratedTextBytes
+                                        - receivedContentBytes else {
+                                throw AIServiceError.responseTooLarge
+                            }
+                            receivedContentBytes += contentBytes
                             receivedContent = true
                             continuation.yield(content)
                         }
                     }
-                    guard receivedContent else { throw AIServiceError.invalidResponse }
-                    continuation.finish()
+                    // A clean stream must end with the protocol sentinel.
+                    // EOF after partial content is a truncated response, not success.
+                    throw AIServiceError.invalidResponse
                 } catch is CancellationError {
                     continuation.finish(throwing: CancellationError())
                 } catch {

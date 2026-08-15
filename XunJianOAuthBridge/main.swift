@@ -78,6 +78,32 @@ private enum OAuthVerificationProofStore {
         runtimeURL: URL,
         credentialURL: URL
     ) -> Bool {
+        // One retry: the credential file can be rewritten by a concurrent
+        // token refresh between `makeProof`'s identity read and the final
+        // verification read, which would otherwise fail a verification that
+        // already succeeded on the wire.
+        for attempt in 0...1 {
+            if persistOnce(
+                provider: provider,
+                runtimeVersion: runtimeVersion,
+                runtimeURL: runtimeURL,
+                credentialURL: credentialURL
+            ) {
+                return true
+            }
+            if attempt == 0 {
+                sweepStaleTemporaryProofFiles(near: credentialURL)
+            }
+        }
+        return false
+    }
+
+    private static func persistOnce(
+        provider: OAuthBridgeProvider,
+        runtimeVersion: String,
+        runtimeURL: URL,
+        credentialURL: URL
+    ) -> Bool {
         sweepStaleTemporaryProofFiles(near: credentialURL)
         guard let proof = (try? makeProof(
             provider: provider,
@@ -1187,14 +1213,14 @@ private actor OAuthBridgeCoordinator {
                 }
             }
             codexCredentialState = .signedIn
+            // Connection verification depends on the pinned model being
+            // advertised by the server. When the pinned model is missing
+            // from the live catalog but the catalog is non-empty, fall back
+            // to the first listed model so verification does not silently
+            // fail. An empty catalog keeps the previous behavior: the
+            // pinned model attempt fails closed.
             let generationModel: String
             if fallbackToFirstListedModel {
-                // Connection verification depends on the pinned model being
-                // advertised by the server. When the pinned model is missing
-                // from the live catalog but the catalog is non-empty, fall
-                // back to the first listed model so verification does not
-                // silently fail. An empty catalog keeps the previous behavior:
-                // the pinned model attempt fails closed.
                 let listedModels = try await runtime.client.listModels()
                 if listedModels.contains(where: { $0.id == model }) {
                     generationModel = model

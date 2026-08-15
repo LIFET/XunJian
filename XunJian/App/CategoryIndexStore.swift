@@ -18,30 +18,17 @@ final class CategoryIndexStore: ObservableObject {
 
     func replaceAll(
         categories: [FileCategory],
-        files: [IndexedFile],
-        links: [String: Set<UUID>]
+        links: [String: Set<UUID>],
+        categoriesByFileID: [String: [FileCategory]],
+        fileCountsByCategoryID: [UUID: Int],
+        filesByCategoryID: [UUID: [IndexedFile]]
     ) {
         self.categories = categories
         categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
         fileCategoryLinks = links
-        var categoryLists: [String: [FileCategory]] = [:]
-        categoryLists.reserveCapacity(links.count)
-        var categoryCounts: [UUID: Int] = [:]
-        for (fileID, assignedIDs) in links where !assignedIDs.isEmpty {
-            categoryLists[fileID] = assignedIDs.compactMap { categoryByID[$0] }
-            for categoryID in assignedIDs {
-                categoryCounts[categoryID, default: 0] += 1
-            }
-        }
-        var categoryFiles: [UUID: [IndexedFile]] = [:]
-        for file in files {
-            for categoryID in links[file.id] ?? [] {
-                categoryFiles[categoryID, default: []].append(file)
-            }
-        }
-        categoriesByFileID = categoryLists
-        fileCountsByCategoryID = categoryCounts
-        filesByCategoryID = categoryFiles
+        self.categoriesByFileID = categoriesByFileID
+        self.fileCountsByCategoryID = fileCountsByCategoryID
+        self.filesByCategoryID = filesByCategoryID
         revision &+= 1
     }
 
@@ -70,6 +57,44 @@ final class CategoryIndexStore: ObservableObject {
         }
         filesByCategoryID[category.id] = list
         fileCountsByCategoryID[category.id] = list.count
+        revision &+= 1
+    }
+
+    func applyAssignments(
+        assigned: Bool,
+        files: [IndexedFile],
+        category: FileCategory
+    ) {
+        guard !files.isEmpty else { return }
+        let changedIDs = Set(files.map(\.id))
+
+        for file in files {
+            var assignedIDs = fileCategoryLinks[file.id] ?? []
+            if assigned {
+                assignedIDs.insert(category.id)
+            } else {
+                assignedIDs.remove(category.id)
+            }
+            if assignedIDs.isEmpty {
+                fileCategoryLinks.removeValue(forKey: file.id)
+                categoriesByFileID.removeValue(forKey: file.id)
+            } else {
+                fileCategoryLinks[file.id] = assignedIDs
+                categoriesByFileID[file.id] = assignedIDs.compactMap { categoryByID[$0] }
+            }
+        }
+
+        var categoryFiles = filesByCategoryID[category.id] ?? []
+        if assigned {
+            var existingIDs = Set(categoryFiles.map(\.id))
+            for file in files where existingIDs.insert(file.id).inserted {
+                categoryFiles.append(file)
+            }
+        } else {
+            categoryFiles.removeAll { changedIDs.contains($0.id) }
+        }
+        filesByCategoryID[category.id] = categoryFiles
+        fileCountsByCategoryID[category.id] = categoryFiles.count
         revision &+= 1
     }
 

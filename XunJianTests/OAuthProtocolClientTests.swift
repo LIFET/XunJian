@@ -1937,6 +1937,52 @@ final class OAuthProtocolClientTests: XCTestCase {
         await client.close()
     }
 
+    func testCodexGenerationRejectsMissingRequestedModelBeforeStartingThread() async throws {
+        let transport = ScriptedLineTransport()
+        let peer = JSONLineRPCPeer(
+            transport: transport,
+            dialect: .codex,
+            allowedNotifications: CodexAppServerClient.allowedNotifications
+        )
+        let client = CodexAppServerClient(
+            peer: peer,
+            workingDirectoryURL: URL(fileURLWithPath: "/private/tmp/xunjian-empty"),
+            restrictedReadSupport: .supported
+        )
+        let server = Task {
+            let initialize = try await transport.nextClientObject().objectValue!
+            try await transport.sendServerObject(.object([
+                "id": initialize["id"]!, "result": .object([:])
+            ]))
+            _ = try await transport.nextClientObject()
+            let listModels = try await transport.nextClientObject().objectValue!
+            try await transport.sendServerObject(.object([
+                "id": listModels["id"]!,
+                "result": .object([
+                    "data": .array([
+                        .object(["id": .string("different-model"), "isDefault": .bool(true)])
+                    ]),
+                    "nextCursor": .null
+                ])
+            ]))
+        }
+
+        try await client.initialize()
+        do {
+            _ = try await client.generateText(
+                model: "gpt-5.6-sol",
+                prompt: "system\nuser"
+            )
+            XCTFail("Expected the unavailable requested model to be rejected")
+        } catch let error as CodexAppServerError {
+            XCTAssertEqual(error, .invalidResponse)
+        }
+        try await server.value
+        let outgoingCount = await transport.queuedOutgoingCount()
+        XCTAssertEqual(outgoingCount, 0)
+        await client.close()
+    }
+
     func testCodexGenerationRejectsAggregateTranscriptDriftAndInterruptsExactTurn() async throws {
         enum Scenario: String, CaseIterable, Sendable {
             case deltaMismatch

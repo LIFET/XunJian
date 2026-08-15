@@ -2,6 +2,64 @@ import XCTest
 @testable import XunJian
 
 final class RemainingReviewTests: XCTestCase {
+    func testBrowseFilterCombinesAIKeywordKindSizeAndDate() {
+        let oldDocument = makeFile(
+            name: "old.pdf",
+            path: "/docs/old.pdf",
+            modifiedAt: Date(timeIntervalSince1970: 100),
+            size: 20
+        )
+        let currentDocument = makeFile(
+            name: "current.pdf",
+            path: "/docs/current.pdf",
+            modifiedAt: Date(timeIntervalSince1970: 300),
+            size: 200
+        )
+        let code = IndexedFile(
+            id: "code",
+            sourceID: UUID(),
+            name: "main.swift",
+            path: "/docs/main.swift",
+            fileExtension: "swift",
+            kind: .code,
+            size: 300,
+            createdAt: nil,
+            modifiedAt: Date(timeIntervalSince1970: 300),
+            indexedAt: Date()
+        )
+
+        let result = AppModel.filesMatchingBrowseFilters(
+            indexedFiles: [oldDocument, currentDocument, code],
+            aiSearchResults: [oldDocument, currentDocument, code],
+            searchResults: [currentDocument, code],
+            query: "current",
+            kind: .document,
+            minimumSize: 100,
+            minimumDate: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(result.map(\.id), [currentDocument.id])
+    }
+
+    func testExportCategoryNamesUsesOnlyRequestedFilesAndStableOrdering() {
+        let first = makeFile(name: "first.pdf", path: "/docs/first.pdf")
+        let second = makeFile(name: "second.pdf", path: "/docs/second.pdf")
+        let finance = UUID()
+        let work = UUID()
+
+        let result = FileListExport.categoryNames(
+            for: [first],
+            links: [
+                first.id: [work, finance],
+                second.id: [work]
+            ],
+            namesByID: [finance: "Finance", work: "Work"],
+            orderByID: [finance: 0, work: 1]
+        )
+
+        XCTAssertEqual(result, [first.id: ["Finance", "Work"]])
+    }
+
     func testCSVFieldsNeutralizeSpreadsheetFormulas() {
         XCTAssertEqual(FileListExport.csvField("=1+1"), "'=1+1")
         XCTAssertEqual(FileListExport.csvField("+SUM(A1:A2)"), "'+SUM(A1:A2)")
@@ -271,6 +329,222 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(result.groups.count, 1)
         XCTAssertEqual(Set(result.groups[0].files.map(\.name)), ["a.txt", "b.txt"])
         XCTAssertEqual(result.unreadCount, 1)
+    }
+
+    func testDuplicateCleanupRevalidatesCurrentBytes() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-dup-revalidate-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let left = root.appendingPathComponent("a.txt")
+        let right = root.appendingPathComponent("b.txt")
+        try Data("abc".utf8).write(to: left)
+        try Data("abc".utf8).write(to: right)
+        let files = [
+            makeFile(name: "a.txt", path: left.path, size: 3),
+            makeFile(name: "b.txt", path: right.path, size: 3)
+        ]
+        let initialResult = try await DuplicateFileFinder.find(in: files)
+        let group = try XCTUnwrap(initialResult.groups.first)
+        let initiallyMatches = try await DuplicateFileFinder.stillMatches(group)
+        XCTAssertTrue(initiallyMatches)
+
+        try Data("xyz".utf8).write(to: right)
+        let matchesAfterMutation = try await DuplicateFileFinder.stillMatches(group)
+        XCTAssertFalse(matchesAfterMutation)
+    }
+
+    func testDuplicateCoordinatedDeleteRejectsContentChangedAfterHash() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-dup-version-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let keeperURL = root.appendingPathComponent("keeper.txt")
+        let candidateURL = root.appendingPathComponent("candidate.txt")
+        try Data("same".utf8).write(to: keeperURL)
+        try Data("same".utf8).write(to: candidateURL)
+        let sourceID = UUID()
+        let scanned = try await FileScanner().scan(sourceID: sourceID, rootURL: root)
+        let candidate = try XCTUnwrap(scanned.first { $0.url == candidateURL })
+        let keeperFingerprint = try await DuplicateFileFinder.fingerprint(fileAt: keeperURL)
+        let candidateFingerprint = try await DuplicateFileFinder.fingerprint(fileAt: candidateURL)
+
+        try Data("changed".utf8).write(to: candidateURL)
+
+        do {
+            _ = try await FileOperationService().moveDuplicateToTrash(
+                indexedFile: candidate,
+                expectedVersion: candidateFingerprint.version,
+                matching: keeperURL,
+                expectedReferenceVersion: keeperFingerprint.version
+            )
+            XCTFail("Expected changed candidate to be rejected")
+        } catch let error as FileOperationError {
+            XCTAssertEqual(error, .fileIdentityChanged)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keeperURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: candidateURL.path))
+    }
+
+    func testExcludedRescanPreservesFileAndCategoryRelationship() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-preserved-row-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(databaseURL: root.appendingPathComponent("index.sqlite3"))
+        let source = try await database.upsertSource(
+            displayName: "Documents",
+            path: root.path,
+            bookmark: Data([1])
+        )
+        let visible = IndexedFile(
+            id: "visible", sourceID: source.id, name: "visible.txt",
+            path: root.appendingPathComponent("visible.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let excluded = IndexedFile(
+            id: "excluded", sourceID: source.id, name: "secret.txt",
+            path: root.appendingPathComponent("Private/secret.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [visible, excluded])
+        let category = try await database.createCategory(name: "Keep", symbolName: "folder")
+        try await database.setCategory(category.id, assigned: true, toFile: excluded.id)
+
+        try await database.replaceFiles(
+            for: source.id,
+            with: [visible],
+            preservedUnscannedFileIDs: [excluded.id]
+        )
+
+        let persistedIDs = Set(try await database.fetchFiles().map(\.id))
+        let persistedCategoryIDs = try await database.fetchCategoryIDs(forFile: excluded.id)
+        XCTAssertEqual(persistedIDs, [visible.id, excluded.id])
+        XCTAssertEqual(persistedCategoryIDs, [category.id])
+    }
+
+    func testMetadataRefreshPreservesStoredTextInFTS() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-preserved-fts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(databaseURL: root.appendingPathComponent("index.sqlite3"))
+        let source = try await database.upsertSource(
+            displayName: "Documents", path: root.path, bookmark: Data([1])
+        )
+        let file = IndexedFile(
+            id: "document", sourceID: source.id, name: "notes.txt",
+            path: root.appendingPathComponent("notes.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [file])
+        try await database.updateTextContents([
+            FileTextContentUpdate(fileID: file.id, textContent: "persistent sentinel phrase")
+        ])
+
+        try await database.replaceFiles(
+            for: source.id,
+            with: [file],
+            preservesExistingText: true
+        )
+
+        let persistedText = try await database.fetchTextContent(forFileID: file.id)
+        let matchingIDs = try await database.searchFiles(matching: "sentinel").map(\.id)
+        XCTAssertEqual(persistedText, "persistent sentinel phrase")
+        XCTAssertEqual(matchingIDs, [file.id])
+    }
+
+    func testStagedTextContentsCommitAtomically() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-staged-fts-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(databaseURL: root.appendingPathComponent("index.sqlite3"))
+        let source = try await database.upsertSource(
+            displayName: "Documents", path: root.path, bookmark: Data([1])
+        )
+        let file = IndexedFile(
+            id: "document", sourceID: source.id, name: "notes.txt",
+            path: root.appendingPathComponent("notes.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [file])
+        try await database.updateTextContents([
+            FileTextContentUpdate(fileID: file.id, textContent: "old complete phrase")
+        ])
+        let scanID = UUID()
+        try await database.stageTextContents([
+            FileTextContentUpdate(fileID: file.id, textContent: "new complete phrase")
+        ], scanID: scanID)
+
+        let oldBeforeCommit = try await database.searchFiles(matching: "old").map(\.id)
+        let newBeforeCommit = try await database.searchFiles(matching: "new").map(\.id)
+        XCTAssertEqual(oldBeforeCommit, [file.id])
+        XCTAssertTrue(newBeforeCommit.isEmpty)
+
+        try await database.commitStagedTextContents(scanID: scanID, sourceID: source.id)
+
+        let oldAfterCommit = try await database.searchFiles(matching: "old").map(\.id)
+        let newAfterCommit = try await database.searchFiles(matching: "new").map(\.id)
+        XCTAssertTrue(oldAfterCommit.isEmpty)
+        XCTAssertEqual(newAfterCommit, [file.id])
+    }
+
+    func testStagedTextCommitPreservesUnscannedFileTextAndFTS() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-staged-preserved-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(databaseURL: root.appendingPathComponent("index.sqlite3"))
+        let source = try await database.upsertSource(
+            displayName: "Documents", path: root.path, bookmark: Data([1])
+        )
+        let visible = IndexedFile(
+            id: "visible", sourceID: source.id, name: "visible.txt",
+            path: root.appendingPathComponent("visible.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let preserved = IndexedFile(
+            id: "preserved", sourceID: source.id, name: ".preserved.txt",
+            path: root.appendingPathComponent(".preserved.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [visible, preserved])
+        try await database.updateTextContents([
+            FileTextContentUpdate(fileID: visible.id, textContent: "old visible phrase"),
+            FileTextContentUpdate(fileID: preserved.id, textContent: "preserved sentinel phrase")
+        ])
+        try await database.replaceFiles(
+            for: source.id,
+            with: [visible],
+            preservesExistingText: true,
+            preservedUnscannedFileIDs: [preserved.id]
+        )
+        let scanID = UUID()
+        try await database.stageTextContents([
+            FileTextContentUpdate(fileID: visible.id, textContent: "new visible phrase")
+        ], scanID: scanID)
+
+        try await database.commitStagedTextContents(
+            scanID: scanID,
+            sourceID: source.id,
+            preservedUnscannedFileIDs: [preserved.id]
+        )
+
+        let preservedText = try await database.fetchTextContent(forFileID: preserved.id)
+        let sentinelIDs = try await database.searchFiles(matching: "sentinel").map(\.id)
+        let newIDs = try await database.searchFiles(matching: "new").map(\.id)
+        let oldIDs = try await database.searchFiles(matching: "old").map(\.id)
+        XCTAssertEqual(preservedText, "preserved sentinel phrase")
+        XCTAssertEqual(sentinelIDs, [preserved.id])
+        XCTAssertEqual(newIDs, [visible.id])
+        XCTAssertTrue(oldIDs.isEmpty)
     }
 
     func testDocumentPackageIsIndexedAsOneFile() async throws {

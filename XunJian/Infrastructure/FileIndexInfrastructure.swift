@@ -332,10 +332,19 @@ actor FileScanner {
     private let textExtractor: TextExtractionService
     private let resourceValuesLoader: ResourceValuesLoader
 
-    /// Paths that could not be read during the most recent scan. A single
-    /// permission-denied subfolder must not fail the whole scan, but the user
-    /// still needs to know the index is incomplete.
-    private(set) var lastScanSkippedPaths: [String] = []
+    /// Per-scan directory resolution memo. `FilePathCanonicalizer.path` pays
+    /// a stat + realpath syscall per call; the ancestor resolution is
+    /// identical for every file in the same directory, and a scan visits
+    /// thousands of files per directory — resolving each directory once
+    /// removes one realpath syscall per indexed file.
+    private var canonicalDirectoryCache: [String: String] = [:]
+
+    private func beginCanonicalizationCache() {
+        canonicalDirectoryCache.removeAll(keepingCapacity: true)
+    }
+
+    /// Required metadata for a complete scan. Any unreadable entry makes the
+    /// snapshot incomplete, so callers preserve the previous index.
     private static let resourceKeys: [URLResourceKey] = [
         .nameKey,
         .isDirectoryKey,
@@ -377,7 +386,7 @@ actor FileScanner {
         extractsText: Bool = true,
         progress: ProgressHandler? = nil
     ) async throws -> [IndexedFile] {
-        lastScanSkippedPaths = []
+        beginCanonicalizationCache()
         return try enumerate(
             sourceID: sourceID,
             rootURL: rootURL,
@@ -422,9 +431,18 @@ actor FileScanner {
                     // so the blocking work is detached to keep the pool free
                     // for UI tasks instead of stalling the whole app during
                     // large scans.
-                    let text = await Task.detached(priority: .userInitiated) {
-                        textExtractor.extractText(from: file.url)
-                    }.value
+                    let extractionTask = Task.detached(priority: .userInitiated) {
+                        textExtractor.extractText(
+                            from: file.url,
+                            isCancelled: { Task.isCancelled }
+                        )
+                    }
+                    let text = await withTaskCancellationHandler {
+                        await extractionTask.value
+                    } onCancel: {
+                        extractionTask.cancel()
+                    }
+                    try Task.checkCancellation()
                     return (
                         FileTextContentUpdate(fileID: file.id, textContent: text),
                         file.path
@@ -467,7 +485,7 @@ actor FileScanner {
         includesHiddenFiles: Bool = false,
         extractsText: Bool = true
     ) async throws -> IncrementalScanSnapshot {
-        lastScanSkippedPaths = []
+        beginCanonicalizationCache()
         let canonicalRootPath = canonicalPath(rootURL.path)
         var scopes: Set<FileIndexScope> = []
 
@@ -655,7 +673,6 @@ actor FileScanner {
             }
         }
 
-        lastScanSkippedPaths.append(contentsOf: skippedPaths)
         guard Self.isComplete(skippedPaths: skippedPaths) else {
             // Never return a partial directory snapshot. A full scan keeps its
             // previous index, while an incremental scan marks this scope as
@@ -734,7 +751,29 @@ actor FileScanner {
     }
 
     private func canonicalPath(_ path: String) -> String {
-        FilePathCanonicalizer.path(path)
+        // Files are never symlinks here (the enumerator skips them), so the
+        // canonical form is the canonical parent plus the final component.
+        // Resolving the parent once per directory removes one stat +
+        // realpath syscall per file from large scans.
+        let nsPath = path as NSString
+        let parent = nsPath.deletingLastPathComponent
+        if let cachedParent = canonicalDirectoryCache[parent] {
+            return cachedParent == "/"
+                ? "/" + nsPath.lastPathComponent
+                : cachedParent + "/" + nsPath.lastPathComponent
+        }
+        let resolved = FilePathCanonicalizer.path(path)
+        let resolvedParent = FilePathCanonicalizer.path(parent)
+        let joined = resolvedParent == "/"
+            ? "/" + nsPath.lastPathComponent
+            : resolvedParent + "/" + nsPath.lastPathComponent
+        // Guard against an exotic case where the file's own canonicalization
+        // differs from parent+name: fall back to the full resolution.
+        guard joined == resolved else {
+            return resolved
+        }
+        canonicalDirectoryCache[parent] = resolvedParent
+        return resolved
     }
 
     private static func isDocumentPackage(_ url: URL, values: URLResourceValues) -> Bool {
@@ -787,11 +826,15 @@ actor FileIndexDatabase {
 
     init(databaseURL: URL) throws {
         let databaseDirectory = databaseURL.deletingLastPathComponent()
+        try Self.validateDirectoryIfPresent(databaseDirectory)
         try FileManager.default.createDirectory(at: databaseDirectory, withIntermediateDirectories: true)
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o700],
-            ofItemAtPath: databaseDirectory.path
-        )
+        try Self.validateDirectoryIfPresent(databaseDirectory)
+        guard chmod(databaseDirectory.path, 0o700) == 0 else {
+            throw FileIndexError.database("无法保护索引目录")
+        }
+        try Self.createDatabaseFileIfMissing(at: databaseURL)
+        try Self.validateDatabaseFilesIfPresent(at: databaseURL)
+        let expectedDatabaseIdentity = try Self.databaseFileIdentity(at: databaseURL)
 
         var openedDatabase: OpaquePointer?
         let openCode = sqlite3_open_v2(
@@ -808,10 +851,9 @@ actor FileIndexDatabase {
         }
 
         do {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: databaseURL.path
-            )
+            guard try Self.databaseFileIdentity(at: databaseURL) == expectedDatabaseIdentity else {
+                throw FileIndexError.database("索引文件在打开期间被替换")
+            }
             try Self.execute("PRAGMA foreign_keys = ON;", on: openedDatabase)
             try Self.execute("PRAGMA journal_mode = WAL;", on: openedDatabase)
             try Self.execute("PRAGMA synchronous = NORMAL;", on: openedDatabase)
@@ -964,7 +1006,8 @@ actor FileIndexDatabase {
         for sourceID: UUID,
         with files: [IndexedFile],
         deletesUnscanned: Bool = true,
-        preservesExistingText: Bool = false
+        preservesExistingText: Bool = false,
+        preservedUnscannedFileIDs: Set<String> = []
     ) throws {
         let database = connection.pointer
         try Self.execute("BEGIN IMMEDIATE TRANSACTION;", on: database)
@@ -975,7 +1018,11 @@ actor FileIndexDatabase {
                 CREATE TEMP TABLE IF NOT EXISTS scanned_file_ids (
                     id TEXT PRIMARY KEY
                 );
+                CREATE TEMP TABLE IF NOT EXISTS preserved_file_ids (
+                    id TEXT PRIMARY KEY
+                );
                 DELETE FROM scanned_file_ids;
+                DELETE FROM preserved_file_ids;
                 """,
                 on: database
             )
@@ -1007,6 +1054,17 @@ actor FileIndexDatabase {
                 "INSERT OR IGNORE INTO scanned_file_ids (id) VALUES (?);"
             )
             defer { sqlite3_finalize(scannedIDStatement) }
+            let preservedIDStatement = try prepare(
+                "INSERT OR IGNORE INTO preserved_file_ids (id) VALUES (?);"
+            )
+            defer { sqlite3_finalize(preservedIDStatement) }
+
+            for fileID in preservedUnscannedFileIDs {
+                sqlite3_reset(preservedIDStatement)
+                sqlite3_clear_bindings(preservedIDStatement)
+                try bind(fileID, at: 1, to: preservedIDStatement)
+                try stepDone(preservedIDStatement)
+            }
 
             for file in files {
                 sqlite3_reset(insertStatement)
@@ -1049,7 +1107,8 @@ actor FileIndexDatabase {
                     """
                     DELETE FROM files
                     WHERE source_id = ?
-                      AND id NOT IN (SELECT id FROM scanned_file_ids);
+                      AND id NOT IN (SELECT id FROM scanned_file_ids)
+                      AND id NOT IN (SELECT id FROM preserved_file_ids);
                     """
                 )
                 do {
@@ -1057,6 +1116,23 @@ actor FileIndexDatabase {
                     try bind(sourceID.uuidString, at: 1, to: deleteStatement)
                     try stepDone(deleteStatement)
                 }
+            }
+
+            let persistedTextStatement = try prepare(
+                """
+                SELECT files.id, files.text_content
+                FROM files
+                JOIN scanned_file_ids ON scanned_file_ids.id = files.id;
+                """
+            )
+            defer { sqlite3_finalize(persistedTextStatement) }
+            var persistedTextByFileID: [String: String] = [:]
+            while sqlite3_step(persistedTextStatement) == SQLITE_ROW {
+                guard sqlite3_column_type(persistedTextStatement, 1) != SQLITE_NULL else {
+                    continue
+                }
+                persistedTextByFileID[text(persistedTextStatement, column: 0)] =
+                    text(persistedTextStatement, column: 1)
             }
 
             let categoryTextByFileID = try categorySearchText(for: sourceID)
@@ -1080,7 +1156,9 @@ actor FileIndexDatabase {
                     to: searchStatement
                 )
                 try bind(
-                    SearchIndexText.normalized(file.textContent ?? ""),
+                    SearchIndexText.normalized(
+                        file.textContent ?? persistedTextByFileID[file.id] ?? ""
+                    ),
                     at: 5,
                     to: searchStatement
                 )
@@ -1130,26 +1208,29 @@ actor FileIndexDatabase {
             defer { sqlite3_finalize(prefixStatement) }
 
             for scope in Set(scopes) {
-                let statement = scope.includesDescendants
-                    ? prefixStatement
-                    : exactStatement
-                sqlite3_reset(statement)
-                sqlite3_clear_bindings(statement)
-                try bind(sourceID.uuidString, at: 1, to: statement)
+                sqlite3_reset(exactStatement)
+                sqlite3_clear_bindings(exactStatement)
+                try bind(sourceID.uuidString, at: 1, to: exactStatement)
+                try bind(scope.path, at: 2, to: exactStatement)
+                while sqlite3_step(exactStatement) == SQLITE_ROW {
+                    existingFileIDs.insert(text(exactStatement, column: 0))
+                }
+
                 if scope.includesDescendants {
+                    sqlite3_reset(prefixStatement)
+                    sqlite3_clear_bindings(prefixStatement)
+                    try bind(sourceID.uuidString, at: 1, to: prefixStatement)
                     let prefix = scope.path.hasSuffix("/")
                         ? scope.path
                         : scope.path + "/"
                     try bind(
                         Self.escapedLikePattern(prefix) + "%",
                         at: 2,
-                        to: statement
+                        to: prefixStatement
                     )
-                } else {
-                    try bind(scope.path, at: 2, to: statement)
-                }
-                while sqlite3_step(statement) == SQLITE_ROW {
-                    existingFileIDs.insert(text(statement, column: 0))
+                    while sqlite3_step(prefixStatement) == SQLITE_ROW {
+                        existingFileIDs.insert(text(prefixStatement, column: 0))
+                    }
                 }
             }
 
@@ -1302,6 +1383,27 @@ actor FileIndexDatabase {
         return files
     }
 
+    func fetchFiles(forSourceID sourceID: UUID) throws -> [IndexedFile] {
+        let statement = try prepare(
+            """
+            SELECT id, source_id, name, path, extension, file_type, size,
+                   created_at, modified_at, indexed_at
+            FROM files
+            WHERE source_id = ?
+            ORDER BY modified_at DESC, name COLLATE NOCASE ASC;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(sourceID.uuidString, at: 1, to: statement)
+
+        var files: [IndexedFile] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let file = rowFile(from: statement) else { continue }
+            files.append(file)
+        }
+        return files
+    }
+
     /// Fetches only the given rows, keeping their canonical ordering
     /// (modified_at DESC, name NOCASE ASC) so callers can merge them into the
     /// in-memory model without refetching the whole table (H2 incremental).
@@ -1400,6 +1502,117 @@ actor FileIndexDatabase {
         }
     }
 
+    /// Stages a full scan's content in SQLite so cancellation never exposes a
+    /// half-old, half-new searchable snapshot. The table is connection-local;
+    /// an app crash discards it automatically.
+    func stageTextContents(_ updates: [FileTextContentUpdate], scanID: UUID) throws {
+        guard !updates.isEmpty else { return }
+        try transaction {
+            try Self.execute(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS staged_text_contents (
+                    scan_id TEXT NOT NULL,
+                    file_id TEXT NOT NULL,
+                    text_content TEXT,
+                    PRIMARY KEY (scan_id, file_id)
+                );
+                """,
+                on: connection.pointer
+            )
+            let statement = try prepare(
+                """
+                INSERT INTO staged_text_contents (scan_id, file_id, text_content)
+                VALUES (?, ?, ?)
+                ON CONFLICT(scan_id, file_id) DO UPDATE SET
+                    text_content = excluded.text_content;
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            for update in updates {
+                sqlite3_reset(statement)
+                sqlite3_clear_bindings(statement)
+                try bind(scanID.uuidString, at: 1, to: statement)
+                try bind(update.fileID, at: 2, to: statement)
+                try bind(update.textContent, at: 3, to: statement)
+                try stepDone(statement)
+            }
+        }
+    }
+
+    func commitStagedTextContents(
+        scanID: UUID,
+        sourceID: UUID,
+        preservedUnscannedFileIDs: Set<String> = []
+    ) throws {
+        try transaction {
+            try ensureStagedTextContentTable()
+
+            let preservedTable = "preserved_text_content_ids"
+            try Self.execute(
+                "CREATE TEMP TABLE IF NOT EXISTS \(preservedTable) "
+                    + "(file_id TEXT PRIMARY KEY) WITHOUT ROWID;",
+                on: connection.pointer
+            )
+            try Self.execute("DELETE FROM \(preservedTable);", on: connection.pointer)
+            let preserveStatement = try prepare(
+                "INSERT OR IGNORE INTO \(preservedTable) (file_id) VALUES (?);"
+            )
+            defer { sqlite3_finalize(preserveStatement) }
+            for fileID in preservedUnscannedFileIDs {
+                sqlite3_reset(preserveStatement)
+                sqlite3_clear_bindings(preserveStatement)
+                try bind(fileID, at: 1, to: preserveStatement)
+                try stepDone(preserveStatement)
+            }
+
+            let fileIDs = try fileIDsExcludingPreservedText(forSourceID: sourceID)
+
+            let clearStatement = try prepare(
+                """
+                UPDATE files
+                SET text_content = NULL
+                WHERE source_id = ?
+                  AND id NOT IN (SELECT file_id FROM preserved_text_content_ids);
+                """
+            )
+            defer { sqlite3_finalize(clearStatement) }
+            try bind(sourceID.uuidString, at: 1, to: clearStatement)
+            try stepDone(clearStatement)
+
+            let applyStatement = try prepare(
+                """
+                UPDATE files
+                SET text_content = (
+                    SELECT staged_text_contents.text_content
+                    FROM staged_text_contents
+                    WHERE staged_text_contents.scan_id = ?
+                      AND staged_text_contents.file_id = files.id
+                )
+                WHERE source_id = ?
+                  AND id IN (
+                    SELECT file_id FROM staged_text_contents WHERE scan_id = ?
+                  );
+                """
+            )
+            defer { sqlite3_finalize(applyStatement) }
+            try bind(scanID.uuidString, at: 1, to: applyStatement)
+            try bind(sourceID.uuidString, at: 2, to: applyStatement)
+            try bind(scanID.uuidString, at: 3, to: applyStatement)
+            try stepDone(applyStatement)
+
+            try rebuildSearchEntries(fileIDs)
+            try deleteStagedTextContents(scanID: scanID)
+            try Self.execute("DELETE FROM \(preservedTable);", on: connection.pointer)
+        }
+    }
+
+    func discardStagedTextContents(scanID: UUID) throws {
+        try transaction {
+            try ensureStagedTextContentTable()
+            try deleteStagedTextContents(scanID: scanID)
+        }
+    }
+
     func clearTextContents() throws {
         try transaction {
             try Self.execute("UPDATE files SET text_content = NULL;", on: connection.pointer)
@@ -1488,11 +1701,9 @@ actor FileIndexDatabase {
         let requestedLimit = Int64(max(1, limit))
         let requestedOffset = Int64(max(0, offset))
 
-        // Ordered by bm25 only: FTS5 can stream rows in rank order for this
-        // exact ORDER BY shape. Secondary keys (modified_at, name) previously
-        // forced SQLite to materialize and externally sort every matching
-        // row before applying LIMIT; ties are cosmetic, so break them in
-        // Swift over the already-fetched page instead.
+        // `rowid` is an indexed, stable tie-breaker for equal FTS ranks.
+        // Without it, OFFSET pagination can duplicate or skip rows when many
+        // files share the same bm25 score.
         let statement = try prepare(
             """
             SELECT f.id, f.source_id, f.name, f.path, f.extension, f.file_type, f.size,
@@ -1502,7 +1713,8 @@ actor FileIndexDatabase {
             JOIN files AS f ON f.id = file_search.file_id
             WHERE file_search MATCH ?
               AND (? = 1 OR f.path NOT GLOB '*/.*')
-            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
+            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
+                     file_search.rowid ASC
             LIMIT ? OFFSET ?;
             """
         )
@@ -1513,7 +1725,6 @@ actor FileIndexDatabase {
         try bind(requestedOffset, at: 4, to: statement)
 
         var files: [IndexedFile] = []
-        var ranks: [String: Double] = [:]
         var fetchedRows = 0
         while sqlite3_step(statement) == SQLITE_ROW {
             fetchedRows += 1
@@ -1533,19 +1744,7 @@ actor FileIndexDatabase {
                 modifiedAt: optionalDate(statement, column: 8),
                 indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
             )
-            ranks[file.id] = sqlite3_column_double(statement, 10)
             files.append(file)
-        }
-        files.sort { lhs, rhs in
-            let lhsRank = ranks[lhs.id] ?? 0
-            let rhsRank = ranks[rhs.id] ?? 0
-            if lhsRank != rhsRank { return lhsRank < rhsRank }
-            // Mirrors the previous SQL tie-breaks: modified_at DESC (NULLs
-            // last, as in SQLite), then name NOCASE ascending.
-            let lhsDate = lhs.modifiedAt ?? .distantPast
-            let rhsDate = rhs.modifiedAt ?? .distantPast
-            if lhsDate != rhsDate { return lhsDate > rhsDate }
-            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
         guard fetchesTotalCount else {
             return FileSearchPage(files: files, totalCount: max(0, offset) + files.count)
@@ -1706,15 +1905,22 @@ actor FileIndexDatabase {
         }
     }
 
-    func deleteCategory(_ categoryID: UUID) throws {
+    /// Returns the complete persisted membership captured in the same
+    /// transaction as deletion. This includes currently hidden files, which
+    /// may not be present in the coordinator's visible in-memory snapshot.
+    @discardableResult
+    func deleteCategory(_ categoryID: UUID) throws -> [String] {
+        var deletedFileIDs: [String] = []
         try transaction {
             let fileIDs = try fileIDs(in: categoryID)
+            deletedFileIDs = fileIDs
             let statement = try prepare("DELETE FROM categories WHERE id = ?;")
             defer { sqlite3_finalize(statement) }
             try bind(categoryID.uuidString, at: 1, to: statement)
             try stepDone(statement)
             try rebuildSearchEntries(fileIDs)
         }
+        return deletedFileIDs
     }
 
     /// Recreates a category and its file links after an undo. Does not touch
@@ -1872,7 +2078,7 @@ actor FileIndexDatabase {
             let insertStatement = try prepare(
                 """
                 INSERT OR IGNORE INTO file_categories (file_id, category_id)
-                VALUES (?, ?);
+                SELECT ?, id FROM categories WHERE id = ?;
                 """
             )
             defer { sqlite3_finalize(insertStatement) }
@@ -2071,6 +2277,60 @@ actor FileIndexDatabase {
             fileIDs.append(text(statement, column: 0))
         }
         return fileIDs
+    }
+
+    private func fileIDs(forSourceID sourceID: UUID) throws -> [String] {
+        let statement = try prepare("SELECT id FROM files WHERE source_id = ?;")
+        defer { sqlite3_finalize(statement) }
+        try bind(sourceID.uuidString, at: 1, to: statement)
+
+        var fileIDs: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            fileIDs.append(text(statement, column: 0))
+        }
+        return fileIDs
+    }
+
+    private func fileIDsExcludingPreservedText(forSourceID sourceID: UUID) throws -> [String] {
+        let statement = try prepare(
+            """
+            SELECT id
+            FROM files
+            WHERE source_id = ?
+              AND id NOT IN (SELECT file_id FROM preserved_text_content_ids);
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(sourceID.uuidString, at: 1, to: statement)
+
+        var fileIDs: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            fileIDs.append(text(statement, column: 0))
+        }
+        return fileIDs
+    }
+
+    private func ensureStagedTextContentTable() throws {
+        try Self.execute(
+            """
+            CREATE TEMP TABLE IF NOT EXISTS staged_text_contents (
+                scan_id TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                text_content TEXT,
+                PRIMARY KEY (scan_id, file_id)
+            );
+            """,
+            on: connection.pointer
+        )
+    }
+
+    private func deleteStagedTextContents(scanID: UUID) throws {
+        let statement = try prepare(
+            "DELETE FROM staged_text_contents WHERE scan_id = ?;"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(scanID.uuidString, at: 1, to: statement)
+        try stepDone(statement)
     }
 
     /// Rebuilds one derived search row per file ID, preparing the three
@@ -2369,16 +2629,96 @@ actor FileIndexDatabase {
     }
 
     private static func restrictDatabaseFiles(at databaseURL: URL) throws {
+        try validateDatabaseFilesIfPresent(at: databaseURL)
         for url in [
             databaseURL,
             URL(fileURLWithPath: databaseURL.path + "-wal"),
             URL(fileURLWithPath: databaseURL.path + "-shm")
-        ] where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o600],
-                ofItemAtPath: url.path
-            )
+        ] where lstatExists(url.path) {
+            guard chmod(url.path, 0o600) == 0 else {
+                throw FileIndexError.database("无法保护索引文件")
+            }
         }
+    }
+
+    private static func createDatabaseFileIfMissing(at databaseURL: URL) throws {
+        var metadata = stat()
+        if lstat(databaseURL.path, &metadata) == 0 { return }
+        guard errno == ENOENT else {
+            throw FileIndexError.database("无法检查索引文件")
+        }
+        let descriptor = open(
+            databaseURL.path,
+            O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+            mode_t(0o600)
+        )
+        guard descriptor >= 0 else {
+            // A same-user peer may have won creation. The following lstat
+            // validation still rejects links, hard links and non-regular files.
+            if errno == EEXIST { return }
+            throw FileIndexError.database("无法创建索引文件")
+        }
+        guard close(descriptor) == 0 else {
+            throw FileIndexError.database("无法关闭索引文件")
+        }
+    }
+
+    private struct DatabaseFileIdentity: Equatable {
+        let device: UInt64
+        let inode: UInt64
+        let owner: uid_t
+        let linkCount: UInt64
+        let fileType: UInt32
+    }
+
+    private static func databaseFileIdentity(at databaseURL: URL) throws -> DatabaseFileIdentity {
+        var metadata = stat()
+        guard lstat(databaseURL.path, &metadata) == 0 else {
+            throw FileIndexError.database("无法检查索引文件")
+        }
+        return DatabaseFileIdentity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino),
+            owner: metadata.st_uid,
+            linkCount: UInt64(metadata.st_nlink),
+            fileType: UInt32(metadata.st_mode) & UInt32(S_IFMT)
+        )
+    }
+
+    private static func validateDirectoryIfPresent(_ url: URL) throws {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else {
+            if errno == ENOENT { return }
+            throw FileIndexError.database("无法检查索引目录")
+        }
+        guard metadata.st_uid == getuid(),
+              UInt32(metadata.st_mode) & UInt32(S_IFMT) == UInt32(S_IFDIR) else {
+            throw FileIndexError.database("索引目录不是当前用户拥有的真实目录")
+        }
+    }
+
+    private static func validateDatabaseFilesIfPresent(at databaseURL: URL) throws {
+        for url in [
+            databaseURL,
+            URL(fileURLWithPath: databaseURL.path + "-wal"),
+            URL(fileURLWithPath: databaseURL.path + "-shm")
+        ] {
+            var metadata = stat()
+            guard lstat(url.path, &metadata) == 0 else {
+                if errno == ENOENT { continue }
+                throw FileIndexError.database("无法检查索引文件")
+            }
+            guard metadata.st_uid == getuid(),
+                  metadata.st_nlink == 1,
+                  UInt32(metadata.st_mode) & UInt32(S_IFMT) == UInt32(S_IFREG) else {
+                throw FileIndexError.database("索引文件不是当前用户拥有的独立普通文件")
+            }
+        }
+    }
+
+    private static func lstatExists(_ path: String) -> Bool {
+        var metadata = stat()
+        return lstat(path, &metadata) == 0
     }
 
     private func prepare(_ sql: String) throws -> OpaquePointer {

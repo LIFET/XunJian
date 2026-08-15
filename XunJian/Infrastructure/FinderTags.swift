@@ -41,6 +41,12 @@ actor FinderTagService {
         cache.removeObject(forKey: fileID as NSString)
     }
 
+    func invalidate(fileIDs: Set<String>) {
+        for fileID in fileIDs {
+            cache.removeObject(forKey: fileID as NSString)
+        }
+    }
+
     func invalidateAll() {
         cache.removeAllObjects()
     }
@@ -59,7 +65,7 @@ struct FinderTagsLabel: View {
             .lineLimit(1)
             .truncationMode(.tail)
             .foregroundStyle(tags.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
-            .task(id: file.id) {
+            .task(id: "\(file.id)|\(file.indexedAt.timeIntervalSince1970)") {
                 hasLoaded = false
                 tags = await FinderTagService.shared.tags(
                     forFileID: file.id,

@@ -73,6 +73,14 @@ struct CommandPaletteView: View {
             scheduleCommandFilter(immediate: true)
         }
         .onDisappear { filterTask?.cancel() }
+        .onChange(of: appModel.filesRevision) { _, _ in
+            highlightedIndex = 0
+            scheduleCommandFilter(immediate: true)
+        }
+        .onChange(of: appModel.categoryRevision) { _, _ in
+            highlightedIndex = 0
+            scheduleCommandFilter(immediate: true)
+        }
     }
 
     @ViewBuilder
@@ -235,9 +243,13 @@ struct CommandPaletteView: View {
 
     @MainActor
     private func rebuildCommands() async {
+        let sourceFilesRevision = appModel.filesRevision
+        let sourceCategoryRevision = appModel.categoryRevision
         let all = navigationCommands + actionCommands
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            guard appModel.filesRevision == sourceFilesRevision,
+                  appModel.categoryRevision == sourceCategoryRevision else { return }
             displayedCommands = all + fileCommands(from: appModel.recentFiles)
             return
         }
@@ -261,7 +273,9 @@ struct CommandPaletteView: View {
         } onCancel: {
             cancellationFlag.cancel()
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              appModel.filesRevision == sourceFilesRevision,
+              appModel.categoryRevision == sourceCategoryRevision else { return }
         var commands = matched + fileCommands(from: result.files)
         if result.remainingCount > 0 {
             commands.append(moreFilesCommand(remaining: result.remainingCount, query: trimmed))
@@ -286,19 +300,27 @@ struct CommandPaletteView: View {
 
     private var navigationCommands: [PaletteCommand] {
         var items: [PaletteCommand] = [
-            navigationCommand(.home, title: AppLanguage.localized("首页", english: "Home"), symbol: "house"),
+            navigationCommand(
+                .home,
+                id: "nav-home",
+                title: AppLanguage.localized("首页", english: "Home"),
+                symbol: "house"
+            ),
             navigationCommand(
                 .allFiles,
+                id: "nav-all-files",
                 title: AppLanguage.localized("所有文件", english: "All Files"),
                 symbol: "doc.on.doc"
             ),
             navigationCommand(
                 .categories,
+                id: "nav-categories",
                 title: AppLanguage.localized("分类", english: "Categories"),
                 symbol: "folder"
             ),
             navigationCommand(
                 .settings,
+                id: "nav-settings",
                 title: AppLanguage.localized("设置", english: "Settings"),
                 symbol: "gearshape"
             )
@@ -306,6 +328,7 @@ struct CommandPaletteView: View {
         items += appModel.categories.map { category in
             navigationCommand(
                 .category(category.id),
+                id: "nav-category-\(category.id.uuidString)",
                 title: category.localizedDisplayName,
                 symbol: category.symbolName,
                 subtitle: AppLanguage.fileCount(appModel.fileCount(in: category))
@@ -316,12 +339,13 @@ struct CommandPaletteView: View {
 
     private func navigationCommand(
         _ destination: NavigationDestination,
+        id: String,
         title: String,
         symbol: String,
         subtitle: String? = nil
     ) -> PaletteCommand {
         PaletteCommand(
-            id: "nav-\(title)",
+            id: id,
             title: title,
             subtitle: subtitle,
             symbolName: symbol,

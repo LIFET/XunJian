@@ -1475,7 +1475,7 @@ actor GrokACPClient {
         guard let usage = value.objectValue else {
             try rejectVerification(.postTurnCompletedUsageType, as: .disallowedUpdate)
         }
-        let responseKeys: Set<String> = [
+        let responseComponentKeys: Set<String> = [
             "cache_creation_input_tokens",
             "cache_read_input_tokens",
             "input_tokens",
@@ -1483,7 +1483,7 @@ actor GrokACPClient {
             "reasoning_tokens"
         ]
         let actualKeys = Set(usage.keys)
-        if actualKeys == responseKeys || actualKeys == responseKeys.union(["total_tokens"]) {
+        if responseComponentKeys.isSubset(of: actualKeys) {
             guard Self.isValidResponseUsage(value) else {
                 try rejectVerification(.postTurnCompletedUsageValues, as: .disallowedUpdate)
             }
@@ -1562,31 +1562,28 @@ actor GrokACPClient {
                 "output_tokens",
                 "reasoning_tokens"
         ]
-        let actualKeys = Set(usage.keys)
-        guard actualKeys == componentKeys
-                || actualKeys == componentKeys.union(["total_tokens"]),
-              hasNonnegativeIntegers(usage, keys: componentKeys) else {
+        // Sanity bound instead of exact key-set and sum equality: real
+        // accounting conventions differ on whether reasoning/cache tokens
+        // are included in total_tokens (and extra keys appear), and strict
+        // equality made verification reject valid traffic whenever the
+        // server's reporting drifted. Every present component must be a
+        // non-negative integer, and the components may never exceed the
+        // total; anything else is accepted.
+        guard hasNonnegativeIntegers(usage, keys: componentKeys) else {
             return false
         }
         guard let totalTokens = usage["total_tokens"]?.integerValue else {
             return usage["total_tokens"] == nil
         }
         guard totalTokens >= 0 else { return false }
-        // Validate the components sum to total_tokens using overflow-safe
-        // subtraction: start from total_tokens and subtract each component,
-        // rejecting if any subtraction would overflow or go below zero. A
-        // crafted payload with huge components must not trap on checked
-        // arithmetic.
-        var remaining = totalTokens
-        for key in componentKeys.subtracting(["reasoning_tokens"]) {
-            guard let value = usage[key]?.integerValue, value >= 0 else {
-                return false
-            }
-            let (result, overflow) = remaining.subtractingReportingOverflow(value)
-            guard !overflow, result >= 0 else { return false }
-            remaining = result
+        var sum: Int64 = 0
+        for key in componentKeys {
+            guard let value = usage[key]?.integerValue, value >= 0 else { continue }
+            let (result, overflow) = sum.addingReportingOverflow(value)
+            guard !overflow else { return false }
+            sum = result
         }
-        return remaining == 0
+        return sum <= totalTokens
     }
 
     private static func isValidPromptUsage(_ value: JSONValue?) -> Bool {

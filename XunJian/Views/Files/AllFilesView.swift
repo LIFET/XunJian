@@ -71,7 +71,6 @@ struct AllFilesView: View {
             // page's snapshot. Publish only after the current filters
             // have been recomputed so commands cannot target stale rows.
             appModel.updateCommandTargetFiles([])
-            Task { await refreshDisplayedFilesSnapshot() }
         }
         .onChange(of: appModel.searchText) { _, text in
             guard isVisible else { return }
@@ -498,8 +497,7 @@ struct AllFilesView: View {
         Menu {
             ForEach(availableSortOrders) { order in
                 Button {
-                    activeSortOrder = order
-                    activeSortAscending = order == .name || order == .kind
+                    selectSortOrder(order)
                 } label: {
                     if activeSortOrder == order {
                         Label(order.localizedTitle, systemImage: "checkmark")
@@ -673,7 +671,7 @@ struct AllFilesView: View {
 
     private func emptyState(files: [IndexedFile]) -> some View {
         Group {
-            if appModel.browseSnapshotSignature == nil, !sourceFilesForDisplay.isEmpty {
+            if appModel.browseSnapshotSignature == nil, hasPotentialSourceFilesForDisplay {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(
@@ -877,20 +875,17 @@ struct AllFilesView: View {
         )
     }
 
-    private var sourceFilesForDisplay: [IndexedFile] {
+    private var hasPotentialSourceFilesForDisplay: Bool {
         let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if let aiSearchResults = appModel.aiSearchResults {
-            guard !query.isEmpty else { return aiSearchResults }
-            let matchingFileIDs = Set((appModel.searchResults ?? []).map(\.id))
-            return aiSearchResults.filter { matchingFileIDs.contains($0.id) }
+            return query.isEmpty
+                ? !aiSearchResults.isEmpty
+                : !aiSearchResults.isEmpty && !(appModel.searchResults ?? []).isEmpty
         }
         if !query.isEmpty {
-            // While the first query is still running there is nothing
-            // meaningful to show. Falling back to the whole index made the
-            // list flash every file before narrowing to the matches.
-            return appModel.searchResults ?? []
+            return !(appModel.searchResults ?? []).isEmpty
         }
-        return appModel.files
+        return !appModel.files.isEmpty
     }
 
     private var availableSortOrders: [FileSortOrder] {
@@ -931,11 +926,14 @@ struct AllFilesView: View {
     private var activeSortOrderBinding: Binding<FileSortOrder> {
         Binding(
             get: { activeSortOrder },
-            set: {
-                activeSortOrder = $0
-                activeSortAscending = $0 == .name || $0 == .kind
-            }
+            set: { selectSortOrder($0) }
         )
+    }
+
+    private func selectSortOrder(_ order: FileSortOrder) {
+        guard activeSortOrder != order else { return }
+        activeSortOrder = order
+        activeSortAscending = order == .name || order == .kind
     }
 
     private var listScrollPositionBinding: Binding<String?> {
@@ -993,6 +991,18 @@ struct AllFilesView: View {
             sortOrder: activeSortOrder,
             sortAscending: activeSortAscending,
             minSizeBytes: minimumSizeBytes,
+            minDate: minimumFilterDate,
+            isVisible: isVisible
+        )
+    }
+
+    private var displayedFilesUserKey: DisplayedFilesUserKey {
+        DisplayedFilesUserKey(
+            query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+            selectedKind: appModel.selectedKind,
+            sortOrder: activeSortOrder,
+            sortAscending: activeSortAscending,
+            minSizeBytes: minimumSizeBytes,
             minDate: minimumFilterDate
         )
     }
@@ -1018,13 +1028,31 @@ struct AllFilesView: View {
             if isVisible {
                 appModel.updateCommandTargetFiles(
                     appModel.browseSnapshot,
-                    usesGlobalSearchPagination: true
+                    usesGlobalSearchPagination: true,
+                    signature: signature
                 )
             }
             return
         }
 
-        let sourceFiles = sourceFilesForDisplay
+        // Burst settle: when only index revisions changed (not the user's
+        // query/sort/filters), a six-figure list can be re-sorted once after
+        // the activity settles instead of once per FSEvents batch — each
+        // recompute is hundreds of milliseconds of CPU at userInitiated
+        // priority that otherwise makes the window stutter during file churn.
+        let userSignature = displayedFilesUserKey.signature
+        let revisionDrivenOnly = appModel.browseSnapshotUserSignature == userSignature
+        if revisionDrivenOnly, appModel.files.count > 5_000 {
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled,
+                  isVisible,
+                  displayedFilesRefreshKey.signature == signature else { return }
+        }
+
+        let indexedFiles = appModel.files
+        let aiSearchResults = appModel.aiSearchResults
+        let searchResults = appModel.searchResults
+        let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let selectedKind = appModel.selectedKind
         let requestedSortOrder = activeSortOrder
         let requestedAscending = activeSortAscending
@@ -1037,6 +1065,21 @@ struct AllFilesView: View {
         let cancellationFlag = QuickSearchCancellationFlag()
         let computed = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
+                let sourceFiles: [IndexedFile]
+                if let aiSearchResults {
+                    if query.isEmpty {
+                        sourceFiles = aiSearchResults
+                    } else {
+                        let matchingFileIDs = Set((searchResults ?? []).map(\.id))
+                        sourceFiles = aiSearchResults.filter {
+                            matchingFileIDs.contains($0.id)
+                        }
+                    }
+                } else if query.isEmpty {
+                    sourceFiles = indexedFiles
+                } else {
+                    sourceFiles = searchResults ?? []
+                }
                 let filteredFiles = sourceFiles.filter { file in
                     guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
                     if minSize > 0, file.size < minSize { return false }
@@ -1060,16 +1103,18 @@ struct AllFilesView: View {
         } onCancel: {
             cancellationFlag.cancel()
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              isVisible,
+              displayedFilesRefreshKey.signature == signature else { return }
         let result = computed.files
         appModel.browseSnapshot = result
         appModel.browseSnapshotSignature = signature
-        if isVisible {
-            appModel.updateCommandTargetFiles(
-                result,
-                usesGlobalSearchPagination: true
-            )
-        }
+        appModel.browseSnapshotUserSignature = userSignature
+        appModel.updateCommandTargetFiles(
+            result,
+            usesGlobalSearchPagination: true,
+            signature: signature
+        )
         appModel.clearSelectionIfHidden(from: computed.visibleIDs)
     }
 
@@ -1312,6 +1357,7 @@ struct DisplayedFilesRefreshKey: Equatable {
     let sortAscending: Bool
     let minSizeBytes: Int64
     let minDate: Date?
+    let isVisible: Bool
 
     var signature: Int {
         var hasher = Hasher()
@@ -1319,6 +1365,29 @@ struct DisplayedFilesRefreshKey: Equatable {
         hasher.combine(searchResultsRevision)
         hasher.combine(aiSearchResultCount)
         hasher.combine(aiSearchRevision)
+        hasher.combine(selectedKind)
+        hasher.combine(sortOrder)
+        hasher.combine(sortAscending)
+        hasher.combine(minSizeBytes)
+        hasher.combine(minDate)
+        return hasher.finalize()
+    }
+}
+
+/// The user-driven subset of the refresh key (no index revisions). Two keys
+/// with the same user signature differ only because the index changed, which
+/// lets the view settle bursts before re-sorting a large list.
+struct DisplayedFilesUserKey: Equatable {
+    let query: String
+    let selectedKind: FileKind?
+    let sortOrder: FileSortOrder
+    let sortAscending: Bool
+    let minSizeBytes: Int64
+    let minDate: Date?
+
+    var signature: Int {
+        var hasher = Hasher()
+        hasher.combine(query)
         hasher.combine(selectedKind)
         hasher.combine(sortOrder)
         hasher.combine(sortAscending)

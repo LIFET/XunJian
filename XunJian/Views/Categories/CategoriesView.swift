@@ -14,6 +14,7 @@ struct CategoriesView: View {
     @State private var hoveredCategoryID: UUID?
     @State private var categoryQuery = ""
     @State private var displayedFiles: [IndexedFile] = []
+    @State private var displayedFileIDs: Set<String> = []
     @State private var categoryFileCount = 0
     @State private var displayedSignature: Int?
     @State private var isCategorySearching = false
@@ -77,6 +78,7 @@ struct CategoriesView: View {
             categoryQuery = ""
             selectedKind = nil
             displayedFiles = []
+            displayedFileIDs = []
             categoryFileCount = 0
             displayedSignature = nil
             appModel.updateCommandTargetFiles([])
@@ -90,17 +92,12 @@ struct CategoriesView: View {
             viewMode = mode
         }
         .onChange(of: selectedKind) { _, _ in
-            displayedSignature = nil
-            displayedFiles = []
-            appModel.updateCommandTargetFiles([])
+            isCategorySearching = true
         }
         .onChange(of: categoryQuery) { _, query in
             if selectedCategory != nil {
                 appModel.highlightQuery = query
             }
-            displayedSignature = nil
-            displayedFiles = []
-            appModel.updateCommandTargetFiles([])
             isCategorySearching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
@@ -524,7 +521,7 @@ struct CategoriesView: View {
         // the snapshot is committed, its IDs are the exact visible truth,
         // including files matched only through indexed body text.
         guard displayedSignature != nil else { return }
-        appModel.clearSelectionIfHidden(from: Set(displayedFiles.map(\.id)))
+        appModel.clearSelectionIfHidden(from: displayedFileIDs)
     }
 
     private var categoryFilesRefreshKey: CategoryFilesRefreshKey {
@@ -543,6 +540,7 @@ struct CategoriesView: View {
         guard let selectedCategory else {
             appModel.updateCommandTargetFiles([])
             displayedFiles = []
+            displayedFileIDs = []
             categoryFileCount = 0
             displayedSignature = nil
             isCategorySearching = false
@@ -578,7 +576,7 @@ struct CategoriesView: View {
             } catch is CancellationError {
                 return
             } catch {
-                appModel.errorMessage = error.localizedDescription
+                appModel.reportError(error.localizedDescription)
                 matchingIDs = []
             }
         }
@@ -586,12 +584,12 @@ struct CategoriesView: View {
         // expensive category sort when a newer revision already landed, so
         // bursts of file activity keep at most one sort in flight.
         let cancellationFlag = QuickSearchCancellationFlag()
-        let result = await withTaskCancellationHandler {
+        let computed = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
                 guard !cancellationFlag.isCancelled else {
-                    return [IndexedFile]()
+                    return (files: [IndexedFile](), visibleIDs: Set<String>())
                 }
-                return CategoriesView.displayed(
+                let files = CategoriesView.displayed(
                     categoryFiles,
                     kind: kind,
                     query: query,
@@ -599,18 +597,21 @@ struct CategoriesView: View {
                     sortOrder: order,
                     ascending: ascending
                 )
+                return (files: files, visibleIDs: Set(files.map(\.id)))
             }.value
         } onCancel: {
             cancellationFlag.cancel()
         }
         guard !Task.isCancelled,
               categoryFilesRefreshKey.signature == signature else { return }
+        let result = computed.files
         categoryFileCount = categoryFiles.count
         displayedFiles = result
+        displayedFileIDs = computed.visibleIDs
         displayedSignature = signature
         isCategorySearching = false
         appModel.updateCommandTargetFiles(result)
-        appModel.clearSelectionIfHidden(from: Set(result.map(\.id)))
+        appModel.clearSelectionIfHidden(from: computed.visibleIDs)
     }
 
     private var deleteMessage: String {

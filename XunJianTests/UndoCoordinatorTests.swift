@@ -77,4 +77,68 @@ final class UndoCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.canUndo)
         XCTAssertNil(coordinator.nextTitle)
     }
+
+    func testRemovingOneSourceKeepsUnrelatedUndoEntries() {
+        let coordinator = UndoCoordinator()
+        let removedSource = UUID()
+        let retainedSource = UUID()
+        coordinator.record(title: "removed", affectedSourceIDs: [removedSource]) {}
+        coordinator.record(title: "retained", affectedSourceIDs: [retainedSource]) {}
+        coordinator.record(title: "global") {}
+
+        coordinator.removeEntries(affecting: removedSource)
+
+        XCTAssertEqual(coordinator.entries.map(\.title), ["retained", "global"])
+    }
+
+    func testConcurrentUndoDoesNotConsumeTheNextEntry() async throws {
+        let coordinator = UndoCoordinator()
+        let gate = UndoTestGate()
+        var reverted: [String] = []
+        coordinator.record(title: "first") { reverted.append("first") }
+        coordinator.record(title: "second") {
+            await gate.wait()
+            reverted.append("second")
+        }
+
+        let runningUndo = Task { try await coordinator.undoLast() }
+        await gate.waitUntilBlocked()
+        XCTAssertTrue(coordinator.isUndoing)
+        XCTAssertFalse(coordinator.canUndo)
+
+        try await coordinator.undoLast()
+        XCTAssertEqual(coordinator.nextTitle, "first")
+
+        await gate.open()
+        try await runningUndo.value
+        XCTAssertEqual(reverted, ["second"])
+        XCTAssertEqual(coordinator.nextTitle, "first")
+    }
+}
+
+private actor UndoTestGate {
+    private var isBlocked = false
+    private var blockedContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+    func wait() async {
+        isBlocked = true
+        blockedContinuation?.resume()
+        blockedContinuation = nil
+        await withCheckedContinuation { continuation in
+            releaseContinuation = continuation
+        }
+    }
+
+    func waitUntilBlocked() async {
+        if isBlocked { return }
+        await withCheckedContinuation { continuation in
+            blockedContinuation = continuation
+        }
+    }
+
+    func open() {
+        releaseContinuation?.resume()
+        releaseContinuation = nil
+    }
 }

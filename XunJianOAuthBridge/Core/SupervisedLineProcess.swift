@@ -1439,7 +1439,8 @@ actor SupervisedLineProcess: JSONLineTransport {
     /// uninterruptible state (D-state I/O) survives SIGKILL and would make a
     /// blocking `waitpid` wedge the lifecycle task — and with it `close()`
     /// and every teardown path — forever. After the deadline the state
-    /// machine finalizes regardless; the orphan is reaped by init.
+    /// machine finalizes regardless; a detached blocking reaper keeps
+    /// ownership of `waitpid` so the child cannot become a zombie later.
     private static func waitForExit(of identifier: pid_t) -> Int32 {
         var processStatus: Int32 = 0
         let deadline = DispatchTime.now().uptimeNanoseconds
@@ -1449,6 +1450,7 @@ actor SupervisedLineProcess: JSONLineTransport {
             if result == identifier { break }
             if result == -1, errno == EINTR { continue }
             if DispatchTime.now().uptimeNanoseconds >= deadline {
+                continueReapingInBackground(identifier)
                 return -1
             }
             // Keep the poll cheap: nanosleep between attempts.
@@ -1467,6 +1469,18 @@ actor SupervisedLineProcess: JSONLineTransport {
             return (processStatus >> 8) & 0xFF
         }
         return 128 + terminatingSignal
+    }
+
+    private static func continueReapingInBackground(_ identifier: pid_t) {
+        Thread.detachNewThread {
+            var processStatus: Int32 = 0
+            while true {
+                let result = waitpid(identifier, &processStatus, 0)
+                if result == identifier { return }
+                if result == -1, errno == EINTR { continue }
+                return
+            }
+        }
     }
 
     /// How long `waitForExit` keeps polling before giving up on an

@@ -193,7 +193,7 @@ actor JSONLineRPCPeer {
     private static let requiredNotificationQuiescenceChecks = 2
     /// Stateless for decoding; used by every received line. `decode` is
     /// documented thread-safe for independent calls.
-    nonisolated(unsafe) private static let sharedDecoder = JSONDecoder()
+    private static let sharedDecoder = JSONDecoder()
 
     private let transport: any JSONLineTransport
     private let dialect: JSONRPCDialect
@@ -211,7 +211,11 @@ actor JSONLineRPCPeer {
         transport: any JSONLineTransport,
         dialect: JSONRPCDialect,
         allowedNotifications: Set<String>,
-        requestTimeoutNanoseconds: UInt64 = 30_000_000_000
+        // 45s: connection verification wraps requests in a 45s task-group
+        // deadline, and the bundled runtimes can take several seconds to
+        // cold-start before answering the minimal prompt. A 30s cap here
+        // killed slow-but-valid verification responses first.
+        requestTimeoutNanoseconds: UInt64 = 45_000_000_000
     ) {
         self.transport = transport
         self.dialect = dialect

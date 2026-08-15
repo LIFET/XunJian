@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 extension Notification.Name {
@@ -132,6 +133,8 @@ struct StorageInsightsView: View {
     @State private var hasSearchedDuplicates = false
     @State private var duplicateUnreadCount = 0
     @State private var duplicateSearchTask: Task<Void, Never>?
+    @State private var cleaningDuplicateGroupID: String?
+    @State private var duplicateCleanupError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -167,6 +170,7 @@ struct StorageInsightsView: View {
             }
         }
         .frame(minWidth: 360, idealWidth: 620, minHeight: 420, idealHeight: 640)
+        .interactiveDismissDisabled(cleaningDuplicateGroupID != nil)
         // Keyed on the index revision so figures stay correct if a scan
         // finishes while the panel is open.
         .task(id: appModel.filesRevision) {
@@ -176,6 +180,8 @@ struct StorageInsightsView: View {
             hasSearchedDuplicates = false
             duplicateUnreadCount = 0
             isFindingDuplicates = false
+            cleaningDuplicateGroupID = nil
+            duplicateCleanupError = nil
             hasComputed = false
             let files = appModel.files
             let sources = appModel.sources
@@ -204,6 +210,7 @@ struct StorageInsightsView: View {
             )
             Button(AppLanguage.localized("完成", english: "Done")) { dismiss() }
                 .keyboardShortcut(.defaultAction)
+                .disabled(cleaningDuplicateGroupID != nil)
         }
         .padding(XunJianUI.Spacing.page)
     }
@@ -407,6 +414,11 @@ struct StorageInsightsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } else if !duplicateGroups.isEmpty {
+                if let duplicateCleanupError {
+                    Text(verbatim: duplicateCleanupError)
+                        .font(.caption)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
+                }
                 if duplicateUnreadCount > 0 {
                     Text(verbatim: AppLanguage.localized(
                         "有 \(duplicateUnreadCount) 个文件无法读取，已跳过。",
@@ -468,8 +480,13 @@ struct StorageInsightsView: View {
                             )) {
                                 trashDuplicates(keepingNewestIn: group)
                             }
+                            .disabled(cleaningDuplicateGroupID != nil)
                             .buttonStyle(.link)
                             .foregroundStyle(XunJianUI.Semantic.danger)
+                            if cleaningDuplicateGroupID == group.id {
+                                ProgressView()
+                                    .controlSize(.small)
+                            }
                         }
                         .font(.caption)
                     }
@@ -511,10 +528,10 @@ struct StorageInsightsView: View {
                 // Stopping an on-demand scan is not an error.
             } catch {
                 guard !Task.isCancelled else { return }
-                appModel.errorMessage = AppLanguage.localized(
+                appModel.reportError(AppLanguage.localized(
                     "重复文件检测失败：\(error.localizedDescription)",
                     english: "Duplicate detection failed: \(error.localizedDescription)"
-                )
+                ))
             }
             isFindingDuplicates = false
         }
@@ -532,9 +549,31 @@ struct StorageInsightsView: View {
     private func trashDuplicates(keepingNewestIn group: DuplicateGroup) {
         let files = DuplicateCleanup.filesToTrash(keepingNewestIn: group.files)
         guard !files.isEmpty else { return }
-        dismiss()
-        Task { @MainActor in
-            appModel.requestBatchTrash(files)
+        let alert = NSAlert()
+        alert.messageText = AppLanguage.localized(
+            "清理重复文件？",
+            english: "Clean Up Duplicate Files?"
+        )
+        alert.informativeText = AppLanguage.localized(
+            "将保留最新的文件，并把其余 \(files.count) 个移到废纸篓。寻简会在操作前重新核对文件内容。",
+            english: "The newest file will be kept and \(files.count) other file(s) will be moved to the Trash. XunJian will verify their contents again first."
+        )
+        alert.addButton(withTitle: AppLanguage.localized("移到废纸篓", english: "Move to Trash"))
+        alert.addButton(withTitle: AppLanguage.localized("取消", english: "Cancel"))
+        alert.alertStyle = .warning
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        cleaningDuplicateGroupID = group.id
+        duplicateCleanupError = nil
+        Task {
+            do {
+                try await appModel.confirmDuplicateTrash(group)
+                duplicateGroups.removeAll { $0.id == group.id }
+            } catch is CancellationError {
+                // Closing the panel cancels without showing a stale failure.
+            } catch {
+                duplicateCleanupError = error.localizedDescription
+            }
+            cleaningDuplicateGroupID = nil
         }
     }
 

@@ -164,6 +164,7 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
     private struct StatusPlan: Sendable {
         let result: Result<OAuthBridgeAuthStatus, FakeOAuthBridgeError>
         let gate: OAuthStatusGate?
+        let throwsCancellation: Bool
     }
 
     private var statusPlans: [StatusPlan] = []
@@ -189,7 +190,19 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         _ result: Result<OAuthBridgeAuthStatus, FakeOAuthBridgeError>,
         gate: OAuthStatusGate? = nil
     ) {
-        statusPlans.append(StatusPlan(result: result, gate: gate))
+        statusPlans.append(StatusPlan(
+            result: result,
+            gate: gate,
+            throwsCancellation: false
+        ))
+    }
+
+    func enqueueCancelledStatus(gate: OAuthStatusGate? = nil) {
+        statusPlans.append(StatusPlan(
+            result: .failure(.missingStub),
+            gate: gate,
+            throwsCancellation: true
+        ))
     }
 
     func configureLoginAttempt(
@@ -244,6 +257,9 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         let plan = statusPlans.removeFirst()
         if let gate = plan.gate {
             await gate.wait()
+        }
+        if plan.throwsCancellation {
+            throw CancellationError()
         }
         return try plan.result.get()
     }
@@ -1043,6 +1059,53 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(model.aiOAuthStates[.grok], .signedInUnverified)
         let calls = await fake.calls()
         XCTAssertEqual(calls, [.status(.grok)])
+    }
+
+    @MainActor
+    func testCancelledStatusRefreshPreservesTheCurrentLoginState() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: true)
+        let attemptID = UUID()
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .unknown,
+            connectionState: .authorizing,
+            loginAttemptID: attemptID
+        )))
+        await coordinator.refreshStatus(for: .codex)
+        await fake.enqueueCancelledStatus()
+
+        await coordinator.refreshStatus(for: .codex)
+
+        XCTAssertEqual(
+            coordinator.states[.codex],
+            .authenticating(attemptID: attemptID, authorizationURL: nil)
+        )
+    }
+
+    @MainActor
+    func testNewStatusRefreshWaitsForTheCancelledRefreshToFinish() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: true)
+        let gate = OAuthStatusGate()
+        await fake.enqueueCancelledStatus(gate: gate)
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedIn,
+            connectionState: .authenticated
+        )))
+
+        let first = Task { await coordinator.refreshStatus(for: .grok) }
+        await waitForCallCount(1, fake: fake)
+        let second = Task { await coordinator.refreshStatusAfterWaiting(for: .grok) }
+        await Task.yield()
+        await gate.open()
+        await first.value
+        await second.value
+
+        let calls = await fake.calls()
+        XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
+        XCTAssertEqual(calls, [.status(.grok), .status(.grok)])
     }
 
     @MainActor

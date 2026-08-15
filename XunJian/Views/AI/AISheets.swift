@@ -1,4 +1,30 @@
 import SwiftUI
+
+@MainActor
+private func consumeAIStreamForDisplay(
+    _ stream: AsyncThrowingStream<String, any Error>,
+    update: (String) -> Void
+) async throws {
+    let clock = ContinuousClock()
+    var lastUpdate = clock.now
+    var rendered = ""
+    var pending = ""
+
+    for try await chunk in stream {
+        try Task.checkCancellation()
+        pending += chunk
+        let now = clock.now
+        guard lastUpdate.duration(to: now) >= .milliseconds(50) else { continue }
+        rendered += pending
+        pending.removeAll(keepingCapacity: true)
+        update(rendered)
+        lastUpdate = now
+    }
+    if !pending.isEmpty {
+        rendered += pending
+        update(rendered)
+    }
+}
 enum AITaskSheet: Identifiable {
     case search
     case explain(IndexedFile)
@@ -148,10 +174,7 @@ struct AIExplainSheet: View {
         operationTask = Task {
             do {
                 let stream = try await appModel.explainWithAIStream(file)
-                for try await chunk in stream {
-                    try Task.checkCancellation()
-                    output += chunk
-                }
+                try await consumeAIStreamForDisplay(stream) { output = $0 }
             } catch is CancellationError {
                 isWorking = false
                 return
@@ -207,6 +230,10 @@ struct AIQuestionSheet: View {
                     if isWorking {
                         ProgressView()
                             .controlSize(.small)
+                    }
+                    if let failure {
+                        Text(AppLanguage.localizedRuntimeMessage(failure))
+                            .foregroundStyle(XunJianUI.Semantic.danger)
                     }
                 } else if isWorking {
                     ProgressView(
@@ -270,10 +297,7 @@ struct AIQuestionSheet: View {
         operationTask = Task {
             do {
                 let stream = try await appModel.askAIStream(question, about: file)
-                for try await chunk in stream {
-                    try Task.checkCancellation()
-                    output += chunk
-                }
+                try await consumeAIStreamForDisplay(stream) { output = $0 }
             } catch is CancellationError {
                 isWorking = false
                 return
@@ -315,6 +339,10 @@ struct AITextResultSheet: View {
                     if isWorking {
                         ProgressView()
                             .controlSize(.small)
+                    }
+                    if let failure {
+                        Text(AppLanguage.localizedRuntimeMessage(failure))
+                            .foregroundStyle(XunJianUI.Semantic.danger)
                     }
                 } else if isWorking {
                     ProgressView(
@@ -423,46 +451,43 @@ struct AIClassificationSheet: View {
         return hasher.finalize()
     }
 
-    private func rebuildNameSortedFilesCacheIfNeeded() {
-        guard nameSortedFilesRevision != appModel.filesRevision else { return }
-        nameSortedFilesRevision = appModel.filesRevision
-        let files = appModel.files
-        Task { @MainActor in
-            let computed = await Task.detached(priority: .userInitiated) {
-                files
-                    .filter { TextExtractionService.supports($0.url) }
-                    .sorted {
-                        $0.name.localizedStandardCompare($1.name) == .orderedAscending
-                    }
-            }.value
-            guard !Task.isCancelled else { return }
-            nameSortedFilesCache = computed
-        }
-    }
-
     private func refreshDisplayedClassificationFiles() async {
         // The task restarts per keystroke, so this sleep is the debounce.
         try? await Task.sleep(for: .milliseconds(60))
         guard !Task.isCancelled else { return }
         let query = fileSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let selected = selectedFileIDs
-        let base = nameSortedFilesCache
+        let revision = appModel.filesRevision
+        let cachedRevision = nameSortedFilesRevision
+        let cachedFiles = nameSortedFilesCache
+        let sourceFiles = appModel.files
         let cancellationFlag = QuickSearchCancellationFlag()
         let computed = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
+                let base = cachedRevision == revision
+                    ? cachedFiles
+                    : sourceFiles
+                        .filter { TextExtractionService.supports($0.url) }
+                        .sorted {
+                            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+                        }
                 let filtered = query.isEmpty
                     ? base
                     : base.filter { $0.name.localizedCaseInsensitiveContains(query) }
-                guard !cancellationFlag.isCancelled else { return [IndexedFile]() }
+                guard !cancellationFlag.isCancelled else {
+                    return (base: base, displayed: [IndexedFile]())
+                }
                 let selectedFiles = filtered.filter { selected.contains($0.id) }
                 let unselected = filtered.filter { !selected.contains($0.id) }
-                return selectedFiles + unselected
+                return (base: base, displayed: selectedFiles + unselected)
             }.value
         } onCancel: {
             cancellationFlag.cancel()
         }
-        guard !Task.isCancelled else { return }
-        displayedClassificationFiles = computed
+        guard !Task.isCancelled, appModel.filesRevision == revision else { return }
+        nameSortedFilesRevision = revision
+        nameSortedFilesCache = computed.base
+        displayedClassificationFiles = computed.displayed
     }
 
     var body: some View {
@@ -514,14 +539,10 @@ struct AIClassificationSheet: View {
             if !isCommittingChanges { operationTask?.cancel() }
         }
         .onAppear {
-            let supportedIDs = Set(appModel.files.lazy
+            let supportedIDs = Set(appModel.files(ids: selectedFileIDs)
                 .filter(appModel.supportsTextContent)
                 .map(\.id))
             selectedFileIDs.formIntersection(supportedIDs)
-            rebuildNameSortedFilesCacheIfNeeded()
-        }
-        .onChange(of: appModel.filesRevision) { _, _ in
-            rebuildNameSortedFilesCacheIfNeeded()
         }
         .task(id: classificationListKey) {
             await refreshDisplayedClassificationFiles()
@@ -684,9 +705,8 @@ struct AIClassificationSheet: View {
     }
 
     private func classify() {
-        let selectedFiles = appModel.files.filter {
-            selectedFileIDs.contains($0.id) && appModel.supportsTextContent($0)
-        }
+        let selectedFiles = appModel.files(ids: selectedFileIDs)
+            .filter(appModel.supportsTextContent)
         isWorking = true
         failure = nil
         operationTask?.cancel()

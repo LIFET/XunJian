@@ -10,6 +10,7 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
     case invalidName
     case notWritable
     case destinationExists(String)
+    case invalidDestination
     case fileIdentityChanged
     case operationFailed(String)
 
@@ -23,6 +24,8 @@ enum FileOperationError: LocalizedError, Equatable, Sendable {
             AppLanguage.localized("当前位置不可写，无法完成这个文件操作。", english: "This location is not writable.")
         case let .destinationExists(name):
             AppLanguage.localized("目标位置已经存在“\(name)”，请换一个名称或位置。", english: "“\(name)” already exists at the destination. Choose another name or location.")
+        case .invalidDestination:
+            AppLanguage.localized("目标文件夹无效，或位于要移动的文件夹内部。", english: "The destination folder is invalid or is inside the folder being moved.")
         case .fileIdentityChanged:
             AppLanguage.localized("文件已经被其他操作替换，已停止操作以避免修改错误的文件。", english: "The file was replaced by another process. The operation was stopped to avoid modifying the wrong file.")
         case let .operationFailed(message):
@@ -37,6 +40,30 @@ struct FileSystemObjectIdentity: Equatable, Sendable {
     let device: UInt64
     let inode: UInt64
     let fileType: UInt32
+}
+
+/// Metadata version paired with a content digest before destructive cleanup.
+/// ctime prevents a caller from hiding a rewrite by restoring only mtime.
+struct FileSystemObjectVersion: Equatable, Sendable {
+    let identity: FileSystemObjectIdentity
+    let size: Int64
+    let modifiedSeconds: Int64
+    let modifiedNanoseconds: Int64
+    let changedSeconds: Int64
+    let changedNanoseconds: Int64
+
+    init(metadata: stat) {
+        identity = FileSystemObjectIdentity(
+            device: UInt64(metadata.st_dev),
+            inode: UInt64(metadata.st_ino),
+            fileType: UInt32(metadata.st_mode) & UInt32(S_IFMT)
+        )
+        size = Int64(metadata.st_size)
+        modifiedSeconds = Int64(metadata.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int64(metadata.st_mtimespec.tv_nsec)
+        changedSeconds = Int64(metadata.st_ctimespec.tv_sec)
+        changedNanoseconds = Int64(metadata.st_ctimespec.tv_nsec)
+    }
 }
 
 actor FileOperationService {
@@ -58,6 +85,31 @@ actor FileOperationService {
         )
     }
 
+    func version(of url: URL) throws -> FileSystemObjectVersion {
+        var metadata = stat()
+        guard lstat(url.path, &metadata) == 0 else {
+            throw FileOperationError.fileNotFound
+        }
+        return FileSystemObjectVersion(metadata: metadata)
+    }
+
+    func directoryIdentity(of url: URL) throws -> FileSystemObjectIdentity {
+        let currentIdentity = try identity(of: url)
+        guard currentIdentity.fileType == UInt32(S_IFDIR) else {
+            throw FileOperationError.invalidDestination
+        }
+        return currentIdentity
+    }
+
+    private func requireVersion(
+        _ expected: FileSystemObjectVersion,
+        at url: URL
+    ) throws {
+        guard try version(of: url) == expected else {
+            throw FileOperationError.fileIdentityChanged
+        }
+    }
+
     func requireIdentity(
         _ expected: FileSystemObjectIdentity,
         at url: URL
@@ -71,15 +123,19 @@ actor FileOperationService {
     /// A path alone is not sufficient because another process can replace its
     /// contents between scanning and a destructive action.
     func requireIndexedIdentity(_ file: IndexedFile) throws {
+        try requireIndexedIdentity(file, at: file.url)
+    }
+
+    private func requireIndexedIdentity(_ file: IndexedFile, at url: URL) throws {
         let values: URLResourceValues
         do {
-            values = try file.url.resourceValues(forKeys: IndexedFileIdentity.resourceKeys)
+            values = try url.resourceValues(forKeys: IndexedFileIdentity.resourceKeys)
         } catch {
             throw FileOperationError.fileNotFound
         }
         let currentID = IndexedFileIdentity.id(
             sourceID: file.sourceID,
-            url: file.url,
+            url: url,
             values: values,
             fileManager: fileManager
         )
@@ -91,36 +147,184 @@ actor FileOperationService {
     /// Keeps identity validation and the path mutation in one actor turn, so
     /// another app task cannot interleave between the two operations.
     func rename(indexedFile file: IndexedFile, to proposedName: String) throws -> URL {
-        try requireIndexedIdentity(file)
-        return try rename(fileAt: file.url, to: proposedName)
+        try coordinatedWrite(at: file.url, options: .forMoving) { coordinatedURL in
+            _ = try directoryIdentity(of: coordinatedURL.deletingLastPathComponent())
+            try requireIndexedIdentity(file, at: coordinatedURL)
+            let expectedIdentity = try identity(of: coordinatedURL)
+            let result = try rename(fileAt: coordinatedURL, to: proposedName)
+            try requireIdentity(expectedIdentity, at: result)
+            return result
+        }
     }
 
     func rename(
         fileAt sourceURL: URL,
         expectedIdentity: FileSystemObjectIdentity,
+        expectedParentIdentity: FileSystemObjectIdentity,
         to proposedName: String
     ) throws -> URL {
-        try requireIdentity(expectedIdentity, at: sourceURL)
-        return try rename(fileAt: sourceURL, to: proposedName)
+        try coordinatedWrite(at: sourceURL, options: .forMoving) { coordinatedURL in
+            try requireDirectoryIdentity(
+                expectedParentIdentity,
+                at: coordinatedURL.deletingLastPathComponent()
+            )
+            try requireIdentity(expectedIdentity, at: coordinatedURL)
+            let result = try rename(fileAt: coordinatedURL, to: proposedName)
+            try requireIdentity(expectedIdentity, at: result)
+            return result
+        }
     }
 
     func move(indexedFile file: IndexedFile, to destinationDirectory: URL) throws -> URL {
-        try requireIndexedIdentity(file)
-        return try move(fileAt: file.url, to: destinationDirectory)
+        let expectedDestinationIdentity = try directoryIdentity(of: destinationDirectory)
+        return try coordinatedMove(from: file.url, to: destinationDirectory) { source, destination in
+            try requireIndexedIdentity(file, at: source)
+            let expectedIdentity = try identity(of: source)
+            try requireDirectoryIdentity(expectedDestinationIdentity, at: destination)
+            try validateMoveDestination(
+                sourceURL: source,
+                sourceIdentity: expectedIdentity,
+                destinationDirectory: destination
+            )
+            let result = try move(fileAt: source, to: destination)
+            try requireIdentity(expectedIdentity, at: result)
+            return result
+        }
     }
 
     func move(
         fileAt sourceURL: URL,
         expectedIdentity: FileSystemObjectIdentity,
+        expectedDestinationIdentity: FileSystemObjectIdentity,
         to destinationDirectory: URL
     ) throws -> URL {
-        try requireIdentity(expectedIdentity, at: sourceURL)
-        return try move(fileAt: sourceURL, to: destinationDirectory)
+        try coordinatedMove(from: sourceURL, to: destinationDirectory) { source, destination in
+            try requireIdentity(expectedIdentity, at: source)
+            try requireDirectoryIdentity(expectedDestinationIdentity, at: destination)
+            try validateMoveDestination(
+                sourceURL: source,
+                sourceIdentity: expectedIdentity,
+                destinationDirectory: destination
+            )
+            let result = try move(fileAt: source, to: destination)
+            try requireIdentity(expectedIdentity, at: result)
+            return result
+        }
     }
 
     func moveToTrash(indexedFile file: IndexedFile) throws -> URL? {
-        try requireIndexedIdentity(file)
-        return try moveToTrash(fileAt: file.url)
+        try coordinatedWrite(at: file.url, options: .forDeleting) { coordinatedURL in
+            _ = try directoryIdentity(of: coordinatedURL.deletingLastPathComponent())
+            try requireIndexedIdentity(file, at: coordinatedURL)
+            let expectedIdentity = try identity(of: coordinatedURL)
+            let result = try moveToTrash(fileAt: coordinatedURL)
+            if let result {
+                try requireIdentity(expectedIdentity, at: result)
+            }
+            return result
+        }
+    }
+
+    private func requireDirectoryIdentity(
+        _ expected: FileSystemObjectIdentity,
+        at url: URL
+    ) throws {
+        guard try directoryIdentity(of: url) == expected else {
+            throw FileOperationError.fileIdentityChanged
+        }
+    }
+
+    private func validateMoveDestination(
+        sourceURL: URL,
+        sourceIdentity: FileSystemObjectIdentity,
+        destinationDirectory: URL
+    ) throws {
+        guard sourceIdentity.fileType == UInt32(S_IFDIR) else { return }
+        let sourceComponents = sourceURL.resolvingSymlinksInPath()
+            .standardizedFileURL.pathComponents
+        let destinationComponents = destinationDirectory.resolvingSymlinksInPath()
+            .standardizedFileURL.pathComponents
+        guard destinationComponents.count < sourceComponents.count
+                || !destinationComponents.prefix(sourceComponents.count)
+                    .elementsEqual(sourceComponents) else {
+            throw FileOperationError.invalidDestination
+        }
+    }
+
+    /// Coordinates the reference read and candidate deletion in one filesystem
+    /// transaction. Both versions came from stable content hashes immediately
+    /// before this call.
+    func moveDuplicateToTrash(
+        indexedFile file: IndexedFile,
+        expectedVersion: FileSystemObjectVersion,
+        matching referenceURL: URL,
+        expectedReferenceVersion: FileSystemObjectVersion
+    ) throws -> URL? {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var result: Result<URL?, Error>?
+        coordinator.coordinate(
+            readingItemAt: referenceURL,
+            options: .withoutChanges,
+            writingItemAt: file.url,
+            options: .forDeleting,
+            error: &coordinationError
+        ) { coordinatedReference, coordinatedCandidate in
+            result = Result {
+                try requireVersion(expectedReferenceVersion, at: coordinatedReference)
+                try requireVersion(expectedVersion, at: coordinatedCandidate)
+                try requireIndexedIdentity(file, at: coordinatedCandidate)
+                let trashedURL = try moveToTrash(fileAt: coordinatedCandidate)
+                if let trashedURL {
+                    try requireIdentity(expectedVersion.identity, at: trashedURL)
+                }
+                return trashedURL
+            }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else {
+            throw FileOperationError.operationFailed("File coordination failed")
+        }
+        return try result.get()
+    }
+
+    private func coordinatedWrite<T>(
+        at url: URL,
+        options: NSFileCoordinator.WritingOptions,
+        operation: (URL) throws -> T
+    ) throws -> T {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var result: Result<T, Error>?
+        coordinator.coordinate(writingItemAt: url, options: options, error: &coordinationError) {
+            coordinatedURL in
+            result = Result { try operation(coordinatedURL) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw FileOperationError.operationFailed("File coordination failed") }
+        return try result.get()
+    }
+
+    private func coordinatedMove<T>(
+        from sourceURL: URL,
+        to destinationDirectory: URL,
+        operation: (URL, URL) throws -> T
+    ) throws -> T {
+        let coordinator = NSFileCoordinator(filePresenter: nil)
+        var coordinationError: NSError?
+        var result: Result<T, Error>?
+        coordinator.coordinate(
+            writingItemAt: sourceURL,
+            options: .forMoving,
+            writingItemAt: destinationDirectory,
+            options: .forMerging,
+            error: &coordinationError
+        ) { coordinatedSource, coordinatedDestination in
+            result = Result { try operation(coordinatedSource, coordinatedDestination) }
+        }
+        if let coordinationError { throw coordinationError }
+        guard let result else { throw FileOperationError.operationFailed("File coordination failed") }
+        return try result.get()
     }
 
     func rename(fileAt sourceURL: URL, to proposedName: String) throws -> URL {
@@ -137,7 +341,9 @@ actor FileOperationService {
             throw FileOperationError.invalidName
         }
 
-        guard fileManager.isWritableFile(atPath: sourceURL.deletingLastPathComponent().path) else {
+        let parentURL = sourceURL.deletingLastPathComponent()
+        _ = try directoryIdentity(of: parentURL)
+        guard fileManager.isWritableFile(atPath: parentURL.path) else {
             throw FileOperationError.notWritable
         }
 
@@ -161,6 +367,13 @@ actor FileOperationService {
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw FileOperationError.fileNotFound
         }
+        let sourceIdentity = try identity(of: sourceURL)
+        _ = try directoryIdentity(of: destinationDirectory)
+        try validateMoveDestination(
+            sourceURL: sourceURL,
+            sourceIdentity: sourceIdentity,
+            destinationDirectory: destinationDirectory
+        )
         guard fileManager.isWritableFile(atPath: destinationDirectory.path) else {
             throw FileOperationError.notWritable
         }
@@ -185,7 +398,9 @@ actor FileOperationService {
         guard fileManager.fileExists(atPath: sourceURL.path) else {
             throw FileOperationError.fileNotFound
         }
-        guard fileManager.isWritableFile(atPath: sourceURL.deletingLastPathComponent().path) else {
+        let parentURL = sourceURL.deletingLastPathComponent()
+        _ = try directoryIdentity(of: parentURL)
+        guard fileManager.isWritableFile(atPath: parentURL.path) else {
             throw FileOperationError.notWritable
         }
 
@@ -261,7 +476,8 @@ actor ThumbnailService {
     func thumbnail(for file: IndexedFile, size: CGSize, scale: CGFloat) async -> NSImage? {
         // Scale is part of the key: Retina and non-Retina displays (or a
         // display-scale change) must not share one pixel-density entry.
-        let cacheKey = "\(file.id)-\(Int(size.width))-\(Int(size.height))-\(Int(scale * 100))" as NSString
+        let modifiedAt = file.modifiedAt?.timeIntervalSinceReferenceDate ?? 0
+        let cacheKey = "\(file.id)-\(file.size)-\(modifiedAt)-\(Int(size.width))-\(Int(size.height))-\(Int(scale * 100))" as NSString
         if let cached = cache.object(forKey: cacheKey) {
             return cached
         }
@@ -328,6 +544,14 @@ actor ThumbnailService {
 }
 
 struct FileThumbnail: View {
+    private struct RequestID: Hashable {
+        let fileID: String
+        let fileSize: Int64
+        let modifiedAt: Date?
+        let side: CGFloat
+        let displayScale: CGFloat
+    }
+
     let file: IndexedFile
     let size: CGFloat
 
@@ -349,7 +573,14 @@ struct FileThumbnail: View {
             }
         }
         .frame(width: size, height: size)
-        .task(id: file.id) {
+        .task(id: RequestID(
+            fileID: file.id,
+            fileSize: file.size,
+            modifiedAt: file.modifiedAt,
+            side: size,
+            displayScale: displayScale
+        )) {
+            thumbnail = nil
             let image = await ThumbnailService.shared.thumbnail(
                 for: file,
                 size: CGSize(width: size, height: size),

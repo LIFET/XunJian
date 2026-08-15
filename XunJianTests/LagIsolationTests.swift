@@ -38,7 +38,8 @@ final class LagIsolationTests: XCTestCase {
             sortOrder: .modifiedAt,
             sortAscending: false,
             minSizeBytes: 0,
-            minDate: nil
+            minDate: nil,
+            isVisible: true
         )
         let typed = DisplayedFilesRefreshKey(
             filesRevision: 3,
@@ -49,7 +50,8 @@ final class LagIsolationTests: XCTestCase {
             sortOrder: .modifiedAt,
             sortAscending: false,
             minSizeBytes: 0,
-            minDate: nil
+            minDate: nil,
+            isVisible: true
         )
 
         XCTAssertEqual(idle.signature, typed.signature)
@@ -65,7 +67,8 @@ final class LagIsolationTests: XCTestCase {
             sortOrder: .modifiedAt,
             sortAscending: false,
             minSizeBytes: 0,
-            minDate: nil
+            minDate: nil,
+            isVisible: true
         )
         let after = DisplayedFilesRefreshKey(
             filesRevision: 3,
@@ -76,10 +79,41 @@ final class LagIsolationTests: XCTestCase {
             sortOrder: .modifiedAt,
             sortAscending: false,
             minSizeBytes: 0,
-            minDate: nil
+            minDate: nil,
+            isVisible: true
         )
 
         XCTAssertNotEqual(before.signature, after.signature)
+    }
+
+    func testDisplayedFilesRefreshKeyRestartsForVisibilityWithoutInvalidatingCache() {
+        let visible = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil,
+            isVisible: true
+        )
+        let hidden = DisplayedFilesRefreshKey(
+            filesRevision: 3,
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil,
+            isVisible: false
+        )
+
+        XCTAssertNotEqual(visible, hidden)
+        XCTAssertEqual(visible.signature, hidden.signature)
     }
 
     func testCategoryIndexStoreTogglesOneFileWithoutReplacingTheLibrary() {
@@ -88,7 +122,13 @@ final class LagIsolationTests: XCTestCase {
             makeFile(name: "file-\(index).pdf", path: "/docs/file-\(index).pdf")
         }
         let store = CategoryIndexStore()
-        store.replaceAll(categories: [work], files: files, links: [:])
+        store.replaceAll(
+            categories: [work],
+            links: [:],
+            categoriesByFileID: [:],
+            fileCountsByCategoryID: [:],
+            filesByCategoryID: [:]
+        )
 
         store.applyAssignment(assigned: true, file: files[7], category: work)
         XCTAssertEqual(store.fileCount(in: work.id), 1)
@@ -99,6 +139,28 @@ final class LagIsolationTests: XCTestCase {
         XCTAssertEqual(store.fileCount(in: work.id), 0)
         XCTAssertTrue(store.files(in: work.id).isEmpty)
         XCTAssertFalse(store.isAssigned(work.id, to: files[7].id))
+    }
+
+    func testCategoryIndexStoreAppliesBatchWithOneRevision() {
+        let work = FileCategory(id: UUID(), name: "Work", symbolName: "briefcase")
+        let files = (0..<50).map { index in
+            makeFile(name: "file-\(index).pdf", path: "/docs/file-\(index).pdf")
+        }
+        let store = CategoryIndexStore()
+        store.replaceAll(
+            categories: [work],
+            links: [:],
+            categoriesByFileID: [:],
+            fileCountsByCategoryID: [:],
+            filesByCategoryID: [:]
+        )
+        let initialRevision = store.revision
+
+        store.applyAssignments(assigned: true, files: files, category: work)
+
+        XCTAssertEqual(store.revision, initialRevision + 1)
+        XCTAssertEqual(store.fileCount(in: work.id), files.count)
+        XCTAssertEqual(Set(store.files(in: work.id).map(\.id)), Set(files.map(\.id)))
     }
 
     func testFileExportProgressStoreDoesNotReplaceIdenticalProgress() {
@@ -132,7 +194,15 @@ final class LagIsolationTests: XCTestCase {
                             device: 1,
                             inode: 2,
                             fileType: 0
-                        )
+                        ),
+                        originalParentIdentity: FileSystemObjectIdentity(
+                            device: 3,
+                            inode: 4,
+                            fileType: 0
+                        ),
+                        originalFileID: "file-a",
+                        sourceID: UUID(),
+                        categoryIDs: []
                     )
                 ],
                 undoEntryID: nil

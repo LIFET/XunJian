@@ -2,28 +2,32 @@
 
 ## 当前项目状态
 
-第三轮（卡顿治理 + 设置页并入主体）已落地并通过离线回归与发布门禁。当前仅为开发工作区，未生成、签名、提交或公证新 DMG。
+全面审查修复 6/6 阶段全部完成。代码与离线自动化验收无 P0/P1/P2/P3 阻塞；工作区仍未提交。未运行真实 OAuth、AI 或网络，未生成 DMG。
 
-## 第三轮已完成内容
+## 已完成内容
 
-- **设置页并入主体窗口**：移除独立 `Settings` 场景；设置成为 Sidebar/命令面板/⌘, 菜单的主窗口页面（`NavigationDestination.settings`），`presentsErrors` 在关键窗口呈现；AI 菜单的“打开设置”改走页面导航；外壳通知链超限问题经 `GlobalPresentations` 收容。
-- **卡顿治理（主线程）**：`rebuildFileDerivedIndexes` 不再对每个文件做 realpath（`file.path` 已是规范形态，原实现每次索引变更在主线程做 ~20 万次 syscall）；`refreshFiles` 由 O(k·n) 数组手术改为 O(n+k) 双有序归并；`updateCommandTargetFiles` 改为无分配的 zip 短路比较；`onFilesChanged`/分类页选择清理复用维护中的 `allFileIDs`；`IndexStatistics` 的整表 map 移出主线程。
-- **卡顿治理（后台与视图）**：所有文件/分类页的 detached 大排序通过取消标志保持至多一个在飞；AI 分类弹窗的名字排序与查询过滤全部移出 body（O(1) body，60ms 防抖）；网格卡片与分类行 hover 状态下沉到行视图，鼠标移动不再整页失效；滚动位置持久化 500ms 合并，不再每次选择写 UserDefaults；正文预览高亮范围按查询预计算，翻动匹配不再重扫全文。
-- **基础设施与桥**：正文提取的阻塞 I/O 移入 detached 任务，不再占用协作线程池；`reconcileFiles` 范围查询改为两条常驻、可走索引的语句；`fetchFiles(fileIDs:)`/`fetchFileCategoryLinks(fileIDs:)` 按 900 ID 分块防参数上限；运行时二进制哈希按文件身份（dev/inode/size/mtime）缓存，OAuth 状态轮询不再反复哈希 200MB 二进制；RPC 解码共享单例；stdout/stderr 排空 10ms→空闲 100ms 自适应退避；FSEvents 上下文补 retain/release 回调消除 use-after-free；`waitForExit` 由阻塞 `waitpid` 改为有 5 秒上限的 WNOHANG 轮询，D 状态子进程不再永久卡死桥服务。
-- **已明确不做**：SSE 流的有界化（响应量受 Provider 输出约束、弹窗关闭即取消，无实际积压路径）；`FileSelection` 每次按键的 O(n) 索引查找（量级毫秒级，改造收益低于风险）。
-
-## 修改文件
-
-App（AppModel、FileIndexCoordinator、XunJianApp）、Infrastructure（索引、监控）、Views（外壳、侧栏、命令面板、所有文件、分类、AI 弹窗、检查器、设置统计、正文预览、网格组件）、OAuthBridge（JSONLineRPC、SupervisedLineProcess、ManagedRuntimeStore）与回归测试。
+- 重载、扫描、FSEvents、正文保留、数据库恢复和 OAuth 取消具备代际与失败保护。
+- 文件移动、重命名、废纸篓及撤销复验目录/文件身份，阻止链接替换和后代移动。
+- 大索引筛选、排序、分类、AI 后处理、Services 匹配与导出准备移出主线程或改用派生索引。
+- SSE 必须收到完整结束标记；截断回答保留已有内容并显示失败。
+- 隐藏文件偏好单飞；外部路径、导出分类与搜索结果保持稳定语义。
+- 类型排序改为一次名称排序后按类型分桶，10 万文件耗时由 1.038 秒降至 0.127 秒。
 
 ## 验证
 
-- arm64 Debug Build：通过。
-- 全量离线测试：App 248/248（2 项发布级大数据门禁按设计跳过）、OAuth Process 34/34，0 失败。
-- 发布门禁显式启用：5 万文件 1.298 秒、10 万文件 2.794 秒，全部通过。
-- `git diff --check` 通过。
-- 未运行真实 OAuth、真实 AI、外部网络、签名、公证或 DMG。
+- 完整常规测试：App 285 项（2 项发布门禁按默认跳过）+ OAuth Process 35 项，合计 320 项、0 失败。
+- 发布级门禁显式执行：5 万/10 万文件 2/2 通过；10 万总交互 0.643 秒。
+- 全源码 Swift 语法、Swift 6 严格并发、本地化 JSON、`git diff --check`、arm64 Debug：通过。
 
-## 已知问题与下一步
+## 下一步
 
-代码层无已知 P0/P1/P2/P3 阻断。发布前仍需人工验收拖拽、Services、菜单栏窗、VoiceOver、放大字号/Reduce Motion、360/640/1200pt 布局与日期筛选，以及设置页在主体窗口内的完整操作路径；确认源码冻结后再单独执行 Universal Release、签名、公证与 DMG。
+按 `docs/MANUAL_ACCEPTANCE.md` 完成人工 UI/UX、拖放、Services、VoiceOver、字号、Reduce Motion 和窗口宽度验收。真实 AI/OAuth 必须另行确认；确认产品体验后再构建新 DMG、签名及公证。
+
+## 第四轮（用户实测反馈修复）
+
+- **全部文件页卡顿**：快照重算增加“仅索引修订触发”的 250ms 突发沉降（用户输入触发的排序/过滤仍即时响应，大列表不因 FSEvents 每批重排而打满 CPU）；配合既有取消标志，文件活动突发期间至多一次在飞排序。
+- **扫描速度**：扫描器新增每扫描一次目录级 canonical 路径记忆（每文件省 1 次 realpath syscall）；全量扫描开头的“保留未扫描文件”预计算由主线程逐文件 canonical 化（每次扫描 2×N 次 syscall）改为根路径只解析一次 + detached 纯路径比较。
+- **OAuth 验证失败（Codex）**：恢复“固定模型不在官方目录时回退首个列出模型”的验证路径（此前被回退，目录不含 gpt-5.6-sol 即必失败）。
+- **OAuth 验证失败（Grok）**：usage 校验由“键集严格相等 + 分量和（排除 reasoning）必须恰好等于 total”放宽为“分量均非负且分量和不超过 total”，兼容服务器对 reasoning/cache 是否计入 total 的不同记账惯例，避免误杀有效响应；`validateTurnUsage` 的形状判定同步放宽。
+- **OAuth 其他**：RPC 默认超时 30s→45s（验证窗口 45s 内慢速冷启动响应不再先被 RPC 层超时杀掉）；proof 持久化在凭据文件被并发令牌刷新改写时自动重试一次；Grok 诊断码集合与桥侧 108 个实际发射码全量同步，失败原因可读。
+- 验证：arm64 Debug 构建通过；App 285 + OAuth Process 35 全部 0 失败；发布门禁 50k 1.177s / 100k 3.122s 通过。

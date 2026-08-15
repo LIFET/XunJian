@@ -66,6 +66,8 @@ final class OAuthCoordinator: ObservableObject {
         do {
             let status = try await bridgeService.authenticationStatus(for: provider)
             applyStatus(status, to: kind, generation: generation)
+        } catch is CancellationError {
+            return
         } catch {
             applyFailure(
                 error,
@@ -74,6 +76,17 @@ final class OAuthCoordinator: ObservableObject {
                 presentsFailure: presentsFailure
             )
         }
+    }
+
+    /// App lifecycle refreshes must not be swallowed while the refresh from
+    /// the previous active generation is still unwinding after cancellation.
+    func refreshStatusAfterWaiting(
+        for kind: AIProviderKind,
+        presentsFailure: Bool = true
+    ) async {
+        await waitForStatus(for: kind)
+        guard !Task.isCancelled else { return }
+        await refreshStatus(for: kind, presentsFailure: presentsFailure)
     }
 
     func applicationBecameActive() {
@@ -106,7 +119,7 @@ final class OAuthCoordinator: ObservableObject {
     private func refreshAllProviders(presentsFailure: Bool) async {
         for kind in AIProviderKind.allCases where Self.oauthProvider(for: kind) != nil {
             guard !Task.isCancelled else { return }
-            await refreshStatus(for: kind, presentsFailure: presentsFailure)
+            await refreshStatusAfterWaiting(for: kind, presentsFailure: presentsFailure)
         }
     }
 

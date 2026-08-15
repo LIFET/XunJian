@@ -16,6 +16,9 @@ final class UndoCoordinator: ObservableObject {
         let id = UUID()
         /// Shown on the Undo menu item, e.g. "撤销重命名".
         let title: String
+        /// Sources whose indexed objects are captured by this undo closure.
+        /// Removing one source invalidates only its dependent entries.
+        let affectedSourceIDs: Set<UUID>
         let revert: () async throws -> Void
     }
 
@@ -24,8 +27,9 @@ final class UndoCoordinator: ObservableObject {
     static let maximumDepth = 20
 
     @Published private(set) var entries: [Entry] = []
+    @Published private(set) var isUndoing = false
 
-    var canUndo: Bool { !entries.isEmpty }
+    var canUndo: Bool { !isUndoing && !entries.isEmpty }
 
     /// Title of the action that would be undone next.
     var nextTitle: String? { entries.last?.title }
@@ -33,8 +37,16 @@ final class UndoCoordinator: ObservableObject {
     /// Returns the new entry's identifier so callers that expose their own
     /// one-off undo affordance can drop it from the stack once used.
     @discardableResult
-    func record(title: String, revert: @escaping () async throws -> Void) -> UUID {
-        let entry = Entry(title: title, revert: revert)
+    func record(
+        title: String,
+        affectedSourceIDs: Set<UUID> = [],
+        revert: @escaping () async throws -> Void
+    ) -> UUID {
+        let entry = Entry(
+            title: title,
+            affectedSourceIDs: affectedSourceIDs,
+            revert: revert
+        )
         entries.append(entry)
         if entries.count > Self.maximumDepth {
             entries.removeFirst(entries.count - Self.maximumDepth)
@@ -46,17 +58,22 @@ final class UndoCoordinator: ObservableObject {
         entries.removeAll { $0.id == id }
     }
 
+    func removeEntries(affecting sourceID: UUID) {
+        entries.removeAll { $0.affectedSourceIDs.contains(sourceID) }
+    }
+
     /// Pops and runs the most recent action. The entry is removed even when
     /// the revert throws: a failed undo usually means the world changed
     /// underneath it (file moved or deleted elsewhere), and retrying the same
     /// stale closure would keep failing.
     func undoLast() async throws {
-        guard let entry = entries.popLast() else { return }
+        guard !isUndoing, let entry = entries.popLast() else { return }
+        isUndoing = true
+        defer { isUndoing = false }
         try await entry.revert()
     }
 
-    /// Called when the index is rebuilt or a source is removed, since captured
-    /// file identities may no longer resolve.
+    /// Drops all entries only when the entire index identity is reset.
     func clear() {
         entries.removeAll()
     }

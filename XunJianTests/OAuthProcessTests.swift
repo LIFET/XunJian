@@ -1490,6 +1490,36 @@ final class OAuthProcessTests: XCTestCase {
         XCTAssertEqual(try resolver.executableURL(for: .x86_64), x86URL)
     }
 
+    func testManagedRuntimeDigestInvalidatesWhenContentsChangeButMTimeIsRestored() throws {
+        let temporaryRoot = try makePrivateTemporaryDirectory(label: "runtime-digest-cache")
+        defer { try? FileManager.default.removeItem(at: temporaryRoot) }
+        let executableURL = temporaryRoot.appending(path: "runtime")
+        let original = Data("AAAA".utf8)
+        let replacement = Data("BBBB".utf8)
+        try original.write(to: executableURL)
+        let originalDate = try XCTUnwrap(
+            FileManager.default.attributesOfItem(atPath: executableURL.path)[.modificationDate]
+                as? Date
+        )
+        let originalDigest = try ManagedRuntimeDigest.sha256Hex(fileURL: executableURL)
+
+        usleep(20_000)
+        let descriptor = open(executableURL.path, O_WRONLY | O_TRUNC | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        XCTAssertEqual(replacement.withUnsafeBytes {
+            Darwin.write(descriptor, $0.baseAddress, $0.count)
+        }, replacement.count)
+        XCTAssertEqual(Darwin.close(descriptor), 0)
+        try FileManager.default.setAttributes(
+            [.modificationDate: originalDate],
+            ofItemAtPath: executableURL.path
+        )
+
+        let replacementDigest = try ManagedRuntimeDigest.sha256Hex(fileURL: executableURL)
+        XCTAssertNotEqual(replacementDigest, originalDigest)
+        XCTAssertEqual(replacementDigest, ManagedRuntimeDigest.sha256Hex(data: replacement))
+    }
+
     func testBundledCodexRuntimeResolverRejectsTamperingAndLinks() throws {
         for kind in ["digest", "symlink", "writable"] {
             let temporaryRoot = try makePrivateTemporaryDirectory(

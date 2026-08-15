@@ -29,8 +29,16 @@ struct TextExtractionService: Sendable {
     }
 
     func extractText(from url: URL) -> String? {
+        extractText(from: url, isCancelled: { false })
+    }
+
+    func extractText(
+        from url: URL,
+        isCancelled: @Sendable () -> Bool
+    ) -> String? {
         let fileExtension = url.pathExtension.lowercased()
-        guard supports(url),
+        guard !isCancelled(),
+              supports(url),
               let values = try? url.resourceValues(forKeys: [.fileSizeKey]),
               let fileSize = values.fileSize,
               fileSize > 0,
@@ -40,19 +48,47 @@ struct TextExtractionService: Sendable {
 
         let extracted: String?
         if fileExtension == "pdf" {
-            extracted = PDFDocument(url: url)?.string
+            extracted = Self.readPDF(
+                at: url,
+                maximumCharacterCount: maxCharacterCount,
+                isCancelled: isCancelled
+            )
         } else {
-            extracted = Self.readTextFile(at: url)
+            extracted = Self.readTextFile(at: url, isCancelled: isCancelled)
         }
 
-        guard let extracted else { return nil }
+        guard !isCancelled(), let extracted else { return nil }
         let trimmed = extracted.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         return String(trimmed.prefix(maxCharacterCount))
     }
 
-    private static func readTextFile(at url: URL) -> String? {
+    private static func readPDF(
+        at url: URL,
+        maximumCharacterCount: Int,
+        isCancelled: @Sendable () -> Bool
+    ) -> String? {
+        guard !isCancelled(), let document = PDFDocument(url: url) else { return nil }
+        var result = ""
+        result.reserveCapacity(min(maximumCharacterCount, 32_768))
+        for pageIndex in 0..<document.pageCount {
+            guard !isCancelled(), result.count < maximumCharacterCount else { break }
+            guard let pageText = document.page(at: pageIndex)?.string, !pageText.isEmpty else {
+                continue
+            }
+            if !result.isEmpty { result.append("\n") }
+            let remaining = maximumCharacterCount - result.count
+            result.append(contentsOf: pageText.prefix(remaining))
+        }
+        return result.isEmpty ? nil : result
+    }
+
+    private static func readTextFile(
+        at url: URL,
+        isCancelled: @Sendable () -> Bool
+    ) -> String? {
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+              !isCancelled(),
               !data.isEmpty,
               !data.prefix(4_096).contains(0) else {
             return nil
@@ -65,6 +101,7 @@ struct TextExtractionService: Sendable {
             .utf16BigEndian,
             .isoLatin1
         ] {
+            guard !isCancelled() else { return nil }
             if let text = String(data: data, encoding: encoding) {
                 return text
             }
@@ -96,24 +133,12 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
 
     func sorted(_ files: [IndexedFile], ascending: Bool) -> [IndexedFile] {
         guard self != .relevance else { return files }
-
-        let kindSortRanks: [FileKind: Int]
         if self == .kind {
-            kindSortRanks = Dictionary(
-                uniqueKeysWithValues: FileKind.allCases
-                    .sorted {
-                        $0.localizedTitle.localizedStandardCompare($1.localizedTitle)
-                            == .orderedAscending
-                    }
-                    .enumerated()
-                    .map { ($0.element, $0.offset) }
-            )
-        } else {
-            kindSortRanks = [:]
+            return sortedByKind(files, ascending: ascending)
         }
 
         return files.sorted { lhs, rhs in
-            let result = comparison(lhs, rhs, kindSortRanks: kindSortRanks)
+            let result = comparison(lhs, rhs)
             if result == .orderedSame {
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
             }
@@ -123,8 +148,7 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
 
     private func comparison(
         _ lhs: IndexedFile,
-        _ rhs: IndexedFile,
-        kindSortRanks: [FileKind: Int]
+        _ rhs: IndexedFile
     ) -> ComparisonResult {
         switch self {
         case .relevance:
@@ -138,11 +162,34 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
         case .size:
             return compare(lhs.size, rhs.size)
         case .kind:
-            return compare(
-                kindSortRanks[lhs.kind] ?? Int.max,
-                kindSortRanks[rhs.kind] ?? Int.max
-            )
+            return .orderedSame
         }
+    }
+
+    /// Sort names once, then partition into seven kind buckets. Comparing a
+    /// localized name for every same-kind pair made the 100k-file kind sort
+    /// pay that cost throughout a second O(n log n) sort.
+    private func sortedByKind(_ files: [IndexedFile], ascending: Bool) -> [IndexedFile] {
+        let orderedKinds = FileKind.allCases.sorted {
+            $0.localizedTitle.localizedStandardCompare($1.localizedTitle) == .orderedAscending
+        }
+        let rankByKind = Dictionary(uniqueKeysWithValues: orderedKinds.enumerated().map {
+            ($0.element, $0.offset)
+        })
+        let nameOrdered = files.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
+        var buckets = Array(repeating: [IndexedFile](), count: orderedKinds.count)
+        for file in nameOrdered {
+            buckets[rankByKind[file.kind] ?? orderedKinds.count - 1].append(file)
+        }
+        let ranks = ascending ? Array(buckets.indices) : Array(buckets.indices.reversed())
+        var result: [IndexedFile] = []
+        result.reserveCapacity(files.count)
+        for rank in ranks {
+            result.append(contentsOf: buckets[rank])
+        }
+        return result
     }
 
     private func compareOptionalDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {

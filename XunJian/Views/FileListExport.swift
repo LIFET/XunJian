@@ -72,14 +72,14 @@ enum FileListExport {
                 break
             case .all:
                 guard await appModel.loadAllSearchResults() else { return }
-                files = appModel.filesMatchingCurrentBrowseFilters()
+                files = await appModel.filesMatchingCurrentBrowseFilters()
             }
         }
         guard !files.isEmpty else {
-            appModel.errorMessage = AppLanguage.localized(
+            appModel.reportError(AppLanguage.localized(
                 "当前没有可导出的文件。",
                 english: "There are no files to export right now."
-            )
+            ))
             return
         }
 
@@ -91,9 +91,7 @@ enum FileListExport {
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
 
-        let categoryNames = files.reduce(into: [String: [String]]()) { result, file in
-            result[file.id] = appModel.categories(for: file).map(\.localizedDisplayName)
-        }
+        let categoryNames = await appModel.categoryNamesForExport(files)
         let filesSnapshot = files
         appModel.startFileListExport(totalCount: files.count) { reportProgress in
             try await Task.detached(priority: .userInitiated) {
@@ -105,6 +103,19 @@ enum FileListExport {
                     progress: reportProgress
                 )
             }.value
+        }
+    }
+
+    nonisolated static func categoryNames(
+        for files: [IndexedFile],
+        links: [String: Set<UUID>],
+        namesByID: [UUID: String],
+        orderByID: [UUID: Int]
+    ) -> [String: [String]] {
+        files.reduce(into: [String: [String]]()) { result, file in
+            result[file.id] = (links[file.id] ?? [])
+                .sorted { (orderByID[$0] ?? .max) < (orderByID[$1] ?? .max) }
+                .compactMap { namesByID[$0] }
         }
     }
 

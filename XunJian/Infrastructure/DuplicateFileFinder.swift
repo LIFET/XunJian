@@ -44,6 +44,11 @@ enum DuplicateFileFinder {
         var unreadCount: Int
     }
 
+    struct Fingerprint: Equatable, Sendable {
+        let digest: String
+        let version: FileSystemObjectVersion
+    }
+
     static func find(
         in files: [IndexedFile],
         progress: ProgressHandler = { _, _ in }
@@ -114,6 +119,19 @@ enum DuplicateFileFinder {
         return Result(groups: groups, unreadCount: unreadCount)
     }
 
+    /// Re-hashes the exact candidates immediately before cleanup. Indexed size
+    /// and modification dates are only hints; the current bytes are authoritative.
+    static func stillMatches(_ group: DuplicateGroup) async throws -> Bool {
+        let result = try await find(in: group.files)
+        guard result.unreadCount == 0,
+              result.groups.count == 1,
+              let verified = result.groups.first,
+              verified.hash == group.hash else {
+            return false
+        }
+        return Set(verified.files.map(\.id)) == Set(group.files.map(\.id))
+    }
+
     /// Directories (including document packages) cannot be hashed as a single
     /// file handle, so they are reported as unread instead of failing the scan.
     static func canHashFile(at url: URL) -> Bool {
@@ -128,9 +146,21 @@ enum DuplicateFileFinder {
     /// loaded into memory at once. The read loop is blocking I/O, so it runs
     /// on a detached task instead of occupying a cooperative pool thread.
     static func hash(fileAt url: URL) async throws -> String {
+        try await fingerprint(fileAt: url).digest
+    }
+
+    /// Reads from one descriptor and requires metadata to remain identical for
+    /// the whole hash, so a concurrent writer cannot produce a mixed digest.
+    static func fingerprint(fileAt url: URL) async throws -> Fingerprint {
         try await Task.detached(priority: .userInitiated) {
             let handle = try FileHandle(forReadingFrom: url)
             defer { try? handle.close() }
+
+            var before = stat()
+            guard fstat(handle.fileDescriptor, &before) == 0 else {
+                throw FileOperationError.fileNotFound
+            }
+            let beforeVersion = FileSystemObjectVersion(metadata: before)
 
             var hasher = SHA256()
             while true {
@@ -140,7 +170,15 @@ enum DuplicateFileFinder {
                 }
                 hasher.update(data: chunk)
             }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            var after = stat()
+            guard fstat(handle.fileDescriptor, &after) == 0 else {
+                throw FileOperationError.fileNotFound
+            }
+            guard beforeVersion == FileSystemObjectVersion(metadata: after) else {
+                throw FileOperationError.fileIdentityChanged
+            }
+            let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            return Fingerprint(digest: digest, version: beforeVersion)
         }.value
     }
 

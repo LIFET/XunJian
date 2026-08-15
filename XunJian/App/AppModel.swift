@@ -38,6 +38,7 @@ struct FileCategoryAssignmentKey: Hashable, Sendable {
 struct PendingCategoryAssignment: Equatable, Sendable {
     let desiredAssignment: Bool
     let revision: UInt64
+    let recordsUndo: Bool
 }
 
 @MainActor
@@ -93,7 +94,8 @@ final class AppModel: ObservableObject {
             }
         }
     }
-    @Published var errorMessage: String?
+    @Published private(set) var errorMessage: String?
+    private var pendingErrorMessages: [String] = []
     @Published var settingsErrorMessage: String?
     @Published var renameRequest: IndexedFile?
     @Published var trashRequest: IndexedFile?
@@ -195,6 +197,10 @@ final class AppModel: ObservableObject {
     /// nothing has been prepared yet, which is the only case that warrants
     /// showing a spinner.
     @Published var browseSnapshotSignature: Int?
+    /// Hash of the user-driven snapshot inputs (query, kind, sort, filters).
+    /// When a refresh's signature differs only through index revisions, the
+    /// view can settle the burst before re-sorting a six-figure list.
+    @Published var browseSnapshotUserSignature: Int?
 
     /// The files currently visible on the active page. Export and ⌘A read
     /// this rather than the All Files snapshot, which goes stale after the
@@ -204,14 +210,23 @@ final class AppModel: ObservableObject {
     /// to export”, so Settings cannot silently dump the whole index.
     @Published private(set) var hasPublishedCommandTarget = false
     @Published private(set) var commandTargetUsesGlobalSearchPagination = false
+    private var commandTargetSignature: Int?
 
     func updateCommandTargetFiles(
         _ files: [IndexedFile],
-        usesGlobalSearchPagination: Bool = false
+        usesGlobalSearchPagination: Bool = false,
+        signature: Int? = nil
     ) {
+        if let signature,
+           hasPublishedCommandTarget,
+           commandTargetSignature == signature,
+           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination {
+            return
+        }
         // Compare without allocating two ID arrays: publishing a 100k-file
         // snapshot was churning two full-size arrays per call.
-        if hasPublishedCommandTarget,
+        if signature == nil,
+           hasPublishedCommandTarget,
            commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination,
            files.count == commandTargetFiles.count,
            zip(files, commandTargetFiles).allSatisfy({ $0.id == $1.id }) {
@@ -219,6 +234,7 @@ final class AppModel: ObservableObject {
         }
         commandTargetFiles = files
         commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
+        commandTargetSignature = signature
         hasPublishedCommandTarget = true
     }
 
@@ -232,7 +248,7 @@ final class AppModel: ObservableObject {
             Task { [weak self] in
                 guard let self else { return }
                 guard await self.index.loadAllSearchResults(query: self.searchText) else { return }
-                self.applySelectAll(to: self.filesMatchingCurrentBrowseFilters())
+                self.applySelectAll(to: await self.filesMatchingCurrentBrowseFilters())
             }
             return
         }
@@ -272,11 +288,36 @@ final class AppModel: ObservableObject {
         applyFileSelection(next)
     }
 
-    func filesMatchingCurrentBrowseFilters() -> [IndexedFile] {
+    func filesMatchingCurrentBrowseFilters() async -> [IndexedFile] {
         let minSize = Int64(filterMinSizeMB * 1_024 * 1_024)
         let minDate = filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil
         let kind = selectedKind
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let indexedFiles = files
+        let aiResults = aiSearchResults
+        let localResults = searchResults
+        return await Task.detached(priority: .userInitiated) {
+            Self.filesMatchingBrowseFilters(
+                indexedFiles: indexedFiles,
+                aiSearchResults: aiResults,
+                searchResults: localResults,
+                query: query,
+                kind: kind,
+                minimumSize: minSize,
+                minimumDate: minDate
+            )
+        }.value
+    }
+
+    nonisolated static func filesMatchingBrowseFilters(
+        indexedFiles: [IndexedFile],
+        aiSearchResults: [IndexedFile]?,
+        searchResults: [IndexedFile]?,
+        query: String,
+        kind: FileKind?,
+        minimumSize: Int64,
+        minimumDate: Date?
+    ) -> [IndexedFile] {
         let source: [IndexedFile]
         if let aiSearchResults {
             if query.isEmpty {
@@ -285,19 +326,39 @@ final class AppModel: ObservableObject {
                 let matchingIDs = Set((searchResults ?? []).map(\.id))
                 source = aiSearchResults.filter { matchingIDs.contains($0.id) }
             }
-        } else if !query.isEmpty {
-            source = searchResults ?? []
+        } else if query.isEmpty {
+            source = indexedFiles
         } else {
-            source = files
+            source = searchResults ?? []
         }
         return source.filter { file in
             if let kind, file.kind != kind { return false }
-            if minSize > 0, file.size < minSize { return false }
-            if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
+            if minimumSize > 0, file.size < minimumSize { return false }
+            if let minimumDate,
+               let modifiedAt = file.modifiedAt,
+               modifiedAt < minimumDate {
                 return false
             }
             return true
         }
+    }
+
+    func categoryNamesForExport(_ files: [IndexedFile]) async -> [String: [String]] {
+        let links = index.fileCategoryLinksSnapshot()
+        let namesByID = Dictionary(uniqueKeysWithValues: index.categories.map {
+            ($0.id, $0.localizedDisplayName)
+        })
+        let orderByID = Dictionary(uniqueKeysWithValues: index.categories.enumerated().map {
+            ($0.element.id, $0.offset)
+        })
+        return await Task.detached(priority: .userInitiated) {
+            FileListExport.categoryNames(
+                for: files,
+                links: links,
+                namesByID: namesByID,
+                orderByID: orderByID
+            )
+        }.value
     }
 
     /// Click in a custom list or grid. Reads ⌘/⇧ from the current event so
@@ -356,7 +417,7 @@ final class AppModel: ObservableObject {
             do {
                 try await undo.undoLast()
             } catch {
-                errorMessage = Self.message(for: error)
+                reportError(Self.message(for: error))
             }
         }
     }
@@ -431,7 +492,22 @@ final class AppModel: ObservableObject {
     }
 
     func clearError() {
-        errorMessage = nil
+        if pendingErrorMessages.isEmpty {
+            errorMessage = nil
+        } else {
+            errorMessage = pendingErrorMessages.removeFirst()
+        }
+    }
+
+    func reportError(_ message: String) {
+        guard !message.isEmpty else { return }
+        guard let errorMessage else {
+            self.errorMessage = message
+            return
+        }
+        guard errorMessage != message,
+              !pendingErrorMessages.contains(message) else { return }
+        pendingErrorMessages.append(message)
     }
 
     func clearSettingsError() {
@@ -468,7 +544,7 @@ final class AppModel: ObservableObject {
                 // The atomic writer removes its temporary artifact.
             } catch {
                 guard fileExportRevision == revision else { return }
-                errorMessage = error.localizedDescription
+                reportError(error.localizedDescription)
             }
             guard fileExportRevision == revision else { return }
             fileExportProgressStore.update(nil)
@@ -489,6 +565,10 @@ final class AppModel: ObservableObject {
 
     func requestTrash(_ file: IndexedFile) {
         trashRequest = file
+    }
+
+    func confirmDuplicateTrash(_ group: DuplicateGroup) async throws {
+        try await index.confirmDuplicateTrash(group)
     }
 
     static func shouldDeactivateActiveAPIKeyForVerification(
@@ -518,29 +598,37 @@ final class AppModel: ObservableObject {
         let plan = try await service.searchPlan(for: query)
         try Task.checkCancellation()
 
-        let candidates: [IndexedFile]
+        let indexedFiles = index.files
+        let matchedFiles: [IndexedFile]?
         if plan.keywords.isEmpty {
-            candidates = index.files
+            matchedFiles = nil
         } else {
             // F13: one OR query instead of up to 12 separate FTS round-trips.
             // The candidate order comes from `files` either way, so batching
             // the lookup does not change the result set.
-            var candidateByID: [String: IndexedFile] = [:]
             // AI filters must see the complete local candidate set. Ordinary
             // search paginates for presentation, but silently truncating this
             // set would make a valid file impossible for the plan to return.
             let candidateLimit = max(index.files.count, 1)
-            for file in try await index.searchFiles(
+            matchedFiles = try await index.searchFiles(
                 matchingAnyOf: plan.keywords,
                 limit: candidateLimit
-            ) {
-                candidateByID[file.id] = file
-            }
-            candidates = index.files.filter { candidateByID[$0.id] != nil }
+            )
         }
 
         try Task.checkCancellation()
-        aiSearchResults = plan.filter(candidates)
+        let filteredResults = await Task.detached(priority: .userInitiated) {
+            let candidates: [IndexedFile]
+            if let matchedFiles {
+                let matchingIDs = Set(matchedFiles.map(\.id))
+                candidates = indexedFiles.filter { matchingIDs.contains($0.id) }
+            } else {
+                candidates = indexedFiles
+            }
+            return plan.filter(candidates)
+        }.value
+        try Task.checkCancellation()
+        aiSearchResults = filteredResults
         aiSearchPlan = plan
         aiSearchQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         if !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -671,13 +759,13 @@ final class AppModel: ObservableObject {
             self?.ai.restorePendingActiveProviderIfEligible()
         }
         oauth.onFailure = { [weak self] message in
-            self?.errorMessage = message
+            self?.reportError(message)
         }
     }
 
     private func wireAISessionCoordinator() {
         ai.onError = { [weak self] message in
-            self?.errorMessage = message
+            self?.reportError(message)
         }
         ai.onActiveProviderChanged = { [weak self] in
             self?.index.scheduleSearch(query: self?.searchText ?? "")
@@ -693,7 +781,7 @@ final class AppModel: ObservableObject {
     private func wireIndexCoordinator() {
         index.undoCoordinator = undo
         index.onError = { [weak self] message in
-            self?.errorMessage = message
+            self?.reportError(message)
         }
         index.onFilesChanged = { [weak self] in
             guard let self else { return }
@@ -768,6 +856,10 @@ final class AppModel: ObservableObject {
 
     func files(in category: FileCategory) -> [IndexedFile] {
         index.files(in: category)
+    }
+
+    func files(ids: Set<String>) -> [IndexedFile] {
+        index.files(ids: ids)
     }
 
     func fileCount(in category: FileCategory) -> Int {
@@ -937,7 +1029,7 @@ final class AppModel: ObservableObject {
             index.addCategory(category, toFiles: assigned)
         }
         if !skippedNames.isEmpty {
-            errorMessage = assigned.isEmpty
+            reportError(assigned.isEmpty
                 ? AppLanguage.localized(
                     "这些文件尚未建立索引，请先在设置中添加它们所在的文件夹。",
                     english: "These files are not indexed yet. Add their folders in Settings first."
@@ -946,6 +1038,7 @@ final class AppModel: ObservableObject {
                     "已添加 \(assigned.count) 个文件；有 \(skippedNames.count) 个还不在索引中。",
                     english: "Added \(assigned.count) file(s); \(skippedNames.count) are not indexed yet."
                 )
+            )
         }
         return !assigned.isEmpty
     }
@@ -961,25 +1054,24 @@ final class AppModel: ObservableObject {
     }
 
     func handleExternalPaths(_ paths: [String]) {
-        var filesByPath: [String: IndexedFile] = [:]
-        for file in index.files {
-            filesByPath[FilePathCanonicalizer.path(file.url)] = file
-        }
         var matchedIDs: Set<String> = []
         var unmatchedURLs: [URL] = []
         for path in paths {
-            if let file = filesByPath[FilePathCanonicalizer.path(path)] {
+            let url = URL(fileURLWithPath: path)
+            if let file = index.file(at: url) {
                 matchedIDs.insert(file.id)
             } else {
-                unmatchedURLs.append(URL(fileURLWithPath: path))
+                unmatchedURLs.append(url)
             }
         }
         if !matchedIDs.isEmpty {
             selectedFileIDs = matchedIDs
-            errorMessage = unmatchedURLs.isEmpty ? nil : AppLanguage.localized(
-                "已选择索引中的文件；另有 \(unmatchedURLs.count) 个文件尚未建立索引。",
-                english: "Selected the indexed files; \(unmatchedURLs.count) file(s) are not indexed yet."
-            )
+            if !unmatchedURLs.isEmpty {
+                reportError(AppLanguage.localized(
+                    "已选择索引中的文件；另有 \(unmatchedURLs.count) 个文件尚未建立索引。",
+                    english: "Selected the indexed files; \(unmatchedURLs.count) file(s) are not indexed yet."
+                ))
+            }
         }
         if matchedIDs.isEmpty, !unmatchedURLs.isEmpty {
             NSWorkspace.shared.activateFileViewerSelecting(unmatchedURLs)
@@ -1029,16 +1121,6 @@ final class AppModel: ObservableObject {
         in sources: [FileSource]
     ) -> [FileSource] {
         FileIndexCoordinator.sourcesAffected(by: urls, in: sources)
-    }
-
-    static func shouldRemoveMissingFiles(
-        failedScopeCount: Int,
-        hasRemovalEvents: Bool
-    ) -> Bool {
-        FileIndexCoordinator.shouldRemoveMissingFiles(
-            failedScopeCount: failedScopeCount,
-            hasRemovalEvents: hasRemovalEvents
-        )
     }
 
     static func shouldQueueFullRescan(isScanning: Bool) -> Bool {

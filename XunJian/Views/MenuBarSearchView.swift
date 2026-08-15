@@ -72,6 +72,10 @@ struct MenuBarSearchView: View {
             highlightedIndex = 0
             scheduleFilter(immediate: false)
         }
+        .onChange(of: appModel.filesRevision) { _, _ in
+            highlightedIndex = 0
+            scheduleFilter(immediate: true)
+        }
         .onChange(of: displayedResults.count) { _, count in
             if highlightedIndex >= count {
                 highlightedIndex = max(count - 1, 0)
@@ -237,8 +241,10 @@ struct MenuBarSearchView: View {
 
     @MainActor
     private func rebuildResults() async {
+        let sourceRevision = appModel.filesRevision
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            guard appModel.filesRevision == sourceRevision else { return }
             displayedResults = Array(appModel.recentFiles.prefix(Self.maximumResults))
             remainingCount = 0
             return
@@ -261,7 +267,8 @@ struct MenuBarSearchView: View {
         } onCancel: {
             cancellationFlag.cancel()
         }
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled,
+              appModel.filesRevision == sourceRevision else { return }
         displayedResults = result.files
         remainingCount = result.remainingCount
     }

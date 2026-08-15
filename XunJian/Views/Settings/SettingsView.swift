@@ -99,7 +99,6 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .id(language)
 
                 Picker(
                     AppLanguage.localized("默认顺序", english: "Default Order"),
@@ -109,7 +108,6 @@ struct SettingsView: View {
                     Text(verbatim: AppLanguage.localized("降序", english: "Descending")).tag(false)
                 }
                 .pickerStyle(.menu)
-                .id(language)
 
                 Picker(
                     AppLanguage.localized("默认显示方式", english: "Default View"),
@@ -120,7 +118,6 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .id(language)
 
                 Picker(
                     AppLanguage.localized("双击文件时", english: "Double-clicking a file"),
@@ -131,7 +128,6 @@ struct SettingsView: View {
                     }
                 }
                 .pickerStyle(.menu)
-                .id(language)
             }
 
             Section(AppLanguage.localized("文件位置", english: "Locations")) {
@@ -322,7 +318,12 @@ struct SettingsView: View {
                     Button(AppLanguage.localized("重新扫描全部位置", english: "Rescan All Locations")) {
                         appModel.refreshAllSources()
                     }
-                    .disabled(appModel.isScanning)
+                    .disabled(
+                        appModel.isScanning
+                            || !appModel.sources.contains(where: {
+                                $0.enabled && $0.accessState == .available
+                            })
+                    )
                     .disabled(!appModel.isDatabaseAvailable)
                 }
             }
@@ -606,7 +607,7 @@ struct SettingsView: View {
             Button(AppLanguage.localized("重新扫描", english: "Rescan")) {
                 appModel.scanSource(source)
             }
-            .disabled(appModel.isScanning)
+            .disabled(appModel.isScanning || !source.enabled)
             .disabled(!appModel.isDatabaseAvailable)
         } else {
             Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {

@@ -349,6 +349,7 @@ enum ManagedRuntimeDigest {
         let inode: UInt64
         let size: Int64
         let modificationNanoseconds: UInt64
+        let changeNanoseconds: UInt64
     }
 
     private static let cacheLock = NSLock()
@@ -366,18 +367,7 @@ enum ManagedRuntimeDigest {
         }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
 
-        var openedInformation = stat()
-        guard fstat(descriptor, &openedInformation) == 0 else {
-            throw ManagedRuntimeDigestError.unreadableFile
-        }
-        let identity = FileIdentity(
-            device: UInt64(openedInformation.st_dev),
-            inode: UInt64(openedInformation.st_ino),
-            size: openedInformation.st_size,
-            modificationNanoseconds:
-                UInt64(openedInformation.st_mtimespec.tv_sec) * 1_000_000_000
-                + UInt64(openedInformation.st_mtimespec.tv_nsec)
-        )
+        let identity = try fileIdentity(descriptor: descriptor)
 
         cacheLock.lock()
         if let cached = cachedDigests[path], cached.identity == identity {
@@ -396,9 +386,31 @@ enum ManagedRuntimeDigest {
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
 
+        guard try fileIdentity(descriptor: descriptor) == identity else {
+            throw ManagedRuntimeDigestError.unreadableFile
+        }
+
         cacheLock.lock()
         cachedDigests[path] = (identity, digest)
         cacheLock.unlock()
         return digest
+    }
+
+    private static func fileIdentity(descriptor: Int32) throws -> FileIdentity {
+        var information = stat()
+        guard fstat(descriptor, &information) == 0 else {
+            throw ManagedRuntimeDigestError.unreadableFile
+        }
+        return FileIdentity(
+            device: UInt64(information.st_dev),
+            inode: UInt64(information.st_ino),
+            size: information.st_size,
+            modificationNanoseconds:
+                UInt64(information.st_mtimespec.tv_sec) * 1_000_000_000
+                + UInt64(information.st_mtimespec.tv_nsec),
+            changeNanoseconds:
+                UInt64(information.st_ctimespec.tv_sec) * 1_000_000_000
+                + UInt64(information.st_ctimespec.tv_nsec)
+        )
     }
 }
