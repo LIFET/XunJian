@@ -23,3 +23,13 @@
 ## 下一步
 
 按 `docs/MANUAL_ACCEPTANCE.md` 人工验证 VoiceOver 导出取消、AI 新建分类、保存搜索确认、登录启动取消后立即重试与运行中退出。用户确认稳定后再另行构建、公证 DMG。
+
+## 第五轮（继续全面检查 · 落地项）
+
+- **All Files 卡顿**：移除 `EquatableSnapshotList` 的 selectionToken 比较——此前每次点击/方向键选择都会重建 10 万行 Table 视图树；Table 高亮由绑定驱动，无需整表重建。
+- **Grok 验证容错（真实服务器漂移防御）**：setup 通知序列由“恰好 5 条固定顺序”改为有序必达子集遍历（容忍多余生命周期事件）；命令目录由“6 条全等”改为“必含 6 个已知名 + 额外命令仅允许 hint-only 输入”（有真实参数 schema 仍 fail-closed）；模型接受 grok-4.* 前缀、reasoning effort 接受 high/xhigh/max；response_started/reasoning_completed/sessions.changed 键集由严格相等改为必含子集；完成判定放宽为 response_completed 或 turn_completed 任一。
+- **OAuth 超时叠层**：RPC 单请求可超过默认 45s（上限 75s）；验证外层窗口 45s→60s（低于客户端 XPC 70s）；Grok session/new 5s→15s；Grok session/prompt 与 Codex turn/start 显式传 75s 上限，冷启动慢响应不再被内层超时先杀。
+- **验证与清理解耦**：closeAfterVerification 不再把会话历史删除（best-effort 隐私控制）AND 进验证成功判定，删除子进程失败不再把成功验证翻成失败。
+- **扫描速度**：单源扫描后不再全库 reloadIndex（改为按该源增量发布，消除每次扫描后全库重物化+重排序）；增量 FSEvents 批次的正文提取移出枚举串行路径（元数据先行、之后 4 路并发 + 分批写库 + 取消丢弃 staging）；FSEvents 事件路径不再在回调里重复 canonical 化（scanChanges 的记忆化统一处理）；枚举加 .skipsHiddenFiles、缓存 resourceKeys 集合、取消检查改 64 步一查；canonical 缓存未命中只解析父目录一次。
+- 验证：arm64 Debug 构建通过；App 296/296（2 项发布门禁按设计跳过）+ OAuth Process 37/37，0 失败；发布门禁 50k 0.850s / 100k 2.116s（较上轮 1.177s/3.122s 提升）。
+- 备注：全量测试曾出现桥套件连锁超时，根因是脚本化测试在负载下的偶发断言 SIGTRAP 导致 launchd XPC 状态残留；隔离复跑全部通过，未再复现。
