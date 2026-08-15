@@ -44,8 +44,15 @@ struct AppShellView: View {
                             .padding(.bottom, 10)
                     }
 
-                    ScanStatusBanner(store: appModel.scanProgressStore) {
-                        appModel.cancelScan()
+                    ScanStatusBanner(
+                        store: appModel.scanProgressStore,
+                        pausesInsteadOfCancels: appModel.scanScopeMode == .wholeMac
+                    ) {
+                        if appModel.scanScopeMode == .wholeMac {
+                            appModel.pauseWholeMacScan()
+                        } else {
+                            appModel.cancelScan()
+                        }
                     }
 
                     FileExportProgressBanner(
@@ -73,15 +80,13 @@ struct AppShellView: View {
             }
         }
         .inspector(isPresented: inspectorPresentation) {
-            if supportsInspector {
-                FileInspectorView(file: appModel.selectedFile)
-                    .inspectorColumnWidth(min: 260, ideal: 300, max: 360)
-                    .environment(\.locale, locale)
-                    .disabled(!appModel.isDatabaseAvailable)
-                    // Separates the inspector from the content area with depth
-                    // rather than relying on a hairline divider alone.
-                    .background(.regularMaterial)
-            }
+            FileInspectorView(file: appModel.selectedFile)
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 360)
+                .environment(\.locale, locale)
+                .disabled(!appModel.isDatabaseAvailable || !supportsInspector)
+                // Separates the inspector from the content area with depth
+                // rather than relying on a hairline divider alone.
+                .background(.regularMaterial)
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -391,6 +396,12 @@ struct AppShellView: View {
                 .allowsHitTesting(showsAllFiles)
                 .accessibilityHidden(!showsAllFiles)
                 .zIndex(showsAllFiles ? 1 : 0)
+                // Inspector open/close animates the detail width. The file
+                // list must keep its Table/Grid identity instead of
+                // interpolating a different container tree.
+                .transaction(value: showsInspector) { transaction in
+                    transaction.animation = nil
+                }
 
             if !showsAllFiles {
                 overlayContent(current, contentWidth: contentWidth)
@@ -553,11 +564,26 @@ private struct ScanStatusBanner: View {
     @ObservedObject var store: ScanProgressStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let cancel: () -> Void
+    let pausesInsteadOfCancels: Bool
+
+    init(
+        store: ScanProgressStore,
+        pausesInsteadOfCancels: Bool,
+        cancel: @escaping () -> Void
+    ) {
+        self.store = store
+        self.pausesInsteadOfCancels = pausesInsteadOfCancels
+        self.cancel = cancel
+    }
 
     var body: some View {
         Group {
             if let progress = store.progress {
-                ScanStatusView(progress: progress, cancel: cancel)
+                ScanStatusView(
+                    progress: progress,
+                    pausesInsteadOfCancels: pausesInsteadOfCancels,
+                    cancel: cancel
+                )
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -651,6 +677,7 @@ private struct DatabaseUnavailableBanner: View {
 
 private struct ScanStatusView: View {
     let progress: ScanProgress
+    let pausesInsteadOfCancels: Bool
     let cancel: () -> Void
 
     var body: some View {
@@ -704,7 +731,12 @@ private struct ScanStatusView: View {
     }
 
     private var cancelButton: some View {
-        Button(AppLanguage.localized("取消", english: "Cancel"), action: cancel)
+        Button(
+            pausesInsteadOfCancels
+                ? AppLanguage.localized("暂停", english: "Pause")
+                : AppLanguage.localized("取消", english: "Cancel"),
+            action: cancel
+        )
             .controlSize(.small)
             .buttonStyle(.bordered)
     }

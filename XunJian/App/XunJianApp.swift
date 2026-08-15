@@ -677,6 +677,7 @@ struct XunJianApp: App {
     @NSApplicationDelegateAdaptor(XunJianAppDelegate.self)
     private var appDelegate
     @StateObject private var appModel = AppModel()
+    @StateObject private var updateCoordinator = AppUpdateCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
@@ -697,6 +698,7 @@ struct XunJianApp: App {
                 .environmentObject(appModel.oauth)
                 .environmentObject(appModel.ai)
                 .environmentObject(appModel.index.categoryIndexStore)
+                .environmentObject(updateCoordinator)
                 .preferredColorScheme(
                     AppAppearance(rawValue: appearance)?.colorScheme
                 )
@@ -724,6 +726,7 @@ struct XunJianApp: App {
             // `XunJianCommands` supplies its own `.newItem` group; replacing it
             // here as well would drop those items.
             XunJianCommands(appModel: appModel, undo: appModel.undo)
+            AppUpdateCommands(coordinator: updateCoordinator)
             CommandGroup(replacing: .appSettings) {
                 Button(AppLanguage.localized("设置…", english: "Settings…")) {
                     NotificationCenter.default.post(

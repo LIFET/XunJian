@@ -8,6 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var oauth: OAuthCoordinator
     @EnvironmentObject private var ai: AISessionCoordinator
+    @EnvironmentObject private var updateCoordinator: AppUpdateCoordinator
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.controlActiveState) private var controlActiveState
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
@@ -194,11 +195,94 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
 
+                Picker(
+                    AppLanguage.localized("扫描范围", english: "Scan Scope"),
+                    selection: Binding(
+                        get: { appModel.scanScopeMode },
+                        set: { appModel.setScanScopeMode($0) }
+                    )
+                ) {
+                    ForEach(FileScanScopeMode.allCases) { mode in
+                        Text(verbatim: mode.localizedTitle).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .disabled(appModel.isScanning || !appModel.isDatabaseAvailable)
+
+                if appModel.scanScopeMode == .wholeMac {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if let source = appModel.wholeMacSource {
+                            sourceIdentity(source)
+                            Text(verbatim: AppLanguage.localized(
+                                "当前只扫描整台 Mac 范围；你添加的文件夹会保留，切回“指定文件夹”后继续使用。",
+                                english: "Only the Entire Mac scope is active. Added folders are retained and resume when you switch back."
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            HStack(spacing: 10) {
+                                sourcePrimaryAction(source)
+                                if appModel.isScanning {
+                                    Button(AppLanguage.localized(
+                                        "暂停扫描",
+                                        english: "Pause Scan"
+                                    )) {
+                                        appModel.pauseWholeMacScan()
+                                    }
+                                } else if appModel.isWholeMacScanPaused {
+                                    Button(AppLanguage.localized(
+                                        "继续扫描",
+                                        english: "Resume Scan"
+                                    )) {
+                                        appModel.resumeWholeMacScan()
+                                    }
+                                    .buttonStyle(.borderedProminent)
+                                }
+                                Button(AppLanguage.localized(
+                                    "完全磁盘访问设置…",
+                                    english: "Full Disk Access Settings…"
+                                )) {
+                                    appModel.openFullDiskAccessSettings()
+                                }
+                            }
+                        } else {
+                            Text(verbatim: AppLanguage.localized(
+                                "整台 Mac 扫描需要你先选择启动磁盘，并在系统设置中按需授予完全磁盘访问。未授权前不会开始扫描。",
+                                english: "Entire Mac scanning requires selecting the startup disk and granting Full Disk Access when needed. Scanning does not start before authorization."
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            HStack(spacing: 10) {
+                                Button(AppLanguage.localized(
+                                    "授权整台 Mac…",
+                                    english: "Authorize Entire Mac…"
+                                )) {
+                                    appModel.chooseWholeMacScope()
+                                }
+                                .buttonStyle(.borderedProminent)
+                                Button(AppLanguage.localized(
+                                    "打开完全磁盘访问设置…",
+                                    english: "Open Full Disk Access Settings…"
+                                )) {
+                                    appModel.openFullDiskAccessSettings()
+                                }
+                            }
+                        }
+                    }
+                    .padding(12)
+                    .background(
+                        XunJianUI.Fill.quiet,
+                        in: RoundedRectangle(
+                            cornerRadius: XunJianUI.Radius.card,
+                            style: .continuous
+                        )
+                    )
+                }
+
                 ViewThatFits(in: .horizontal) {
                     HStack(spacing: 12) {
                         LabeledContent(
                             AppLanguage.localized("已授权目录", english: "Authorized Folders"),
-                            value: "\(appModel.sources.count)"
+                            value: "\(appModel.selectedFolderSources.count)"
                         )
                         Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                             appModel.chooseFolder()
@@ -209,7 +293,7 @@ struct SettingsView: View {
                     VStack(alignment: .leading, spacing: 8) {
                         LabeledContent(
                             AppLanguage.localized("已授权目录", english: "Authorized Folders"),
-                            value: "\(appModel.sources.count)"
+                            value: "\(appModel.selectedFolderSources.count)"
                         )
                         Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
                             appModel.chooseFolder()
@@ -246,7 +330,7 @@ struct SettingsView: View {
                     in: RoundedRectangle(cornerRadius: XunJianUI.Radius.control, style: .continuous)
                 )
 
-                ForEach(appModel.sources) { source in
+                ForEach(appModel.selectedFolderSources) { source in
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: 12) {
                             sourceIdentity(source)
@@ -444,6 +528,45 @@ struct SettingsView: View {
                 guard !isScanning else { return }
                 Task {
                     indexStatistics = await IndexStatistics.make(files: appModel.files)
+                }
+            }
+
+            Section(AppLanguage.localized("软件更新", english: "Software Update")) {
+                LabeledContent(
+                    AppLanguage.localized("当前版本", english: "Current Version"),
+                    value: Bundle.main.object(
+                        forInfoDictionaryKey: "CFBundleShortVersionString"
+                    ) as? String ?? "—"
+                )
+
+                Toggle(
+                    AppLanguage.localized(
+                        "自动检查更新",
+                        english: "Automatically check for updates"
+                    ),
+                    isOn: Binding(
+                        get: { updateCoordinator.automaticallyChecksForUpdates },
+                        set: { updateCoordinator.automaticallyChecksForUpdates = $0 }
+                    )
+                )
+                .toggleStyle(.switch)
+                .disabled(!updateCoordinator.isConfigured)
+
+                Button(AppLanguage.localized("检查更新…", english: "Check for Updates…")) {
+                    updateCoordinator.checkForUpdates()
+                }
+                .disabled(
+                    !updateCoordinator.isConfigured
+                        || !updateCoordinator.canCheckForUpdates
+                )
+
+                if !updateCoordinator.isConfigured {
+                    Text(verbatim: AppLanguage.localized(
+                        "当前构建尚未配置受信任的 HTTPS 更新源和 EdDSA 公钥。发布版本配置后才会启用在线更新。",
+                        english: "This build has no trusted HTTPS update feed or EdDSA public key. Online updates activate only after the release build is configured."
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
             }
 

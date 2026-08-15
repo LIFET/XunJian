@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rss version="2.0"
+     xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
+  <channel>
+    <title>寻简更新</title>
+    <link>https://lifet.github.io/XunJian/</link>
+    <description>寻简正式版本更新</description>
+    <language>zh-CN</language>
+  </channel>
+</rss>

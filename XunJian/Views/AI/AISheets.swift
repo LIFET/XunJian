@@ -96,7 +96,14 @@ struct AISearchSheet: View {
                         isWorking ? "停止" : "取消",
                         english: isWorking ? "Stop" : "Cancel"
                     )
-                ) { cancelAndDismiss() }
+                ) {
+                    if isWorking {
+                        operationTask?.cancel()
+                        isWorking = false
+                    } else {
+                        dismiss()
+                    }
+                }
                     .keyboardShortcut(.cancelAction)
                 Button(AppLanguage.localized("查找", english: "Search"), action: search)
                     .keyboardShortcut(.defaultAction)
@@ -132,10 +139,6 @@ struct AISearchSheet: View {
         }
     }
 
-    private func cancelAndDismiss() {
-        operationTask?.cancel()
-        dismiss()
-    }
 }
 
 struct AIExplainSheet: View {
@@ -159,6 +162,12 @@ struct AIExplainSheet: View {
             isWorking: isWorking,
             showsStart: !hasStarted,
             start: startAnalysis,
+            stop: {
+                operationTask?.cancel()
+                operationTask = nil
+                isWorking = false
+                hasStarted = false
+            },
             dismiss: {
                 operationTask?.cancel()
                 dismiss()
@@ -169,6 +178,8 @@ struct AIExplainSheet: View {
 
     private func startAnalysis() {
         guard !hasStarted else { return }
+        output = ""
+        failure = nil
         hasStarted = true
         isWorking = true
         operationTask = Task {
@@ -188,6 +199,13 @@ struct AIExplainSheet: View {
 }
 
 struct AIQuestionSheet: View {
+    private struct Turn: Identifiable {
+        enum Role { case user, assistant }
+        let id = UUID()
+        let role: Role
+        let text: String
+    }
+
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
 
@@ -195,6 +213,7 @@ struct AIQuestionSheet: View {
 
     @State private var question = ""
     @State private var output = ""
+    @State private var turns: [Turn] = []
     @State private var failure: String?
     @State private var isWorking = false
     @State private var operationTask: Task<Void, Never>?
@@ -221,11 +240,26 @@ struct AIQuestionSheet: View {
                 .onSubmit(ask)
 
             Group {
-                if !output.isEmpty {
+                if !turns.isEmpty || !output.isEmpty {
                     ScrollView {
-                        Text(output)
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(turns) { turn in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(turn.role == .user
+                                         ? AppLanguage.localized("你", english: "You")
+                                         : AppLanguage.localized("AI", english: "AI"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(verbatim: turn.text)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            if isWorking {
+                                Text(verbatim: output)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     if isWorking {
                         ProgressView()
@@ -271,8 +305,13 @@ struct AIQuestionSheet: View {
                         english: isWorking ? "Stop" : "Close"
                     )
                 ) {
-                    operationTask?.cancel()
-                    dismiss()
+                    if isWorking {
+                        operationTask?.cancel()
+                        operationTask = nil
+                        isWorking = false
+                    } else {
+                        dismiss()
+                    }
                 }
                     .keyboardShortcut(.cancelAction)
                 Button(AppLanguage.localized("提问", english: "Ask"), action: ask)
@@ -290,14 +329,28 @@ struct AIQuestionSheet: View {
     }
 
     private func ask() {
+        let submittedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !submittedQuestion.isEmpty else { return }
+        let history = turns.suffix(6).map { turn in
+            let role = turn.role == .user ? "User" : "Assistant"
+            return "\(role): \(turn.text)"
+        }.joined(separator: "\n")
+        let contextualQuestion = history.isEmpty
+            ? submittedQuestion
+            : "Previous conversation:\n\(history)\n\nCurrent question: \(submittedQuestion)"
+        turns.append(Turn(role: .user, text: submittedQuestion))
+        question = ""
         isWorking = true
         failure = nil
         output = ""
         operationTask?.cancel()
         operationTask = Task {
             do {
-                let stream = try await appModel.askAIStream(question, about: file)
+                let stream = try await appModel.askAIStream(contextualQuestion, about: file)
                 try await consumeAIStreamForDisplay(stream) { output = $0 }
+                if !output.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    turns.append(Turn(role: .assistant, text: output))
+                }
             } catch is CancellationError {
                 isWorking = false
                 return
@@ -318,6 +371,7 @@ struct AITextResultSheet: View {
     let isWorking: Bool
     let showsStart: Bool
     let start: () -> Void
+    let stop: () -> Void
     let dismiss: () -> Void
 
     var body: some View {
@@ -395,7 +449,7 @@ struct AITextResultSheet: View {
                         isWorking ? "停止" : "关闭",
                         english: isWorking ? "Stop" : "Close"
                     ),
-                    action: dismiss
+                    action: isWorking ? stop : dismiss
                 )
                     .keyboardShortcut(.cancelAction)
                 if showsStart {
@@ -422,6 +476,7 @@ struct AIClassificationSheet: View {
     @State private var isWorking = false
     @State private var failure: String?
     @State private var fileSearchText = ""
+    @State private var includesFileContent = false
     @State private var operationTask: Task<Void, Never>?
     @State private var appliedChanges: [AIClassificationChange] = []
     @State private var showsAppliedConfirmation = false
@@ -467,9 +522,7 @@ struct AIClassificationSheet: View {
             await Task.detached(priority: .userInitiated) {
                 let base = cachedRevision == revision
                     ? cachedFiles
-                    : sourceFiles
-                        .filter { TextExtractionService.supports($0.url) }
-                        .sorted {
+                    : sourceFiles.sorted {
                             $0.name.localizedStandardCompare($1.name) == .orderedAscending
                         }
                 let filtered = query.isEmpty
@@ -497,8 +550,8 @@ struct AIClassificationSheet: View {
                 .font(.title2.weight(.semibold))
             Text(
                 AppLanguage.localized(
-                    "最多选择 8 个文件。AI 只会建议已有分类，确认后才写入本地索引。",
-                    english: "Choose up to 8 files. AI only suggests existing categories, and writes them after you confirm."
+                    "最多选择 50 个文件。AI 会分批给出带依据的建议；你可以逐项编辑，确认后才写入本地索引。",
+                    english: "Choose up to 50 files. AI suggests in bounded batches with reasons; edit each result before applying it."
                 )
             )
                 .font(.subheadline)
@@ -550,10 +603,8 @@ struct AIClassificationSheet: View {
             if !isCommittingChanges { operationTask?.cancel() }
         }
         .onAppear {
-            let supportedIDs = Set(appModel.files(ids: selectedFileIDs)
-                .filter(appModel.supportsTextContent)
-                .map(\.id))
-            selectedFileIDs.formIntersection(supportedIDs)
+            let indexedIDs = Set(appModel.files(ids: selectedFileIDs).map(\.id))
+            selectedFileIDs.formIntersection(indexedIDs)
         }
         .task(id: classificationListKey) {
             await refreshDisplayedClassificationFiles()
@@ -586,6 +637,15 @@ struct AIClassificationSheet: View {
 
     private var selectionList: some View {
         VStack(spacing: 10) {
+            Toggle(
+                AppLanguage.localized(
+                    "允许发送可提取正文（默认仅文件名和类型）",
+                    english: "Include extractable content (name and type only by default)"
+                ),
+                isOn: $includesFileContent
+            )
+            .toggleStyle(.switch)
+            .frame(maxWidth: .infinity, alignment: .leading)
             TextField(
                 AppLanguage.localized("搜索本地文件…", english: "Search local files…"),
                 text: $fileSearchText
@@ -614,7 +674,7 @@ struct AIClassificationSheet: View {
                 }
                 .buttonStyle(.plain)
                 .contentShape(Rectangle())
-                .disabled(!selectedFileIDs.contains(file.id) && selectedFileIDs.count >= 8)
+                .disabled(!selectedFileIDs.contains(file.id) && selectedFileIDs.count >= 50)
             }
             .listStyle(.bordered(alternatesRowBackgrounds: true))
         }
@@ -646,8 +706,8 @@ struct AIClassificationSheet: View {
             }
             Text(
                 AppLanguage.localized(
-                    "已选择 \(selectedFileIDs.count) / 8",
-                    english: "Selected \(selectedFileIDs.count) / 8"
+                    "已选择 \(selectedFileIDs.count) / 50",
+                    english: "Selected \(selectedFileIDs.count) / 50"
                 )
             )
             .font(.caption)
@@ -663,8 +723,13 @@ struct AIClassificationSheet: View {
                     english: isWorking && !isCommittingChanges ? "Stop" : "Cancel"
                 )
             ) {
-                operationTask?.cancel()
-                dismiss()
+                if isWorking && !isCommittingChanges {
+                    operationTask?.cancel()
+                    operationTask = nil
+                    isWorking = false
+                } else {
+                    dismiss()
+                }
             }
                 .keyboardShortcut(.cancelAction)
                 .disabled(isCommittingChanges)
@@ -691,23 +756,50 @@ struct AIClassificationSheet: View {
             let displayNames = localizedNames.isEmpty
                 ? suggestion.categoryNames
                 : localizedNames
-                HStack {
-                    Text(verbatim: suggestion.fileName)
-                        .lineLimit(1)
-                    Spacer()
-                    if suggestion.categoryIDs.isEmpty {
-                        Text(AppLanguage.localized("不建议分类", english: "No category suggested"))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text(verbatim: displayNames.joined(separator: " / "))
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text(verbatim: suggestion.fileName)
+                            .lineLimit(1)
+                        Spacer()
+                        Text(verbatim: "\(Int((suggestion.confidence * 100).rounded()))%")
+                            .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
-                    Button(
-                        AppLanguage.localized("移除此建议", english: "Remove Suggestion")
-                    ) {
-                        self.suggestions?.removeAll { $0.id == suggestion.id }
+                    Text(
+                        suggestion.categoryIDs.isEmpty
+                            ? AppLanguage.localized("不建议分类", english: "No category suggested")
+                            : displayNames.joined(separator: " / ")
+                    )
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    if !suggestion.reason.isEmpty {
+                        Text(verbatim: suggestion.reason)
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(2)
                     }
-                    .buttonStyle(.link)
+                    HStack(spacing: 12) {
+                        Menu(AppLanguage.localized("编辑分类…", english: "Edit Categories…")) {
+                            ForEach(appModel.categories) { category in
+                                Button {
+                                    toggleCategory(category, for: suggestion.id)
+                                } label: {
+                                    Label(
+                                        category.localizedDisplayName,
+                                        systemImage: suggestion.categoryIDs.contains(category.id)
+                                            ? "checkmark" : category.symbolName
+                                    )
+                                }
+                            }
+                        }
+                        .menuStyle(.borderlessButton)
+                        Button(
+                            AppLanguage.localized("跳过", english: "Skip")
+                        ) {
+                            self.suggestions?.removeAll { $0.id == suggestion.id }
+                        }
+                        .buttonStyle(.link)
+                    }
                 }
             }
         }
@@ -717,20 +809,33 @@ struct AIClassificationSheet: View {
     private func toggle(_ fileID: String) {
         if selectedFileIDs.contains(fileID) {
             selectedFileIDs.remove(fileID)
-        } else if selectedFileIDs.count < 8 {
+        } else if selectedFileIDs.count < 50 {
             selectedFileIDs.insert(fileID)
+        }
+    }
+
+    private func toggleCategory(_ category: FileCategory, for suggestionID: String) {
+        guard let index = suggestions?.firstIndex(where: { $0.id == suggestionID }) else { return }
+        if suggestions![index].categoryIDs.contains(category.id) {
+            suggestions![index].categoryIDs.removeAll { $0 == category.id }
+            suggestions![index].categoryNames.removeAll { $0 == category.name }
+        } else if suggestions![index].categoryIDs.count < 3 {
+            suggestions![index].categoryIDs.append(category.id)
+            suggestions![index].categoryNames.append(category.name)
         }
     }
 
     private func classify() {
         let selectedFiles = appModel.files(ids: selectedFileIDs)
-            .filter(appModel.supportsTextContent)
         isWorking = true
         failure = nil
         operationTask?.cancel()
         operationTask = Task {
             do {
-                let result = try await appModel.classifyWithAI(selectedFiles)
+                let result = try await appModel.classifyWithAI(
+                    selectedFiles,
+                    includesFileContent: includesFileContent
+                )
                 try Task.checkCancellation()
                 suggestions = result
             } catch is CancellationError {

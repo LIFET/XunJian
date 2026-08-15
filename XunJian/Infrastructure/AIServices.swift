@@ -406,6 +406,9 @@ struct AIMessage: Codable, Equatable, Sendable {
 
 protocol AIProvider: Sendable {
     var kind: AIProviderKind { get }
+    /// Upper bound for one prompt segment on this provider's transport.
+    /// The embedded OAuth bridge has a stricter IPC boundary than HTTP APIs.
+    var maximumPromptSegmentBytes: Int { get }
     func chat(_ messages: [AIMessage]) async throws -> String
     func chatStream(
         _ messages: [AIMessage]
@@ -413,6 +416,8 @@ protocol AIProvider: Sendable {
 }
 
 extension AIProvider {
+    var maximumPromptSegmentBytes: Int { 262_144 }
+
     /// Providers without a streaming wire protocol (the embedded OAuth
     /// runtimes) still conform by yielding their verified complete reply once.
     func chatStream(
@@ -559,7 +564,7 @@ enum AIServiceError: LocalizedError, Sendable {
         case .missingFileText: AppLanguage.localized("这个文件没有可供 AI 阅读的文本内容。", english: "This file has no text that the AI can read.")
         case .invalidQuestion: AppLanguage.localized("请输入要询问的问题。", english: "Enter a question.")
         case .invalidSearchQuery: AppLanguage.localized("请输入要查找的文件描述。", english: "Describe the files you want to find.")
-        case .invalidSelection: AppLanguage.localized("请选择 1 到 8 个文件。", english: "Select 1 to 8 files.")
+        case .invalidSelection: AppLanguage.localized("请选择 1 到 50 个文件。", english: "Select 1 to 50 files.")
         case .invalidConversation: AppLanguage.localized("AI 请求必须包含一条系统指令和一条用户消息。", english: "An AI request must contain one system instruction and one user message.")
         case .noCategories: AppLanguage.localized("请先创建至少一个分类，再使用 AI 分类。", english: "Create at least one category before using AI classification.")
         case .responseTooLarge: AppLanguage.localized("AI 响应超过安全大小限制。", english: "The AI response exceeded the safe size limit.")
@@ -847,6 +852,10 @@ struct OAuthAIProvider: AIProvider {
     private let bridge: any OAuthBridgeServicing
     private let model: String
 
+    var maximumPromptSegmentBytes: Int {
+        OAuthBridgeGenerationPolicy.maximumPromptSegmentBytes
+    }
+
     init(
         kind: AIProviderKind,
         model: String,
@@ -1063,38 +1072,173 @@ struct AISearchPlan: Equatable, Sendable {
 
 struct AIFileContext: Equatable, Sendable {
     let promptText: String
+    let includedCharacterCount: Int
+    let totalCharacterCount: Int
+    let isTruncated: Bool
 
     init(
         file: IndexedFile,
         maximumCharacterCount: Int = 40_000,
+        maximumUTF8Bytes: Int = 120_000,
+        textOverride: String? = nil,
         usesEnglish: Bool = AppLanguage.selected.usesEnglish
     ) throws {
-        guard maximumCharacterCount > 0,
-              let text = file.textContent?.trimmingCharacters(in: .whitespacesAndNewlines),
+        guard maximumCharacterCount > 0, maximumUTF8Bytes > 0,
+              let text = (textOverride ?? file.textContent)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
               !text.isEmpty else {
             throw AIServiceError.missingFileText
         }
+        let heading = usesEnglish
+            ? "File name: \(file.name)\nFile type: \(file.kind.localizedTitle)\nContent:\n"
+            : "文件名：\(file.name)\n文件类型：\(file.kind.localizedTitle)\n内容：\n"
+        let contentBudget = max(1, maximumUTF8Bytes - heading.utf8.count)
+        let characterLimited = String(text.prefix(maximumCharacterCount))
+        let excerpt = Self.prefix(characterLimited, maximumUTF8Bytes: contentBudget)
+        includedCharacterCount = excerpt.count
+        totalCharacterCount = text.count
+        isTruncated = excerpt.count < text.count
         promptText = usesEnglish
             ? """
               File name: \(file.name)
               File type: \(file.kind.localizedTitle)
               Content:
-              \(String(text.prefix(maximumCharacterCount)))
+              \(excerpt)
               """
             : """
               文件名：\(file.name)
               文件类型：\(file.kind.localizedTitle)
               内容：
-              \(String(text.prefix(maximumCharacterCount)))
+              \(excerpt)
               """
+    }
+
+    private static func prefix(_ text: String, maximumUTF8Bytes: Int) -> String {
+        guard text.utf8.count > maximumUTF8Bytes else { return text }
+        var result = ""
+        result.reserveCapacity(min(text.count, maximumUTF8Bytes))
+        var usedBytes = 0
+        for character in text {
+            let value = String(character)
+            let byteCount = value.utf8.count
+            guard usedBytes + byteCount <= maximumUTF8Bytes else { break }
+            result.append(character)
+            usedBytes += byteCount
+        }
+        return result
+    }
+}
+
+private enum AIRelevantTextSelector {
+    private struct RankedChunk {
+        let index: Int
+        let text: String
+        let score: Int
+    }
+
+    static func excerpts(
+        from text: String,
+        question: String,
+        maximumCharacterCount: Int = 40_000
+    ) -> String {
+        let chunks = makeChunks(text)
+        guard chunks.count > 1 else { return text }
+        let terms = searchTerms(question)
+        guard !terms.isEmpty else { return String(text.prefix(maximumCharacterCount)) }
+
+        let ranked = chunks.enumerated().map { index, chunk in
+            let folded = chunk.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let score = terms.reduce(into: 0) { partial, term in
+                var searchRange = folded.startIndex..<folded.endIndex
+                while let range = folded.range(of: term, options: [], range: searchRange) {
+                    partial += max(1, term.count)
+                    searchRange = range.upperBound..<folded.endIndex
+                }
+            }
+            return RankedChunk(index: index, text: chunk, score: score)
+        }
+        let selected = ranked
+            .sorted {
+                if $0.score == $1.score { return $0.index < $1.index }
+                return $0.score > $1.score
+            }
+            .prefix(6)
+            .sorted { $0.index < $1.index }
+
+        var result = ""
+        for item in selected where item.score > 0 || result.isEmpty {
+            let marker = "[Excerpt \(item.index + 1)]\n"
+            guard result.count + marker.count < maximumCharacterCount else { break }
+            let remaining = maximumCharacterCount - result.count - marker.count
+            result += marker + String(item.text.prefix(remaining)) + "\n\n"
+        }
+        return result.isEmpty ? String(text.prefix(maximumCharacterCount)) : result
+    }
+
+    private static func makeChunks(_ text: String) -> [String] {
+        let paragraphs = text.split(separator: "\n", omittingEmptySubsequences: true)
+        var chunks: [String] = []
+        var current = ""
+        for paragraph in paragraphs {
+            let value = String(paragraph)
+            if current.count + value.count > 1_800, !current.isEmpty {
+                chunks.append(current)
+                current = ""
+            }
+            if !current.isEmpty { current.append("\n") }
+            current.append(contentsOf: value)
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks.isEmpty ? [text] : chunks
+    }
+
+    private static func searchTerms(_ question: String) -> [String] {
+        let folded = question.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        var terms = folded
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { $0.count >= 2 }
+        let chinese = folded.filter { $0.unicodeScalars.allSatisfy { (0x4E00...0x9FFF).contains($0.value) } }
+        if chinese.count >= 2 {
+            let values = Array(chinese)
+            for index in 0..<(values.count - 1) {
+                terms.append(String(values[index...index + 1]))
+            }
+        }
+        return Array(Set(terms))
     }
 }
 
 struct AIClassificationSuggestion: Identifiable, Equatable, Sendable {
     let fileID: String
     let fileName: String
-    let categoryIDs: [UUID]
-    let categoryNames: [String]
+    var categoryIDs: [UUID]
+    var categoryNames: [String]
+    let confidence: Double
+    let reason: String
+    let source: Source
+
+    enum Source: String, Equatable, Sendable {
+        case local
+        case ai
+    }
+
+    init(
+        fileID: String,
+        fileName: String,
+        categoryIDs: [UUID],
+        categoryNames: [String],
+        confidence: Double = 0.5,
+        reason: String = "",
+        source: Source = .ai
+    ) {
+        self.fileID = fileID
+        self.fileName = fileName
+        self.categoryIDs = categoryIDs
+        self.categoryNames = categoryNames
+        self.confidence = confidence
+        self.reason = reason
+        self.source = source
+    }
 
     var id: String { fileID }
 }
@@ -1107,7 +1251,9 @@ struct AIClassificationChange: Equatable, Sendable {
 private struct AIClassificationPayload: Decodable {
     struct Suggestion: Decodable {
         let token: String
-        let categoryNames: [String]
+        let categoryIDs: [String]
+        let confidence: Double?
+        let reason: String?
     }
 
     let suggestions: [Suggestion]
@@ -1115,6 +1261,39 @@ private struct AIClassificationPayload: Decodable {
 
 struct AIService: Sendable {
     let provider: any AIProvider
+
+    private var filePromptBudget: Int {
+        max(4_096, provider.maximumPromptSegmentBytes - 4_096)
+    }
+
+    private func scopeNotice(for context: AIFileContext, usesEnglish: Bool) -> String {
+        guard context.isTruncated else { return "" }
+        return usesEnglish
+            ? "Analysis scope: \(context.includedCharacterCount) of \(context.totalCharacterCount) characters were included.\n\n"
+            : "分析范围：已读取 \(context.includedCharacterCount) / \(context.totalCharacterCount) 个字符。\n\n"
+    }
+
+    private func stream(
+        _ source: AsyncThrowingStream<String, any Error>,
+        prefixedBy prefix: String
+    ) -> AsyncThrowingStream<String, any Error> {
+        guard !prefix.isEmpty else { return source }
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    continuation.yield(prefix)
+                    for try await chunk in source {
+                        try Task.checkCancellation()
+                        continuation.yield(chunk)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
+    }
 
     func searchPlan(for query: String, now: Date = Date()) async throws -> AISearchPlan {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1149,51 +1328,69 @@ struct AIService: Sendable {
 
     func explain(file: IndexedFile) async throws -> String {
         let usesEnglish = AppLanguage.selected.usesEnglish
-        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
-        return try await provider.chat([
+        let context = try AIFileContext(
+            file: file,
+            maximumUTF8Bytes: filePromptBudget,
+            usesEnglish: usesEnglish
+        )
+        let response = try await provider.chat([
             AIMessage(
                 role: .system,
                 content: usesEnglish
-                    ? "Briefly explain what the file is, its main content, and likely use in English. Do not perform file operations or invent missing information."
-                    : "用简体中文简短说明文件是什么、主要内容和可能用途。不要执行文件操作，不要虚构缺失信息。"
+                    ? "Briefly explain only the supplied file excerpt. Return concise Markdown with: Summary, Key facts, Dates and people, Risks or uncertainties, and Action items. Cite excerpt markers when present. Never invent missing information or perform file operations."
+                    : "只分析提供的当前文件片段。用简洁 Markdown 输出：摘要、关键事实、日期与人物、风险或不确定项、待办事项；存在片段标记时引用标记。不要虚构缺失信息，不要执行文件操作。"
             ),
             AIMessage(role: .user, content: context.promptText)
         ])
+        return scopeNotice(for: context, usesEnglish: usesEnglish) + response
     }
 
     func explainStream(
         file: IndexedFile
     ) async throws -> AsyncThrowingStream<String, any Error> {
         let usesEnglish = AppLanguage.selected.usesEnglish
-        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
-        return try await provider.chatStream([
+        let context = try AIFileContext(
+            file: file,
+            maximumUTF8Bytes: filePromptBudget,
+            usesEnglish: usesEnglish
+        )
+        let source = try await provider.chatStream([
             AIMessage(
                 role: .system,
                 content: usesEnglish
-                    ? "Briefly explain what the file is, its main content, and likely use in English. Do not perform file operations or invent missing information."
-                    : "用简体中文简短说明文件是什么、主要内容和可能用途。不要执行文件操作，不要虚构缺失信息。"
+                    ? "Briefly explain only the supplied file excerpt. Return concise Markdown with: Summary, Key facts, Dates and people, Risks or uncertainties, and Action items. Cite excerpt markers when present. Never invent missing information or perform file operations."
+                    : "只分析提供的当前文件片段。用简洁 Markdown 输出：摘要、关键事实、日期与人物、风险或不确定项、待办事项；存在片段标记时引用标记。不要虚构缺失信息，不要执行文件操作。"
             ),
             AIMessage(role: .user, content: context.promptText)
         ])
+        return stream(source, prefixedBy: scopeNotice(for: context, usesEnglish: usesEnglish))
     }
 
     func answer(question: String, about file: IndexedFile) async throws -> String {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { throw AIServiceError.invalidQuestion }
         let usesEnglish = AppLanguage.selected.usesEnglish
-        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
-        return try await provider.chat([
+        guard let text = file.textContent else { throw AIServiceError.missingFileText }
+        let relevantText = AIRelevantTextSelector.excerpts(from: text, question: question)
+        let context = try AIFileContext(
+            file: file,
+            maximumUTF8Bytes: filePromptBudget - min(question.utf8.count, 2_048),
+            textOverride: relevantText,
+            usesEnglish: usesEnglish
+        )
+        let response = try await provider.chat([
             AIMessage(
                 role: .system,
                 content: usesEnglish
-                    ? "Answer in English using only the provided file content. If the answer is not supported, say that the file contains no relevant information. Do not perform file operations."
-                    : "只能根据提供的当前文件内容回答。找不到依据时明确说文件中没有相关信息；不要执行文件操作。"
+                    ? "Answer in English using only the retrieved excerpts from the current file. Cite [Excerpt N] for every factual claim. If unsupported, say the file contains no relevant information. Do not perform file operations."
+                    : "只能根据从当前文件检索出的片段回答；每个事实结论都引用 [Excerpt N]。找不到依据时明确说文件中没有相关信息；不要执行文件操作。"
             ),
             AIMessage(
                 role: .user,
                 content: "\(context.promptText)\n\n\(usesEnglish ? "Question" : "问题")：\(String(question.prefix(1_000)))"
             )
         ])
+        return scopeNotice(for: context, usesEnglish: usesEnglish) + response
     }
 
     func answerStream(
@@ -1203,36 +1400,69 @@ struct AIService: Sendable {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { throw AIServiceError.invalidQuestion }
         let usesEnglish = AppLanguage.selected.usesEnglish
-        let context = try AIFileContext(file: file, usesEnglish: usesEnglish)
-        return try await provider.chatStream([
+        guard let text = file.textContent else { throw AIServiceError.missingFileText }
+        let relevantText = AIRelevantTextSelector.excerpts(from: text, question: question)
+        let context = try AIFileContext(
+            file: file,
+            maximumUTF8Bytes: filePromptBudget - min(question.utf8.count, 2_048),
+            textOverride: relevantText,
+            usesEnglish: usesEnglish
+        )
+        let source = try await provider.chatStream([
             AIMessage(
                 role: .system,
                 content: usesEnglish
-                    ? "Answer in English using only the provided file content. If the answer is not supported, say that the file contains no relevant information. Do not perform file operations."
-                    : "只能根据提供的当前文件内容回答。找不到依据时明确说文件中没有相关信息；不要执行文件操作。"
+                    ? "Answer in English using only the retrieved excerpts from the current file. Cite [Excerpt N] for every factual claim. If unsupported, say the file contains no relevant information. Do not perform file operations."
+                    : "只能根据从当前文件检索出的片段回答；每个事实结论都引用 [Excerpt N]。找不到依据时明确说文件中没有相关信息；不要执行文件操作。"
             ),
             AIMessage(
                 role: .user,
                 content: "\(context.promptText)\n\n\(usesEnglish ? "Question" : "问题")：\(String(question.prefix(1_000)))"
             )
         ])
+        return stream(source, prefixedBy: scopeNotice(for: context, usesEnglish: usesEnglish))
     }
 
     func classify(
         files: [IndexedFile],
-        categories: [FileCategory]
+        categories: [FileCategory],
+        includesFileContent: Bool = true
     ) async throws -> [AIClassificationSuggestion] {
-        guard (1...8).contains(files.count) else { throw AIServiceError.invalidSelection }
+        guard (1...50).contains(files.count) else { throw AIServiceError.invalidSelection }
         guard !categories.isEmpty else { throw AIServiceError.noCategories }
+
+        var results: [AIClassificationSuggestion] = []
+        for batch in files.chunked(into: 8) {
+            try Task.checkCancellation()
+            do {
+                results.append(contentsOf: try await classifyBatch(
+                    batch,
+                    categories: categories,
+                    includesFileContent: includesFileContent
+                ))
+            } catch {
+                let local = localClassificationSuggestions(files: batch, categories: categories)
+                guard !local.isEmpty else { throw error }
+                results.append(contentsOf: local)
+            }
+        }
+        return results
+    }
+
+    private func classifyBatch(
+        _ files: [IndexedFile],
+        categories: [FileCategory],
+        includesFileContent: Bool
+    ) async throws -> [AIClassificationSuggestion] {
 
         let usesEnglish = AppLanguage.selected.usesEnglish
         var fileByToken: [String: IndexedFile] = [:]
         let fileDescriptions = files.enumerated().map { index, file in
             let token = "F\(index + 1)"
             fileByToken[token] = file
-            let text = file.textContent?
+            let text = includesFileContent ? file.textContent?
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-                .prefix(6_000)
+                .prefix(provider.maximumPromptSegmentBytes <= 65_536 ? 1_500 : 6_000) : nil
             return usesEnglish
                 ? """
                   [\(token)]
@@ -1247,32 +1477,33 @@ struct AIService: Sendable {
                   内容：\(text.map(String.init) ?? "无可提取文本，仅根据文件名和类型判断")
                   """
         }
-        let allowedNames = categories.map(\.name)
+        let allowedCategories = categories.map { "\($0.id.uuidString)=\($0.name)" }
         let response = try await provider.chat([
             AIMessage(
                 role: .system,
                 content: usesEnglish
                     ? """
-                      Suggest 0 to 3 existing categories for each file. Never create categories. Output JSON only:
-                      {"suggestions":[{"token":"F1","categoryNames":["exact existing category name"]}]}
-                      Available category names: \(allowedNames.joined(separator: ", "))
+                      Suggest 0 to 3 existing categories for each file. Return stable category IDs, confidence from 0 to 1, and a short reason. Never create categories. Output JSON only:
+                      {"suggestions":[{"token":"F1","categoryIDs":["UUID"],"confidence":0.8,"reason":"short evidence"}]}
+                      Available categories (ID=name): \(allowedCategories.joined(separator: ", "))
                       """
                     : """
-                      为每个文件从现有分类中建议 0 到 3 个分类，不创建新分类。仅输出 JSON：
-                      {"suggestions":[{"token":"F1","categoryNames":["分类名"]}]}
-                      可用分类：\(allowedNames.joined(separator: "、"))
+                      为每个文件从现有分类中建议 0 到 3 个分类，返回稳定分类 ID、0 到 1 的置信度和简短依据；不得创建分类。仅输出 JSON：
+                      {"suggestions":[{"token":"F1","categoryIDs":["UUID"],"confidence":0.8,"reason":"简短依据"}]}
+                      可用分类（ID=名称）：\(allowedCategories.joined(separator: "、"))
                       """
             ),
             AIMessage(role: .user, content: fileDescriptions.joined(separator: "\n\n"))
         ])
         let payload = try AIJSON.decode(AIClassificationPayload.self, from: response)
-        let categoryByName = Dictionary(uniqueKeysWithValues: categories.map { ($0.name, $0) })
+        let categoryByID = Dictionary(uniqueKeysWithValues: categories.map { ($0.id, $0) })
 
         return payload.suggestions.compactMap { suggestion in
             guard let file = fileByToken[suggestion.token] else { return nil }
             let matched = Array(
-                suggestion.categoryNames
-                    .compactMap { categoryByName[$0] }
+                suggestion.categoryIDs
+                    .compactMap(UUID.init(uuidString:))
+                    .compactMap { categoryByID[$0] }
                     .reduce(into: [UUID: FileCategory]()) { $0[$1.id] = $1 }
                     .values
                     .prefix(3)
@@ -1281,8 +1512,48 @@ struct AIService: Sendable {
                 fileID: file.id,
                 fileName: file.name,
                 categoryIDs: matched.map(\.id),
-                categoryNames: matched.map(\.name)
+                categoryNames: matched.map(\.name),
+                confidence: min(max(suggestion.confidence ?? 0.5, 0), 1),
+                reason: String((suggestion.reason ?? "").prefix(240)),
+                source: .ai
             )
+        }
+    }
+
+    private func localClassificationSuggestions(
+        files: [IndexedFile],
+        categories: [FileCategory]
+    ) -> [AIClassificationSuggestion] {
+        files.compactMap { file in
+            let searchable = "\(file.name) \(file.fileExtension) \(file.kind.localizedTitle)"
+                .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            let matched = categories.filter { category in
+                let name = category.name
+                    .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+                return name.count >= 2 && searchable.contains(name)
+            }.prefix(3)
+            guard !matched.isEmpty else { return nil }
+            return AIClassificationSuggestion(
+                fileID: file.id,
+                fileName: file.name,
+                categoryIDs: matched.map(\.id),
+                categoryNames: matched.map(\.name),
+                confidence: 0.55,
+                reason: AppLanguage.localized(
+                    "根据文件名、类型与现有分类在本地匹配。",
+                    english: "Matched locally from the file name, type, and existing categories."
+                ),
+                source: .local
+            )
+        }
+    }
+}
+
+private extension Array {
+    func chunked(into size: Int) -> [[Element]] {
+        guard size > 0 else { return [] }
+        return stride(from: 0, to: count, by: size).map { start in
+            Array(self[start..<Swift.min(start + size, count)])
         }
     }
 }

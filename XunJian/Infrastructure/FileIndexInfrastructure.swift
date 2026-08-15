@@ -156,11 +156,30 @@ enum FileIndexPreferences {
     static let includesHiddenFilesKey = "fileIndex.includesDotPrefixedFiles"
     static let indexesFileContentsKey = "fileIndex.indexesFileContents"
     static let disabledContentPurgeCompletedKey = "fileIndex.disabledContentPurgeCompleted"
+    static let scanScopeModeKey = "fileIndex.scanScopeMode"
+    static let wholeMacSourceIDKey = "fileIndex.wholeMacSourceID"
+    static let wholeMacCompletedScopePathsKey = "fileIndex.wholeMacCompletedScopePaths"
 
     static var indexesFileContents: Bool {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: indexesFileContentsKey) != nil else { return true }
         return defaults.bool(forKey: indexesFileContentsKey)
+    }
+}
+
+enum FileScanScopeMode: String, CaseIterable, Identifiable, Sendable {
+    case selectedFolders
+    case wholeMac
+
+    var id: String { rawValue }
+
+    var localizedTitle: String {
+        switch self {
+        case .selectedFolders:
+            AppLanguage.localized("指定文件夹", english: "Selected Folders")
+        case .wholeMac:
+            AppLanguage.localized("整台 Mac", english: "Entire Mac")
+        }
     }
 }
 
@@ -398,6 +417,7 @@ actor FileScanner {
         rootURL: URL,
         includesHiddenFiles: Bool = false,
         extractsText: Bool = true,
+        allowsUnreadableDescendants: Bool = false,
         progress: ProgressHandler? = nil
     ) async throws -> [IndexedFile] {
         beginCanonicalizationCache()
@@ -406,6 +426,7 @@ actor FileScanner {
             rootURL: rootURL,
             includesHiddenFiles: includesHiddenFiles,
             extractsText: extractsText,
+            allowsUnreadableDescendants: allowsUnreadableDescendants,
             progress: progress
         )
     }
@@ -566,6 +587,7 @@ actor FileScanner {
                         rootURL: url,
                         includesHiddenFiles: includesHiddenFiles,
                         extractsText: extractsText,
+                        allowsUnreadableDescendants: false,
                         progress: nil
                     )
                 } catch is CancellationError {
@@ -615,6 +637,7 @@ actor FileScanner {
         rootURL: URL,
         includesHiddenFiles: Bool,
         extractsText: Bool,
+        allowsUnreadableDescendants: Bool,
         progress: ProgressHandler?
     ) throws -> [IndexedFile] {
         var isDirectory: ObjCBool = false
@@ -665,6 +688,7 @@ actor FileScanner {
             do {
                 values = try resourceValuesLoader(fileURL, resourceKeySet)
             } catch {
+                if allowsUnreadableDescendants { continue }
                 // Fail closed by design (see FileScannerTests): metadata
                 // failure aborts the scan so the previous index is preserved.
                 throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
@@ -704,7 +728,7 @@ actor FileScanner {
 
         try Task.checkCancellation()
 
-        guard Self.isComplete(skippedPaths: skippedPaths) else {
+        guard allowsUnreadableDescendants || Self.isComplete(skippedPaths: skippedPaths) else {
             // Never return a partial directory snapshot. A full scan keeps its
             // previous index, while an incremental scan marks this scope as
             // failed and therefore excludes it from reconciliation.
@@ -1684,20 +1708,33 @@ actor FileIndexDatabase {
         }
     }
 
-    func searchFiles(matching query: String, limit: Int = 500) throws -> [IndexedFile] {
-        try searchFilesPage(matching: query, limit: limit).files
+    func searchFiles(
+        matching query: String,
+        limit: Int = 500,
+        sourceIDs: Set<UUID>? = nil
+    ) throws -> [IndexedFile] {
+        try searchFilesPage(
+            matching: query,
+            limit: limit,
+            sourceIDs: sourceIDs
+        ).files
     }
 
     /// Single-query FTS lookup for multiple keywords (F13): AI search used to
     /// run one query per keyword (up to 12 round-trips); now they OR together
     /// into one MATCH expression.
-    func searchFiles(matchingAnyOf keywords: [String], limit: Int = 500) throws -> [IndexedFile] {
+    func searchFiles(
+        matchingAnyOf keywords: [String],
+        limit: Int = 500,
+        sourceIDs: Set<UUID>? = nil
+    ) throws -> [IndexedFile] {
         guard let matchExpression = SearchIndexText.matchExpression(forKeywords: keywords) else {
             return []
         }
         return try searchFilesPage(
             matchExpression: matchExpression,
-            limit: limit
+            limit: limit,
+            sourceIDs: sourceIDs
         ).files
     }
 
@@ -1706,7 +1743,8 @@ actor FileIndexDatabase {
         limit: Int = 500,
         offset: Int = 0,
         includesHiddenFiles: Bool = true,
-        fetchesTotalCount: Bool = true
+        fetchesTotalCount: Bool = true,
+        sourceIDs: Set<UUID>? = nil
     ) throws -> FileSearchPage {
         guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
             return FileSearchPage(files: [], totalCount: 0)
@@ -1716,24 +1754,33 @@ actor FileIndexDatabase {
             limit: limit,
             offset: offset,
             includesHiddenFiles: includesHiddenFiles,
-            fetchesTotalCount: fetchesTotalCount
+            fetchesTotalCount: fetchesTotalCount,
+            sourceIDs: sourceIDs
         )
     }
 
     func searchFileIDs(
         matching query: String,
         inCategory categoryID: UUID,
-        limit: Int
+        limit: Int,
+        sourceIDs: Set<UUID>? = nil
     ) throws -> Set<String> {
         guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
             return []
         }
+        if let sourceIDs, sourceIDs.isEmpty { return [] }
+        let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
+        let sourceClause = orderedSourceIDs.map {
+            "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
+        } ?? ""
         let statement = try prepare(
             """
             SELECT file_search.file_id
             FROM file_search
             JOIN file_categories AS fc ON fc.file_id = file_search.file_id
+            JOIN files AS f ON f.id = file_search.file_id
             WHERE file_search MATCH ? AND fc.category_id = ?
+              \(sourceClause)
             ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
             LIMIT ?;
             """
@@ -1741,7 +1788,14 @@ actor FileIndexDatabase {
         defer { sqlite3_finalize(statement) }
         try bind(matchExpression, at: 1, to: statement)
         try bind(categoryID.uuidString, at: 2, to: statement)
-        try bind(Int64(max(1, limit)), at: 3, to: statement)
+        var nextBinding: Int32 = 3
+        if let orderedSourceIDs {
+            for sourceID in orderedSourceIDs {
+                try bind(sourceID.uuidString, at: nextBinding, to: statement)
+                nextBinding += 1
+            }
+        }
+        try bind(Int64(max(1, limit)), at: nextBinding, to: statement)
 
         var result = Set<String>()
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -1755,11 +1809,20 @@ actor FileIndexDatabase {
         limit: Int,
         offset: Int = 0,
         includesHiddenFiles: Bool = true,
-        fetchesTotalCount: Bool = true
+        fetchesTotalCount: Bool = true,
+        sourceIDs: Set<UUID>? = nil
     ) throws -> FileSearchPage {
+
+        if let sourceIDs, sourceIDs.isEmpty {
+            return FileSearchPage(files: [], totalCount: 0)
+        }
 
         let requestedLimit = Int64(max(1, limit))
         let requestedOffset = Int64(max(0, offset))
+        let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
+        let sourceClause = orderedSourceIDs.map {
+            "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
+        } ?? ""
 
         // `rowid` is an indexed, stable tie-breaker for equal FTS ranks.
         // Without it, OFFSET pagination can duplicate or skip rows when many
@@ -1773,6 +1836,7 @@ actor FileIndexDatabase {
             JOIN files AS f ON f.id = file_search.file_id
             WHERE file_search MATCH ?
               AND (? = 1 OR f.path NOT GLOB '*/.*')
+              \(sourceClause)
             ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
                      file_search.rowid ASC
             LIMIT ? OFFSET ?;
@@ -1781,8 +1845,15 @@ actor FileIndexDatabase {
         defer { sqlite3_finalize(statement) }
         try bind(matchExpression, at: 1, to: statement)
         try bind(includesHiddenFiles ? 1 : 0, at: 2, to: statement)
-        try bind(requestedLimit, at: 3, to: statement)
-        try bind(requestedOffset, at: 4, to: statement)
+        var nextBinding: Int32 = 3
+        if let orderedSourceIDs {
+            for sourceID in orderedSourceIDs {
+                try bind(sourceID.uuidString, at: nextBinding, to: statement)
+                nextBinding += 1
+            }
+        }
+        try bind(requestedLimit, at: nextBinding, to: statement)
+        try bind(requestedOffset, at: nextBinding + 1, to: statement)
 
         var files: [IndexedFile] = []
         var fetchedRows = 0
@@ -1823,12 +1894,18 @@ actor FileIndexDatabase {
             FROM file_search
             JOIN files AS f ON f.id = file_search.file_id
             WHERE file_search MATCH ?
-              AND (? = 1 OR f.path NOT GLOB '*/.*');
+              AND (? = 1 OR f.path NOT GLOB '*/.*')
+              \(sourceClause);
             """
         )
         defer { sqlite3_finalize(countStatement) }
         try bind(matchExpression, at: 1, to: countStatement)
         try bind(includesHiddenFiles ? 1 : 0, at: 2, to: countStatement)
+        if let orderedSourceIDs {
+            for (index, sourceID) in orderedSourceIDs.enumerated() {
+                try bind(sourceID.uuidString, at: Int32(index + 3), to: countStatement)
+            }
+        }
         guard sqlite3_step(countStatement) == SQLITE_ROW else {
             throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
         }
