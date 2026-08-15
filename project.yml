@@ -20,7 +20,7 @@ settings:
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
-    XUNJIAN_UPDATE_FEED_URL: ""
+    XUNJIAN_UPDATE_FEED_URL: "https://lifet.github.io/XunJian/appcast.xml"
     XUNJIAN_UPDATE_PUBLIC_ED_KEY: "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q="
 packages:
   Sparkle:

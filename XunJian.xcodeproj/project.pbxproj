@@ -932,7 +932,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				XUNJIAN_UPDATE_FEED_URL = "";
+				XUNJIAN_UPDATE_FEED_URL = "https://lifet.github.io/XunJian/appcast.xml";
 				XUNJIAN_UPDATE_PUBLIC_ED_KEY = "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q=";
 			};
 			name = Debug;
@@ -1060,7 +1060,7 @@
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_VERSION = 6.0;
-				XUNJIAN_UPDATE_FEED_URL = "";
+				XUNJIAN_UPDATE_FEED_URL = "https://lifet.github.io/XunJian/appcast.xml";
 				XUNJIAN_UPDATE_PUBLIC_ED_KEY = "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q=";
 			};
 			name = Release;

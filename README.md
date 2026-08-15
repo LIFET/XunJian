@@ -29,7 +29,7 @@
 - **自定义分类**：文件可关联多个分类，支持拖放、批量操作与 AI 建议后的人工确认。
 - **AI 文件理解**：结构化“看文件”、带片段依据的连续“问文件”、自然语言搜索和批量分类。
 - **多种认证方式**：Codex/ChatGPT 与 Grok 使用应用专属 OAuth；DeepSeek、Qwen 等兼容 Provider 使用用户自己的 API Key。
-- **在线更新基础设施**：已接入 Sparkle 2；正式发布前仍需配置公开 appcast、签名更新包并完成公证验证。
+- **在线更新基础设施**：已接入 Sparkle 2，并使用公开 HTTPS [appcast](https://lifet.github.io/XunJian/appcast.xml)；正式发布仍需签名更新包并完成公证验证。
 
 ## 隐私与安全
 
@@ -111,4 +111,3 @@ project.yml                 XcodeGen 工程定义
 ## 许可证
 
 寻简自身源码采用 [MIT License](LICENSE)。第三方组件、官方 Runtime 和品牌分别遵循其原始许可证与条款。
-

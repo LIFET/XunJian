@@ -309,7 +309,7 @@
 ### 8D 在线更新与正式发布
 
 - [x] 使用固定 Sparkle 2.9.5 的 SwiftUI/沙盒接入；设置与应用菜单均提供“检查更新…”。
-- [ ] HTTPS appcast、递增构建号、更新签名、Developer ID、公证及 Installer XPC entitlement 全部闭环；EdDSA 私钥已生成到登录钥匙串，公钥已接入。
+- [ ] GitHub Pages HTTPS appcast、EdDSA 密钥和 Installer entitlement 已接入；递增构建号、首个更新包签名、Developer ID、公证与伪造包拒绝仍待正式发布闭环。
 - [x] 自动检查可配置；未配置 feed/key 或关闭自动检查时启动零更新请求，Sparkle 负责呈现检查、最新版、新版本、网络与签名错误。
 - [ ] 先以本地/预发布签名 feed 验证升级、拒绝伪造包和失败恢复；用户另行确认后才生成新 DMG。
 
