@@ -132,21 +132,57 @@ private enum FakeOAuthBridgeError: LocalizedError, Sendable {
     }
 }
 
-private actor OAuthStatusGate {
+private final class OAuthGateWaiter: @unchecked Sendable {
+    private let lock = NSLock()
     private var continuation: CheckedContinuation<Void, Never>?
+    private var isFinished = false
+
+    func install(_ continuation: CheckedContinuation<Void, Never>) {
+        lock.lock()
+        if isFinished {
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+
+    func finish() {
+        lock.lock()
+        guard !isFinished else {
+            lock.unlock()
+            return
+        }
+        isFinished = true
+        let continuation = continuation
+        self.continuation = nil
+        lock.unlock()
+        continuation?.resume()
+    }
+}
+
+private actor OAuthStatusGate {
+    private var waiter: OAuthGateWaiter?
     private var isOpen = false
 
     func wait() async {
         guard !isOpen else { return }
-        await withCheckedContinuation { continuation in
-            self.continuation = continuation
+        let waiter = OAuthGateWaiter()
+        self.waiter = waiter
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiter.install(continuation)
+            }
+        } onCancel: {
+            waiter.finish()
         }
     }
 
     func open() {
         isOpen = true
-        continuation?.resume()
-        continuation = nil
+        waiter?.finish()
+        waiter = nil
     }
 }
 
@@ -272,6 +308,7 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         if let loginGate {
             await loginGate.wait()
         }
+        try Task.checkCancellation()
         return try loginAttemptResult.get()
     }
 
@@ -845,6 +882,10 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertTrue(source.contains("restoreStoredVerification("))
         XCTAssertTrue(source.contains("persistStoredVerification("))
         XCTAssertTrue(source.contains("clearStoredVerification(for:"))
+        XCTAssertTrue(source.contains("providerReservations"))
+        XCTAssertTrue(source.contains("preemptsProviderOperation"))
+        XCTAssertTrue(source.contains("operation == .disconnectProvider"))
+        XCTAssertTrue(source.contains("operation == .logoutProvider"))
         XCTAssertTrue(source.contains("static let maximumCredentialBytes = 1_048_576"))
         XCTAssertTrue(source.contains("O_RDONLY | O_NOFOLLOW | O_CLOEXEC"))
         XCTAssertTrue(source.contains("openedInformation.st_dev == linkInformation.st_dev"))
@@ -1539,11 +1580,45 @@ final class OAuthBridgeTests: XCTestCase {
         let returnedURL = await pendingLogin.value
 
         XCTAssertNil(returnedURL)
-        await waitForCallCount(2, fake: fake)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls, [.start(.codex, .browser)])
+    }
+
+    @MainActor
+    func testCancellingPendingLoginAllowsImmediateFreshStart() async {
+        let fake = FakeOAuthBridgeService()
+        let model = AppModel(oauthBridgeService: fake)
+        let gate = OAuthStatusGate()
+        let firstAttemptID = UUID()
+        let secondAttemptID = UUID()
+        await fake.configureLoginAttempt(
+            OAuthBridgeLoginAttempt(
+                provider: .codex,
+                attemptID: firstAttemptID,
+                authorizationURL: URL(string: "https://auth.openai.com/first")!
+            ),
+            gate: gate
+        )
+
+        let pendingLogin = Task { await model.beginOAuthLogin(for: .codex) }
+        await waitForCallCount(1, fake: fake)
+        await model.cancelOAuthLogin(for: .codex)
+        let cancelledURL = await pendingLogin.value
+        XCTAssertNil(cancelledURL)
+
+        let secondURL = URL(string: "https://auth.openai.com/second")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .codex,
+            attemptID: secondAttemptID,
+            authorizationURL: secondURL
+        ))
+        let returnedURL = await model.beginOAuthLogin(for: .codex)
+
+        XCTAssertEqual(returnedURL, secondURL)
         let calls = await fake.calls()
         XCTAssertEqual(
             calls,
-            [.start(.codex, .browser), .cancel(.codex, attemptID)]
+            [.start(.codex, .browser), .start(.codex, .browser)]
         )
     }
 
@@ -1808,10 +1883,7 @@ final class OAuthBridgeTests: XCTestCase {
 
         XCTAssertEqual(model.aiOAuthStates[.grok], .disconnected)
         let calls = await fake.calls()
-        XCTAssertEqual(
-            calls,
-            [.start(.grok, .browser), .cancel(.grok, attemptID)]
-        )
+        XCTAssertEqual(calls, [.start(.grok, .browser)])
     }
 
     @MainActor

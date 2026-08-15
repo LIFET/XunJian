@@ -141,7 +141,7 @@ actor GrokACPClient {
     private static let maximumGeneratedTextBytes = 131_072
     private static let maximumThoughtBytes = 65_536
     private static let maximumOpaqueMetadataBytes = 65_536
-    private static let sessionCreationTimeoutNanoseconds: UInt64 = 5_000_000_000
+    private static let sessionCreationTimeoutNanoseconds: UInt64 = 15_000_000_000
 
     private static let verificationAvailableCommands: [JSONValue] = [
         (
@@ -400,7 +400,8 @@ actor GrokACPClient {
                                 "text": .string(prompt)
                             ])
                         ])
-                    ])
+                    ]),
+                    timeoutNanoseconds: JSONLineRPCPeer.maximumRequestTimeoutNanoseconds
                 )
             } catch {
                 recordVerificationTransportFailure(.promptTransport, error: error)

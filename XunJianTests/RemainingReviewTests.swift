@@ -1,3 +1,4 @@
+import Darwin
 import XCTest
 @testable import XunJian
 
@@ -39,6 +40,43 @@ final class RemainingReviewTests: XCTestCase {
         )
 
         XCTAssertEqual(result.map(\.id), [currentDocument.id])
+    }
+
+    func testBatchActionsUseOnlySelectedFilesPublishedByCurrentPage() {
+        let visible = makeFile(name: "visible.pdf", path: "/docs/visible.pdf")
+        let hidden = makeFile(name: "hidden.pdf", path: "/other/hidden.pdf")
+
+        let result = AppModel.filesForBatchAction(
+            selectedIDs: [visible.id, hidden.id],
+            commandTargetFiles: [visible]
+        )
+
+        XCTAssertEqual(result.map(\.id), [visible.id])
+    }
+
+    func testModifiedDateLowerBoundExcludesFilesWithoutModifiedDate() {
+        let missingDate = makeFile(
+            name: "unknown.pdf",
+            path: "/docs/unknown.pdf",
+            modifiedAt: nil
+        )
+        let current = makeFile(
+            name: "current.pdf",
+            path: "/docs/current.pdf",
+            modifiedAt: Date(timeIntervalSince1970: 300)
+        )
+
+        let result = AppModel.filesMatchingBrowseFilters(
+            indexedFiles: [missingDate, current],
+            aiSearchResults: nil,
+            searchResults: nil,
+            query: "",
+            kind: nil,
+            minimumSize: 0,
+            minimumDate: Date(timeIntervalSince1970: 200)
+        )
+
+        XCTAssertEqual(result.map(\.id), [current.id])
     }
 
     func testExportCategoryNamesUsesOnlyRequestedFilesAndStableOrdering() {
@@ -140,6 +178,31 @@ final class RemainingReviewTests: XCTestCase {
             digest,
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         )
+    }
+
+    func testDuplicateHashRejectsLinksFIFOsAndDevicesWithoutBlocking() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-special-hash-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let regular = root.appendingPathComponent("regular.bin")
+        try Data("safe".utf8).write(to: regular)
+        let link = root.appendingPathComponent("link.bin")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: regular)
+        let fifo = root.appendingPathComponent("pipe")
+        XCTAssertEqual(mkfifo(fifo.path, 0o600), 0)
+
+        for url in [link, fifo, URL(fileURLWithPath: "/dev/null")] {
+            XCTAssertFalse(DuplicateFileFinder.canHashFile(at: url), url.path)
+            do {
+                _ = try await DuplicateFileFinder.fingerprint(fileAt: url)
+                XCTFail("Expected special file to be rejected: \(url.path)")
+            } catch {
+                // Rejection is the contract; the exact filesystem errno is
+                // intentionally not exposed to the UI.
+            }
+        }
     }
 
     func testQuickSearchMatchesNameAndPath() {

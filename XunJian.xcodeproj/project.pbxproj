@@ -16,6 +16,7 @@
 		19AA986563BD82FDAEFB3304 /* XunJianOAuthBridge.xpc in CopyFiles */ = {isa = PBXBuildFile; fileRef = BBE9CCE7144C6927B3740A91 /* XunJianOAuthBridge.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		1E475F5415CFA9FA8D939ECC /* StorageInsightsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FE2C0F72E7F91471EDA0A8BE /* StorageInsightsView.swift */; };
 		1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = 96B78063D48252AA329210EC /* Localizable.xcstrings */; };
+		A208401A30F11677FE0F1E35 /* ServicesMenu.strings in Resources */ = {isa = PBXBuildFile; fileRef = 1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */; };
 		2232B2F59DF45FF23528856A /* FileIndexCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483A1C654F2B1536A326539D /* FileIndexCoordinator.swift */; };
 		22E9496A7A36C9431166F813 /* IndexStatistics.swift in Sources */ = {isa = PBXBuildFile; fileRef = 36FB41C116A4A17878EE4F33 /* IndexStatistics.swift */; };
 		2464FC367BABE81518FFD73F /* ScanProgressStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7D3DD416A1F23882F681AB66 /* ScanProgressStoreTests.swift */; };
@@ -209,6 +210,7 @@
 		9EE6923D1299791BC5598005 /* GlobalPresentations.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalPresentations.swift; sourceTree = "<group>"; };
 		9F231F3122DD79257F7992DC /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */ = {isa = PBXFileReference; lastKnownFileType = text; path = OAuthRuntimeNOTICE.txt; sourceTree = "<group>"; };
+		1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */ = {isa = PBXFileReference; lastKnownFileType = text.plist.strings; name = ServicesMenu.strings; path = en.lproj/ServicesMenu.strings; sourceTree = "<group>"; };
 		AB5C200E42D4646B98B1811A /* JSONLineRPC.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = JSONLineRPC.swift; sourceTree = "<group>"; };
 		B24AFE57AB611E014DC2E57C /* FileSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FileSelectionTests.swift; sourceTree = "<group>"; };
 		B2517C73D7AE3DB0297377AD /* AppShellView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppShellView.swift; sourceTree = "<group>"; };
@@ -296,6 +298,7 @@
 				07683A9FCD41A8E130B68004 /* Assets.xcassets */,
 				96B78063D48252AA329210EC /* Localizable.xcstrings */,
 				AB2DA9EED282E134882A374D /* OAuthRuntimeNOTICE.txt */,
+				1ECDA2488DB0C744635E7F2A /* ServicesMenu.strings */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -666,6 +669,7 @@
 				FD512A7006438C8BA0FD2922 /* Assets.xcassets in Resources */,
 				1E56EE1F6A1D983BBAE252E2 /* Localizable.xcstrings in Resources */,
 				F96C493B149FC7C24661A1E6 /* OAuthRuntimeNOTICE.txt in Resources */,
+				A208401A30F11677FE0F1E35 /* ServicesMenu.strings in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

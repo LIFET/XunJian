@@ -16,6 +16,7 @@ struct FileInspectorView: View {
     @State private var previewRetry = 0
     // Read-only Finder tags, fetched live rather than indexed (N11).
     @State private var finderTags: [String] = []
+    @State private var finderTagRefreshRevision: UInt64 = 0
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
@@ -357,7 +358,7 @@ struct FileInspectorView: View {
             }
         }
         .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
-        .task(id: "\(file?.id ?? "")-\(previewRetry)") {
+        .task(id: "\(file?.id ?? "")-\(previewRetry)-\(finderTagRefreshRevision)") {
             // N08: load text content on demand for the inline preview.
             previewText = nil
             previewLimit = 2_000
@@ -386,6 +387,14 @@ struct FileInspectorView: View {
             } catch {
                 previewFailed = true
             }
+        }
+        .onReceive(
+            NotificationCenter.default.publisher(for: .xunJianFinderTagsDidChange)
+        ) { notification in
+            guard let file,
+                  let fileIDs = notification.object as? Set<String>,
+                  fileIDs.contains(file.id) else { return }
+            finderTagRefreshRevision &+= 1
         }
     }
 

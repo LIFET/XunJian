@@ -1,4 +1,5 @@
 import Combine
+import QuickLookThumbnailing
 import XCTest
 @testable import XunJian
 
@@ -116,6 +117,70 @@ final class LagIsolationTests: XCTestCase {
         XCTAssertEqual(visible.signature, hidden.signature)
     }
 
+    func testDisplayedFilesUserKeyIgnoresIndexChurnButNotSearchResults() {
+        let browsing = DisplayedFilesUserKey(
+            query: "",
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+        let sameInputs = DisplayedFilesUserKey(
+            query: "",
+            searchResultsRevision: 8,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+        let searchFinished = DisplayedFilesUserKey(
+            query: "",
+            searchResultsRevision: 9,
+            aiSearchResultCount: nil,
+            aiSearchRevision: 0,
+            selectedKind: nil,
+            sortOrder: .modifiedAt,
+            sortAscending: false,
+            minSizeBytes: 0,
+            minDate: nil
+        )
+
+        XCTAssertEqual(browsing.signature, sameInputs.signature)
+        XCTAssertNotEqual(browsing.signature, searchFinished.signature)
+        XCTAssertTrue(
+            DisplayedFilesRefreshPolicy.shouldSettleRevisionDrivenRefresh(
+                previousUserSignature: browsing.signature,
+                currentUserSignature: sameInputs.signature
+            )
+        )
+        XCTAssertFalse(
+            DisplayedFilesRefreshPolicy.shouldSettleRevisionDrivenRefresh(
+                previousUserSignature: browsing.signature,
+                currentUserSignature: searchFinished.signature
+            )
+        )
+        XCTAssertFalse(
+            DisplayedFilesRefreshPolicy.shouldSettleRevisionDrivenRefresh(
+                previousUserSignature: nil,
+                currentUserSignature: browsing.signature
+            )
+        )
+    }
+
+    func testTableThumbnailsRequestIconsInsteadOfFullPreviews() {
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 24), .icon)
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 32), .icon)
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 72), .thumbnail)
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 150), .thumbnail)
+    }
+
     func testCategoryIndexStoreTogglesOneFileWithoutReplacingTheLibrary() {
         let work = FileCategory(id: UUID(), name: "Work", symbolName: "briefcase")
         let files = (0..<50).map { index in
@@ -222,6 +287,51 @@ final class LagIsolationTests: XCTestCase {
         XCTAssertTrue(FileIndexCoordinator.isSourceEligibleForScanning(available))
         XCTAssertFalse(FileIndexCoordinator.isSourceEligibleForScanning(paused))
         XCTAssertFalse(FileIndexCoordinator.isSourceEligibleForScanning(unavailable))
+    }
+
+    func testIncrementalRefreshSkipsPublishWhenOnlyIndexedAtChanges() {
+        let sourceID = UUID()
+        let current = makeFile(
+            id: "stable",
+            sourceID: sourceID,
+            name: "notes.md",
+            path: "/docs/notes.md"
+        )
+        let rescanned = IndexedFile(
+            id: current.id,
+            sourceID: current.sourceID,
+            name: current.name,
+            path: current.path,
+            fileExtension: current.fileExtension,
+            kind: current.kind,
+            size: current.size,
+            createdAt: current.createdAt,
+            modifiedAt: current.modifiedAt,
+            indexedAt: current.indexedAt.addingTimeInterval(30)
+        )
+
+        XCTAssertFalse(
+            FileIndexCoordinator.shouldPublishIncrementalRefresh(
+                currentFiles: [current],
+                updatedFiles: [rescanned],
+                currentLinks: [:],
+                updatedLinks: [:]
+            )
+        )
+        XCTAssertTrue(current.hasVisibleIndexChange(comparedTo: makeFile(
+            id: "stable",
+            sourceID: sourceID,
+            name: "renamed.md",
+            path: "/docs/renamed.md"
+        )))
+        XCTAssertTrue(
+            FileIndexCoordinator.shouldPublishIncrementalRefresh(
+                currentFiles: [current],
+                updatedFiles: [current],
+                currentLinks: [:],
+                updatedLinks: [current.id: [UUID()]]
+            )
+        )
     }
 
     func testIncrementalMergeDropsVisibleFileRenamedToDotPrefix() {

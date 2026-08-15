@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+extension Notification.Name {
+    static let xunJianFinderTagsDidChange = Notification.Name(
+        "com.xingmingbo.XunJian.finderTagsDidChange"
+    )
+}
+
 /// Read-only access to Finder tags (N17).
 ///
 /// Tags are system metadata owned by Finder. Xunjian only displays them and
@@ -59,19 +65,27 @@ struct FinderTagsLabel: View {
 
     @State private var tags: [String] = []
     @State private var hasLoaded = false
+    @State private var refreshRevision: UInt64 = 0
 
     var body: some View {
         Text(verbatim: hasLoaded && !tags.isEmpty ? joined : placeholder)
             .lineLimit(1)
             .truncationMode(.tail)
             .foregroundStyle(tags.isEmpty ? AnyShapeStyle(.tertiary) : AnyShapeStyle(.primary))
-            .task(id: "\(file.id)|\(file.indexedAt.timeIntervalSince1970)") {
+            .task(id: "\(file.id)|\(file.indexedAt.timeIntervalSince1970)|\(refreshRevision)") {
                 hasLoaded = false
                 tags = await FinderTagService.shared.tags(
                     forFileID: file.id,
                     path: file.path
                 )
                 hasLoaded = true
+            }
+            .onReceive(
+                NotificationCenter.default.publisher(for: .xunJianFinderTagsDidChange)
+            ) { notification in
+                guard let fileIDs = notification.object as? Set<String>,
+                      fileIDs.contains(file.id) else { return }
+                refreshRevision &+= 1
             }
             .accessibilityLabel(Text(verbatim: accessibilityText))
     }

@@ -77,7 +77,7 @@ struct AllFilesView: View {
             appModel.highlightQuery = text
         }
         .onChange(of: appModel.selectedFileID) { _, id in
-            guard let id else { return }
+            guard isVisible, let id else { return }
             // Coalesce: arrow-key navigation changes the selection many
             // times per second, and each @AppStorage write wakes the
             // UserDefaults observers. Persist the settled position once.
@@ -712,7 +712,7 @@ struct AllFilesView: View {
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
                     contentWidth: contentWidth,
-                    selectionToken: appModel.selectedFileIDs.hashValue
+                    selectionToken: appModel.fileSelectionRevision
                 ) {
                     fileGrid(files: files)
                 }
@@ -998,6 +998,9 @@ struct AllFilesView: View {
     private var displayedFilesUserKey: DisplayedFilesUserKey {
         DisplayedFilesUserKey(
             query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
+            searchResultsRevision: appModel.searchResultsRevision,
+            aiSearchResultCount: appModel.aiSearchResults?.count,
+            aiSearchRevision: appModel.aiSearchRevision,
             selectedKind: appModel.selectedKind,
             sortOrder: activeSortOrder,
             sortAscending: activeSortAscending,
@@ -1030,19 +1033,30 @@ struct AllFilesView: View {
                     usesGlobalSearchPagination: true,
                     signature: signature
                 )
+                appModel.clearSelectionIfHidden(
+                    from: appModel.browseSnapshotIDSet
+                )
             }
             return
         }
 
-        // Burst settle: when only index revisions changed (not the user's
-        // query/sort/filters), a six-figure list can be re-sorted once after
-        // the activity settles instead of once per FSEvents batch — each
-        // recompute is hundreds of milliseconds of CPU at userInitiated
-        // priority that otherwise makes the window stutter during file churn.
+        // The visible rows still show the previous snapshot while the new
+        // filter/sort result is computed. Clear only the command target so a
+        // delayed Select All or destructive action cannot act on those stale
+        // rows during that short transition.
+        appModel.updateCommandTargetFiles([])
+
+        // Burst settle: when only the file index moved (not query, search
+        // results, sort, or filters), wait out FSEvents / iCloud metadata
+        // bursts instead of re-sorting and rebuilding the table on every
+        // batch. The previous 5_000-file gate left the real 2.8k library
+        // doing that work on every iCloud xattr tick.
         let userSignature = displayedFilesUserKey.signature
-        let revisionDrivenOnly = appModel.browseSnapshotUserSignature == userSignature
-        if revisionDrivenOnly, appModel.files.count > 5_000 {
-            try? await Task.sleep(for: .milliseconds(250))
+        if DisplayedFilesRefreshPolicy.shouldSettleRevisionDrivenRefresh(
+            previousUserSignature: appModel.browseSnapshotUserSignature,
+            currentUserSignature: userSignature
+        ) {
+            try? await Task.sleep(for: DisplayedFilesRefreshPolicy.revisionDrivenSettleDelay)
             guard !Task.isCancelled,
                   isVisible,
                   displayedFilesRefreshKey.signature == signature else { return }
@@ -1082,22 +1096,31 @@ struct AllFilesView: View {
                 let filteredFiles = sourceFiles.filter { file in
                     guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
                     if minSize > 0, file.size < minSize { return false }
-                    if let minDate, let modifiedAt = file.modifiedAt, modifiedAt < minDate {
-                        return false
+                    if let minDate {
+                        guard let modifiedAt = file.modifiedAt,
+                              modifiedAt >= minDate else { return false }
                     }
                     return true
                 }
                 guard !cancellationFlag.isCancelled else {
-                    return (files: [IndexedFile](), visibleIDs: Set<String>())
+                    return (
+                        files: [IndexedFile](),
+                        orderedIDs: [String](),
+                        visibleIDs: Set<String>()
+                    )
                 }
                 let sorted = requestedSortOrder.sorted(
                     filteredFiles,
                     ascending: requestedAscending
                 )
-                // The visible-ID set is built here so the main actor only
-                // pays the dictionary construction cost for the selection
-                // cleanup below.
-                return (files: sorted, visibleIDs: Set(sorted.map(\.id)))
+                // Build both ID representations off the main actor. They are
+                // reused by selection, keyboard navigation and cache hits.
+                let orderedIDs = sorted.map(\.id)
+                return (
+                    files: sorted,
+                    orderedIDs: orderedIDs,
+                    visibleIDs: Set(orderedIDs)
+                )
             }.value
         } onCancel: {
             cancellationFlag.cancel()
@@ -1106,10 +1129,13 @@ struct AllFilesView: View {
               isVisible,
               displayedFilesRefreshKey.signature == signature else { return }
         let result = computed.files
-        appModel.browseSnapshotIDs = result.map(\.id)
-        appModel.browseSnapshot = result
-        appModel.browseSnapshotSignature = signature
-        appModel.browseSnapshotUserSignature = userSignature
+        appModel.publishBrowseSnapshot(
+            result,
+            orderedIDs: computed.orderedIDs,
+            visibleIDs: computed.visibleIDs,
+            signature: signature,
+            userSignature: userSignature
+        )
         appModel.updateCommandTargetFiles(
             result,
             usesGlobalSearchPagination: true,
@@ -1345,6 +1371,7 @@ struct AllFilesView: View {
         .scrollPosition(id: gridScrollPositionBinding)
         .fileListKeyboardNavigation(
             files: files,
+            orderedIDs: appModel.browseSnapshotIDs,
             columnCount: FileGridCard.columnCount(forWidth: contentWidth)
         )
     }
@@ -1383,11 +1410,14 @@ struct DisplayedFilesRefreshKey: Equatable {
     }
 }
 
-/// The user-driven subset of the refresh key (no index revisions). Two keys
-/// with the same user signature differ only because the index changed, which
-/// lets the view settle bursts before re-sorting a large list.
+/// Interactive snapshot inputs. Two keys with the same signature differ only
+/// because `filesRevision` changed, which lets the view settle FSEvents
+/// bursts without delaying search or filter results.
 struct DisplayedFilesUserKey: Equatable {
     let query: String
+    let searchResultsRevision: UInt64
+    let aiSearchResultCount: Int?
+    let aiSearchRevision: UInt64
     let selectedKind: FileKind?
     let sortOrder: FileSortOrder
     let sortAscending: Bool
@@ -1397,6 +1427,9 @@ struct DisplayedFilesUserKey: Equatable {
     var signature: Int {
         var hasher = Hasher()
         hasher.combine(query)
+        hasher.combine(searchResultsRevision)
+        hasher.combine(aiSearchResultCount)
+        hasher.combine(aiSearchRevision)
         hasher.combine(selectedKind)
         hasher.combine(sortOrder)
         hasher.combine(sortAscending)
@@ -1406,19 +1439,30 @@ struct DisplayedFilesUserKey: Equatable {
     }
 }
 
+enum DisplayedFilesRefreshPolicy {
+    static let revisionDrivenSettleDelay: Duration = .milliseconds(250)
+
+    static func shouldSettleRevisionDrivenRefresh(
+        previousUserSignature: Int?,
+        currentUserSignature: Int
+    ) -> Bool {
+        previousUserSignature == currentUserSignature
+    }
+}
+
 /// Skips rebuilding the file table when only unrelated AppModel fields changed.
 private struct EquatableSnapshotList<Content: View>: View, Equatable {
     let signature: Int?
     let viewMode: FileBrowseViewMode
     let contentWidth: CGFloat
-    let selectionToken: Int?
+    let selectionToken: UInt64?
     let content: () -> Content
 
     init(
         signature: Int?,
         viewMode: FileBrowseViewMode,
         contentWidth: CGFloat,
-        selectionToken: Int? = nil,
+        selectionToken: UInt64? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature

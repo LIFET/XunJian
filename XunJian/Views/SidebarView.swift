@@ -6,6 +6,7 @@ struct SidebarView: View {
     let categories: [FileCategory]
 
     @State private var searchToRename: SavedSearch?
+    @State private var searchToDelete: SavedSearch?
     @State private var renameDraft = ""
     @State private var dropTargetCategoryIDs: Set<UUID> = []
 
@@ -77,7 +78,7 @@ struct SidebarView: View {
                                 AppLanguage.localized("删除保存的搜索", english: "Delete Saved Search"),
                                 role: .destructive
                             ) {
-                                appModel.deleteSearch(id: search.id)
+                                searchToDelete = search
                             }
                         }
                     }
@@ -145,6 +146,33 @@ struct SidebarView: View {
             .disabled(renameDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
                 searchToRename = nil
+            }
+        }
+        .confirmationDialog(
+            AppLanguage.localized(
+                "删除保存的搜索？",
+                english: "Delete Saved Search?"
+            ),
+            isPresented: Binding(
+                get: { searchToDelete != nil },
+                set: { if !$0 { searchToDelete = nil } }
+            )
+        ) {
+            Button(
+                AppLanguage.localized("删除", english: "Delete"),
+                role: .destructive
+            ) {
+                if let searchToDelete {
+                    appModel.deleteSearch(id: searchToDelete.id)
+                }
+                searchToDelete = nil
+            }
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) {
+                searchToDelete = nil
+            }
+        } message: {
+            if let searchToDelete {
+                Text(verbatim: searchToDelete.name)
             }
         }
     }

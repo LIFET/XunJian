@@ -167,7 +167,7 @@ schemes:
         XunJianOAuthProcessTests: [test]
         XunJianFakeJSONLServer: [test]
     test:
-      gatherCoverageData: true
+      gatherCoverageData: false
       targets:
         - XunJianTests
         - XunJianOAuthProcessTests

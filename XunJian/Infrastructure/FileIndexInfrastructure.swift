@@ -124,6 +124,20 @@ struct IndexedFile: Identifiable, Hashable, Sendable {
     var parentPath: String {
         url.deletingLastPathComponent().path
     }
+
+    /// Fields the file table and home cards actually display. `indexedAt`
+    /// changes on every rescan and must not count as a visible edit.
+    func hasVisibleIndexChange(comparedTo other: IndexedFile) -> Bool {
+        id != other.id
+            || sourceID != other.sourceID
+            || name != other.name
+            || path != other.path
+            || fileExtension != other.fileExtension
+            || kind != other.kind
+            || size != other.size
+            || createdAt != other.createdAt
+            || modifiedAt != other.modifiedAt
+    }
 }
 
 struct FileSearchPage: Equatable, Sendable {
@@ -613,10 +627,18 @@ actor FileScanner {
         // Collected synchronously by the enumerator's error handler, which runs
         // inline on this thread for each unreadable item.
         var skippedPaths: [String] = []
+        var enumeratorOptions: FileManager.DirectoryEnumerationOptions = [
+            .skipsPackageDescendants
+        ]
+        if !includesHiddenFiles {
+            // Lets the enumerator skip dot-directories without us loading
+            // their metadata first.
+            enumeratorOptions.insert(.skipsHiddenFiles)
+        }
         guard let enumerator = fileManager.enumerator(
             at: rootURL,
             includingPropertiesForKeys: Self.resourceKeys,
-            options: [.skipsPackageDescendants],
+            options: enumeratorOptions,
             errorHandler: { url, _ in
                 skippedPaths.append(url.path)
                 return true
@@ -628,13 +650,20 @@ actor FileScanner {
         var files: [IndexedFile] = []
         let indexedAt = Date()
         var lastProgressEmission = DispatchTime(uptimeNanoseconds: 0)
+        let resourceKeySet = Set(Self.resourceKeys)
 
+        var enumeratedCount = 0
         for case let fileURL as URL in enumerator {
-            try Task.checkCancellation()
+            // Cancellation is checked at a stride: per-entry checks were
+            // measurable overhead at 500k files.
+            enumeratedCount += 1
+            if enumeratedCount.isMultiple(of: 64) {
+                try Task.checkCancellation()
+            }
 
             let values: URLResourceValues
             do {
-                values = try resourceValuesLoader(fileURL, Set(Self.resourceKeys))
+                values = try resourceValuesLoader(fileURL, resourceKeySet)
             } catch {
                 // Fail closed by design (see FileScannerTests): metadata
                 // failure aborts the scan so the previous index is preserved.
@@ -672,6 +701,8 @@ actor FileScanner {
                 )
             }
         }
+
+        try Task.checkCancellation()
 
         guard Self.isComplete(skippedPaths: skippedPaths) else {
             // Never return a partial directory snapshot. A full scan keeps its
@@ -754,26 +785,21 @@ actor FileScanner {
         // Files are never symlinks here (the enumerator skips them), so the
         // canonical form is the canonical parent plus the final component.
         // Resolving the parent once per directory removes one stat +
-        // realpath syscall per file from large scans.
+        // realpath syscall per file from large scans; on a cache miss only
+        // the parent is resolved (the file itself is a regular entry in an
+        // already-resolved directory, so its own realpath adds nothing).
         let nsPath = path as NSString
         let parent = nsPath.deletingLastPathComponent
+        let resolvedParent: String
         if let cachedParent = canonicalDirectoryCache[parent] {
-            return cachedParent == "/"
-                ? "/" + nsPath.lastPathComponent
-                : cachedParent + "/" + nsPath.lastPathComponent
+            resolvedParent = cachedParent
+        } else {
+            resolvedParent = FilePathCanonicalizer.path(parent)
+            canonicalDirectoryCache[parent] = resolvedParent
         }
-        let resolved = FilePathCanonicalizer.path(path)
-        let resolvedParent = FilePathCanonicalizer.path(parent)
-        let joined = resolvedParent == "/"
+        return resolvedParent == "/"
             ? "/" + nsPath.lastPathComponent
             : resolvedParent + "/" + nsPath.lastPathComponent
-        // Guard against an exotic case where the file's own canonicalization
-        // differs from parent+name: fall back to the full resolution.
-        guard joined == resolved else {
-            return resolved
-        }
-        canonicalDirectoryCache[parent] = resolvedParent
-        return resolved
     }
 
     private static func isDocumentPackage(_ url: URL, values: URLResourceValues) -> Bool {

@@ -426,6 +426,7 @@ struct AIClassificationSheet: View {
     @State private var appliedChanges: [AIClassificationChange] = []
     @State private var showsAppliedConfirmation = false
     @State private var isCommittingChanges = false
+    @State private var showsCategoryEditor = false
     /// Name-sorted copy of the index, rebuilt off the main actor only when
     /// the file set changes.
     @State private var nameSortedFilesCache: [IndexedFile] = []
@@ -517,6 +518,16 @@ struct AIClassificationSheet: View {
                             english: "Create a category before using AI classification."
                         )
                     )
+                } actions: {
+                    Button(
+                        AppLanguage.localized(
+                            "新建分类…",
+                            english: "New Category…"
+                        )
+                    ) {
+                        showsCategoryEditor = true
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
             } else if let suggestions {
                 suggestionList(suggestions)
@@ -546,6 +557,13 @@ struct AIClassificationSheet: View {
         }
         .task(id: classificationListKey) {
             await refreshDisplayedClassificationFiles()
+        }
+        .sheet(isPresented: $showsCategoryEditor) {
+            CategoryEditorSheet(
+                title: AppLanguage.localized("新建分类", english: "New Category")
+            ) { name, symbolName in
+                try await appModel.createCategory(name: name, symbolName: symbolName)
+            }
         }
         .alert(
             AppLanguage.localized("分类已应用", english: "Classification Applied"),

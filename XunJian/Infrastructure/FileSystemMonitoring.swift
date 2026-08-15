@@ -9,6 +9,9 @@ struct FileSystemChangeKinds: OptionSet, Hashable, Sendable {
     static let modified = Self(rawValue: 1 << 2)
     static let renamed = Self(rawValue: 1 << 3)
     static let metadata = Self(rawValue: 1 << 4)
+    /// Name, content, or location changed. iCloud xattr / Finder-info ticks
+    /// are `.metadata` only and must not start an index scan.
+    static let structural: Self = [.created, .removed, .modified, .renamed]
 }
 
 struct FileSystemChangeEvent: Hashable, Sendable {
@@ -63,6 +66,17 @@ struct FileSystemChangeEvent: Hashable, Sendable {
                 | kFSEventStreamEventFlagRootChanged
         )
         requiresFullRescan = flags & recoveryFlags != 0
+    }
+
+    /// Created / removed / modified / renamed, or a stream-recovery flag.
+    var requiresIndexScan: Bool {
+        requiresFullRescan || !kinds.isDisjoint(with: .structural)
+    }
+
+    /// Finder tags, owner, or iCloud download xattrs. The file the table
+    /// shows did not change.
+    var isMetadataOnly: Bool {
+        !requiresFullRescan && kinds == .metadata
     }
 
     private static func canonicalPath(_ path: String) -> String {

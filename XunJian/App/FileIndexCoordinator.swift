@@ -452,6 +452,19 @@ final class FileIndexCoordinator: ObservableObject {
         return merged
     }
 
+    nonisolated static func shouldPublishIncrementalRefresh(
+        currentFiles: [IndexedFile],
+        updatedFiles: [IndexedFile],
+        currentLinks: [String: Set<UUID>],
+        updatedLinks: [String: Set<UUID>]
+    ) -> Bool {
+        if currentLinks != updatedLinks { return true }
+        guard currentFiles.count == updatedFiles.count else { return true }
+        return zip(currentFiles, updatedFiles).contains {
+            $0.hasVisibleIndexChange(comparedTo: $1)
+        }
+    }
+
     /// Applies a small, known set of file changes to the in-memory model
     /// without refetching the whole `files`/`file_categories` tables (H2).
     /// The database is authoritative for the changed rows; anything else
@@ -508,23 +521,33 @@ final class FileIndexCoordinator: ObservableObject {
 
             let currentFiles = files
             let currentCategories = categories
+            let currentLinks = fileCategoryLinks
             let includesHidden = includesHiddenFiles
-            let snapshot = await Task.detached(priority: .userInitiated) {
+            let refresh = await Task.detached(priority: .userInitiated) {
                 let updated = Self.mergeIncrementalFiles(
                     current: currentFiles,
                     fetched: fetchedFiles,
                     removedIDs: removedFileIDs,
                     includesHiddenFiles: includesHidden
                 )
-                return IncrementalIndexSnapshot(
-                    files: updated,
-                    links: links,
-                    fileDerived: Self.makeFileDerivedIndexes(updated),
-                    categoryDerived: Self.makeCategoryDerivedIndexes(
-                        categories: currentCategories,
+                let shouldPublish = Self.shouldPublishIncrementalRefresh(
+                    currentFiles: currentFiles,
+                    updatedFiles: updated,
+                    currentLinks: currentLinks,
+                    updatedLinks: links
+                )
+                return (
+                    snapshot: IncrementalIndexSnapshot(
                         files: updated,
-                        links: links
-                    )
+                        links: links,
+                        fileDerived: Self.makeFileDerivedIndexes(updated),
+                        categoryDerived: Self.makeCategoryDerivedIndexes(
+                            categories: currentCategories,
+                            files: updated,
+                            links: links
+                        )
+                    ),
+                    shouldPublish: shouldPublish
                 )
             }.value
             guard !Task.isCancelled,
@@ -532,6 +555,8 @@ final class FileIndexCoordinator: ObservableObject {
                   indexPublicationGeneration == capturedPublicationGeneration else {
                 return
             }
+            guard refresh.shouldPublish else { return }
+            let snapshot = refresh.snapshot
 
             isBatchingIndexReload = true
             files = snapshot.files
@@ -2507,11 +2532,20 @@ final class FileIndexCoordinator: ObservableObject {
             )
             didReplaceFiles = true
             await FinderTagService.shared.invalidateAll()
-            guard scanGeneration == generation else {
-                await reloadIndex()
-                return
-            }
-            await reloadIndex()
+            // Publish only this source's changes instead of reloading every
+            // source: `reloadIndex()` here re-fetched and re-sorted the
+            // whole library (and rebuilt every derived dictionary) after
+            // every one-source scan.
+            let existingSourceIDs = Set(existingSourceFiles.map(\.id))
+            let scannedIDs = Set(scannedFiles.map(\.id))
+            let removedSourceIDs = existingSourceIDs
+                .subtracting(scannedIDs)
+                .subtracting(preservedUnscannedFileIDs)
+            await refreshFiles(
+                upsertedFileIDs: scannedFiles.map(\.id),
+                removedFileIDs: removedSourceIDs
+            )
+            guard scanGeneration == generation else { return }
 
             if indexesFileContents && (forcesFullTextExtraction || !filesRequiringTextRefresh.isEmpty) {
                 hasStagedTextContents = true
@@ -2786,6 +2820,16 @@ final class FileIndexCoordinator: ObservableObject {
         await applyFileSystemChanges(Array(events), to: source)
     }
 
+    private func invalidateFinderTags(forPaths paths: [String]) async {
+        let fileIDs = Set(paths.compactMap { fileIDByCanonicalPath[$0] })
+        guard !fileIDs.isEmpty else { return }
+        await FinderTagService.shared.invalidate(fileIDs: fileIDs)
+        NotificationCenter.default.post(
+            name: .xunJianFinderTagsDidChange,
+            object: fileIDs
+        )
+    }
+
     private func applyFileSystemChanges(
         _ events: [FileSystemChangeEvent],
         to source: FileSource
@@ -2809,6 +2853,13 @@ final class FileIndexCoordinator: ObservableObject {
             return
         }
 
+        let metadataOnly = events.filter(\.isMetadataOnly)
+        if !metadataOnly.isEmpty {
+            await invalidateFinderTags(forPaths: metadataOnly.map(\.path))
+        }
+        let indexEvents = events.filter(\.requiresIndexScan)
+        guard !indexEvents.isEmpty else { return }
+
         do {
             let restored = try bookmarkManager.resolveBookmark(source.bookmark)
             let didAccess = restored.url.startAccessingSecurityScopedResource()
@@ -2821,12 +2872,16 @@ final class FileIndexCoordinator: ObservableObject {
             }
 
             await syncScanExclusions()
+            // Metadata only during enumeration; content extraction runs
+            // separately (and concurrently) below so a large incremental
+            // batch does not serialize one blocking read per file on the
+            // scanner actor.
             let snapshot = try await scanner.scanChanges(
                 sourceID: source.id,
                 rootURL: restored.url,
-                events: events,
+                events: indexEvents,
                 includesHiddenFiles: includesHiddenFiles,
-                extractsText: FileIndexPreferences.indexesFileContents
+                extractsText: false
             )
             guard !Self.shouldDeferFileSystemChanges(
                 scanningSourceIDs: scanningSourceIDs,
@@ -2850,6 +2905,13 @@ final class FileIndexCoordinator: ObservableObject {
                     upsertedFileIDs: snapshot.files.map(\.id),
                     removedFileIDs: removedFileIDs
                 )
+                if FileIndexPreferences.indexesFileContents,
+                   !snapshot.files.isEmpty {
+                    try await extractTextContentsForBatch(
+                        snapshot.files
+                    )
+                    refreshActiveSearchIfNeeded()
+                }
             }
             if !snapshot.failedScopes.isEmpty {
                 onError?(AppLanguage.localized(
@@ -2876,6 +2938,34 @@ final class FileIndexCoordinator: ObservableObject {
 
         for source in Self.sourcesAffected(by: urls, in: sources) {
             await applyFileSystemChanges(events, to: source)
+        }
+    }
+
+    /// Concurrent, cancellable content extraction for an incremental batch
+    /// (mirrors the full-scan path: metadata lands first, text follows in
+    /// bounded parallel chunks). Staging is discarded if the batch is
+    /// cancelled before commit.
+    private func extractTextContentsForBatch(
+        _ files: [IndexedFile]
+    ) async throws {
+        guard let database, !files.isEmpty else { return }
+        let scanID = UUID()
+        do {
+            try await scanner.extractTextContents(
+                in: files,
+                consume: { updates in
+                    try Task.checkCancellation()
+                    try await database.stageTextContents(updates, scanID: scanID)
+                }
+            )
+            try Task.checkCancellation()
+            try await database.commitStagedTextContentUpdates(scanID: scanID)
+        } catch is CancellationError {
+            try? await database.discardStagedTextContents(scanID: scanID)
+            throw CancellationError()
+        } catch {
+            try? await database.discardStagedTextContents(scanID: scanID)
+            throw error
         }
     }
 

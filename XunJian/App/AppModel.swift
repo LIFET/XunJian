@@ -56,8 +56,14 @@ final class AppModel: ObservableObject {
     /// Multi-selection in the file table/grid (F05). `selectedFileID` remains
     /// as the single-selection compatibility surface on top of this set.
     @Published var selectedFileIDs: Set<String> = [] {
-        didSet { reconcileFileSelectionMetadata() }
+        didSet {
+            if oldValue != selectedFileIDs {
+                fileSelectionRevision &+= 1
+            }
+            reconcileFileSelectionMetadata()
+        }
     }
+    private(set) var fileSelectionRevision: UInt64 = 0
     var selectedFileID: String? {
         get { fileSelection.primaryID }
         set {
@@ -192,18 +198,35 @@ final class AppModel: ObservableObject {
     /// Filtered and sorted "All Files" list, cached here rather than in the
     /// view so switching pages does not throw it away and force a visible
     /// re-preparation every time the user comes back.
-    @Published var browseSnapshot: [IndexedFile] = []
+    @Published private(set) var browseSnapshot: [IndexedFile] = []
     /// Ordered IDs for the cached snapshot. Grid selection uses this instead
     /// of rebuilding an O(n) ID array on every click.
-    var browseSnapshotIDs: [String] = []
+    private(set) var browseSnapshotIDs: [String] = []
+    private(set) var browseSnapshotIDSet: Set<String> = []
     /// Identifies the inputs `browseSnapshot` was built from. `nil` means
     /// nothing has been prepared yet, which is the only case that warrants
     /// showing a spinner.
-    @Published var browseSnapshotSignature: Int?
+    private(set) var browseSnapshotSignature: Int?
     /// Hash of the user-driven snapshot inputs (query, kind, sort, filters).
     /// When a refresh's signature differs only through index revisions, the
     /// view can settle the burst before re-sorting a six-figure list.
-    @Published var browseSnapshotUserSignature: Int?
+    private(set) var browseSnapshotUserSignature: Int?
+
+    func publishBrowseSnapshot(
+        _ files: [IndexedFile],
+        orderedIDs: [String],
+        visibleIDs: Set<String>,
+        signature: Int,
+        userSignature: Int
+    ) {
+        browseSnapshotIDs = orderedIDs
+        browseSnapshotIDSet = visibleIDs
+        browseSnapshotSignature = signature
+        browseSnapshotUserSignature = userSignature
+        // Publish once, after every piece of metadata is coherent. The old
+        // path emitted three extra object changes for each six-figure list.
+        browseSnapshot = files
+    }
 
     /// The files currently visible on the active page. Export and ⌘A read
     /// this rather than the All Files snapshot, which goes stale after the
@@ -214,6 +237,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var hasPublishedCommandTarget = false
     @Published private(set) var commandTargetUsesGlobalSearchPagination = false
     private var commandTargetSignature: Int?
+    private var commandTargetGeneration: UInt64 = 0
 
     func updateCommandTargetFiles(
         _ files: [IndexedFile],
@@ -239,6 +263,7 @@ final class AppModel: ObservableObject {
         commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
         commandTargetSignature = signature
         hasPublishedCommandTarget = true
+        commandTargetGeneration &+= 1
     }
 
     var filesRevision: UInt64 { index.filesRevision }
@@ -248,10 +273,33 @@ final class AppModel: ObservableObject {
     /// ⌘A means to the user — not every file in the index.
     func selectAllDisplayedFiles() {
         if commandTargetUsesGlobalSearchPagination, hasMoreSearchResults {
+            let targetSignature = commandTargetSignature
+            let targetGeneration = commandTargetGeneration
+            let query = searchText
+            let kind = selectedKind
+            let minSize = filterMinSizeMB
+            let minDate = filterMinDate
             Task { [weak self] in
                 guard let self else { return }
-                guard await self.index.loadAllSearchResults(query: self.searchText) else { return }
-                self.applySelectAll(to: await self.filesMatchingCurrentBrowseFilters())
+                guard await self.index.loadAllSearchResults(query: query),
+                      self.searchText == query,
+                      self.selectedKind == kind,
+                      self.filterMinSizeMB == minSize,
+                      self.filterMinDate == minDate,
+                      self.commandTargetGeneration == targetGeneration,
+                      self.hasPublishedCommandTarget,
+                      self.commandTargetUsesGlobalSearchPagination,
+                      self.commandTargetSignature == targetSignature else { return }
+                let files = await self.filesMatchingCurrentBrowseFilters()
+                guard self.searchText == query,
+                      self.selectedKind == kind,
+                      self.filterMinSizeMB == minSize,
+                      self.filterMinDate == minDate,
+                      self.commandTargetGeneration == targetGeneration,
+                      self.hasPublishedCommandTarget,
+                      self.commandTargetUsesGlobalSearchPagination,
+                      self.commandTargetSignature == targetSignature else { return }
+                self.applySelectAll(to: files)
             }
             return
         }
@@ -337,10 +385,9 @@ final class AppModel: ObservableObject {
         return source.filter { file in
             if let kind, file.kind != kind { return false }
             if minimumSize > 0, file.size < minimumSize { return false }
-            if let minimumDate,
-               let modifiedAt = file.modifiedAt,
-               modifiedAt < minimumDate {
-                return false
+            if let minimumDate {
+                guard let modifiedAt = file.modifiedAt,
+                      modifiedAt >= minimumDate else { return false }
             }
             return true
         }
@@ -406,8 +453,20 @@ final class AppModel: ObservableObject {
         in files: [IndexedFile],
         extending: Bool
     ) {
+        moveDisplayedSelection(
+            by: offset,
+            inIDs: files.map(\.id),
+            extending: extending
+        )
+    }
+
+    func moveDisplayedSelection(
+        by offset: Int,
+        inIDs orderedIDs: [String],
+        extending: Bool
+    ) {
         var next = fileSelection
-        next.moveLead(by: offset, in: files.map(\.id), extending: extending)
+        next.moveLead(by: offset, in: orderedIDs, extending: extending)
         applyFileSelection(next)
     }
 
@@ -983,7 +1042,17 @@ final class AppModel: ObservableObject {
     }
 
     func requestBatchTrash() {
-        requestBatchTrash(selectedFiles)
+        requestBatchTrash(Self.filesForBatchAction(
+            selectedIDs: selectedFileIDs,
+            commandTargetFiles: commandTargetFiles
+        ))
+    }
+
+    nonisolated static func filesForBatchAction(
+        selectedIDs: Set<String>,
+        commandTargetFiles: [IndexedFile]
+    ) -> [IndexedFile] {
+        commandTargetFiles.filter { selectedIDs.contains($0.id) }
     }
 
     func requestBatchTrash(_ files: [IndexedFile]) {

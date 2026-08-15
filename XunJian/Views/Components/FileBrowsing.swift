@@ -159,6 +159,7 @@ struct FileListKeyboardNavigation: ViewModifier {
     @EnvironmentObject private var appModel: AppModel
 
     let files: [IndexedFile]
+    var orderedIDs: [String]?
     var columnCount: Int = 1
     /// The main file table owns arrow-key row movement; keep Return / Space /
     /// Delete / ⌘C even when arrows are left to `Table`.
@@ -220,7 +221,19 @@ struct FileListKeyboardNavigation: ViewModifier {
     /// holding an arrow key cannot silently jump across the whole list.
     private func move(by offset: Int, extending: Bool) -> KeyPress.Result {
         guard !files.isEmpty else { return .ignored }
-        appModel.moveDisplayedSelection(by: offset, in: files, extending: extending)
+        if let orderedIDs {
+            appModel.moveDisplayedSelection(
+                by: offset,
+                inIDs: orderedIDs,
+                extending: extending
+            )
+        } else {
+            appModel.moveDisplayedSelection(
+                by: offset,
+                in: files,
+                extending: extending
+            )
+        }
         return .handled
     }
 
@@ -238,11 +251,13 @@ struct FileListKeyboardNavigation: ViewModifier {
 extension View {
     func fileListKeyboardNavigation(
         files: [IndexedFile],
+        orderedIDs: [String]? = nil,
         columnCount: Int = 1,
         handlesArrowKeys: Bool = true
     ) -> some View {
         modifier(FileListKeyboardNavigation(
             files: files,
+            orderedIDs: orderedIDs,
             columnCount: columnCount,
             handlesArrowKeys: handlesArrowKeys
         ))

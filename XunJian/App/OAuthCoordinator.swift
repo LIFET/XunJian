@@ -41,6 +41,9 @@ final class OAuthCoordinator: ObservableObject {
     private var operationGenerations: [AIProviderKind: UUID] = [:]
     private var loginAttemptIDs: [AIProviderKind: UUID] = [:]
     private var loginStartGenerations: [AIProviderKind: UUID] = [:]
+    private var loginStartTasks: [
+        AIProviderKind: Task<OAuthBridgeLoginAttempt, Error>
+    ] = [:]
     private var mutationGenerations: [AIProviderKind: UUID] = [:]
     private var mutationWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var statusInFlight = Set<AIProviderKind>()
@@ -197,16 +200,17 @@ final class OAuthCoordinator: ObservableObject {
         defer {
             if loginStartGenerations[kind] == generation {
                 loginStartGenerations.removeValue(forKey: kind)
+                loginStartTasks.removeValue(forKey: kind)
             }
         }
 
         do {
-            let attempt = try await bridgeService.startLogin(for: provider, method: method)
+            let startTask = Task {
+                try await bridgeService.startLogin(for: provider, method: method)
+            }
+            loginStartTasks[kind] = startTask
+            let attempt = try await startTask.value
             guard operationGenerations[kind] == generation else {
-                _ = try? await bridgeService.cancelLogin(
-                    for: provider,
-                    attemptID: attempt.attemptID
-                )
                 return nil
             }
             guard attempt.provider == provider else {
@@ -252,6 +256,8 @@ final class OAuthCoordinator: ObservableObject {
                 authorizationURL: attempt.authorizationURL
             )
             return attempt.authorizationURL
+        } catch is CancellationError {
+            return nil
         } catch {
             applyFailure(error, to: kind, generation: generation)
             return nil
@@ -262,9 +268,7 @@ final class OAuthCoordinator: ObservableObject {
         guard let provider = Self.oauthProvider(for: kind) else { return }
         await waitForStatus(for: kind)
         if loginStartGenerations[kind] != nil {
-            _ = beginOperation(for: kind)
-            deviceCodePresentations.removeValue(forKey: kind)
-            states[kind] = .disconnected
+            await cancelPendingLoginStart(for: kind, provider: provider)
             return
         }
         guard mutationGenerations[kind] == nil,
@@ -337,9 +341,7 @@ final class OAuthCoordinator: ObservableObject {
         guard let provider = Self.oauthProvider(for: kind) else { return }
         await waitForStatus(for: kind)
         if loginStartGenerations[kind] != nil {
-            _ = beginOperation(for: kind)
-            deviceCodePresentations.removeValue(forKey: kind)
-            states[kind] = .disconnected
+            await cancelPendingLoginStart(for: kind, provider: provider)
             return
         }
 
@@ -357,6 +359,9 @@ final class OAuthCoordinator: ObservableObject {
     func logout(for kind: AIProviderKind) async {
         guard let provider = Self.oauthProvider(for: kind) else { return }
         await waitForStatus(for: kind)
+        if loginStartGenerations[kind] != nil {
+            await cancelPendingLoginStart(for: kind, provider: provider)
+        }
 
         guard let generation = await acquireMutationGeneration(for: kind) else { return }
         defer { finishMutation(for: kind, generation: generation) }
@@ -389,6 +394,29 @@ final class OAuthCoordinator: ObservableObject {
         loginAttemptIDs.removeValue(forKey: kind)
         deviceCodePresentations.removeValue(forKey: kind)
         return generation
+    }
+
+    /// Cancels the actual bridge request, waits for its connection teardown,
+    /// and, if the attempt won the race with cancellation, closes that exact
+    /// remote attempt before a new login is allowed to start.
+    private func cancelPendingLoginStart(
+        for kind: AIProviderKind,
+        provider: OAuthBridgeProvider
+    ) async {
+        _ = beginOperation(for: kind)
+        let task = loginStartTasks.removeValue(forKey: kind)
+        task?.cancel()
+        let attempt = try? await task?.value
+        loginStartGenerations.removeValue(forKey: kind)
+        loginAttemptIDs.removeValue(forKey: kind)
+        deviceCodePresentations.removeValue(forKey: kind)
+        if let attempt {
+            _ = try? await bridgeService.cancelLogin(
+                for: provider,
+                attemptID: attempt.attemptID
+            )
+        }
+        states[kind] = .disconnected
     }
 
     // MARK: - Generation bookkeeping

@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// A set of files with identical content (N13).
@@ -135,11 +136,9 @@ enum DuplicateFileFinder {
     /// Directories (including document packages) cannot be hashed as a single
     /// file handle, so they are reported as unread instead of failing the scan.
     static func canHashFile(at url: URL) -> Bool {
-        var isDirectory: ObjCBool = false
-        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory) else {
-            return false
-        }
-        return !isDirectory.boolValue
+        var information = stat()
+        return lstat(url.path, &information) == 0
+            && information.st_mode & S_IFMT == S_IFREG
     }
 
     /// Streams the file in 1MB chunks so multi-hundred-MB files don't get
@@ -153,13 +152,31 @@ enum DuplicateFileFinder {
     /// the whole hash, so a concurrent writer cannot produce a mixed digest.
     static func fingerprint(fileAt url: URL) async throws -> Fingerprint {
         try await Task.detached(priority: .userInitiated) {
-            let handle = try FileHandle(forReadingFrom: url)
-            defer { try? handle.close() }
-
-            var before = stat()
-            guard fstat(handle.fileDescriptor, &before) == 0 else {
+            let descriptor = open(
+                url.path,
+                O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
+            )
+            guard descriptor >= 0 else {
                 throw FileOperationError.fileNotFound
             }
+            var shouldCloseDescriptor = true
+            defer {
+                if shouldCloseDescriptor {
+                    close(descriptor)
+                }
+            }
+
+            var before = stat()
+            guard fstat(descriptor, &before) == 0,
+                  before.st_mode & S_IFMT == S_IFREG else {
+                throw FileOperationError.fileNotFound
+            }
+            let handle = FileHandle(
+                fileDescriptor: descriptor,
+                closeOnDealloc: true
+            )
+            shouldCloseDescriptor = false
+            defer { try? handle.close() }
             let beforeVersion = FileSystemObjectVersion(metadata: before)
 
             var hasher = SHA256()

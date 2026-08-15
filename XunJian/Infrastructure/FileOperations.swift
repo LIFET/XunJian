@@ -473,11 +473,16 @@ actor ThumbnailService {
         return Int(pixelWidth * pixelHeight * 4)
     }
 
-    func thumbnail(for file: IndexedFile, size: CGSize, scale: CGFloat) async -> NSImage? {
+    func thumbnail(
+        for file: IndexedFile,
+        size: CGSize,
+        scale: CGFloat,
+        representationTypes: QLThumbnailGenerator.Request.RepresentationTypes = .thumbnail
+    ) async -> NSImage? {
         // Scale is part of the key: Retina and non-Retina displays (or a
         // display-scale change) must not share one pixel-density entry.
         let modifiedAt = file.modifiedAt?.timeIntervalSinceReferenceDate ?? 0
-        let cacheKey = "\(file.id)-\(file.size)-\(modifiedAt)-\(Int(size.width))-\(Int(size.height))-\(Int(scale * 100))" as NSString
+        let cacheKey = "\(file.id)-\(file.size)-\(modifiedAt)-\(Int(size.width))-\(Int(size.height))-\(Int(scale * 100))-\(representationTypes.rawValue)" as NSString
         if let cached = cache.object(forKey: cacheKey) {
             return cached
         }
@@ -494,7 +499,7 @@ actor ThumbnailService {
             fileAt: file.url,
             size: size,
             scale: scale,
-            representationTypes: .all
+            representationTypes: representationTypes
         )
 
         do {
@@ -580,14 +585,25 @@ struct FileThumbnail: View {
             side: size,
             displayScale: displayScale
         )) {
-            thumbnail = nil
+            // Keep the last image on screen while a replacement loads.
+            // Clearing it first flashed the SF Symbol on every cell reuse
+            // and made the 1,100-image library stutter while scrolling.
             let image = await ThumbnailService.shared.thumbnail(
                 for: file,
                 size: CGSize(width: size, height: size),
-                scale: displayScale
+                scale: displayScale,
+                representationTypes: Self.representationTypes(for: size)
             )
             guard !Task.isCancelled else { return }
             thumbnail = image
         }
+    }
+
+    /// Table-sized cells only need the file icon. Asking Quick Look for
+    /// `.all` made every visible image/video row wait on a full preview.
+    static func representationTypes(
+        for size: CGFloat
+    ) -> QLThumbnailGenerator.Request.RepresentationTypes {
+        size <= 32 ? .icon : .thumbnail
     }
 }

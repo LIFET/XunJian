@@ -952,6 +952,41 @@ final class FileSystemChangeEventTests: XCTestCase {
         XCTAssertFalse(itemEvent.isDirectory)
         XCTAssertFalse(itemEvent.requiresFullRescan)
         XCTAssertTrue(recoveryEvent.requiresFullRescan)
+        XCTAssertTrue(itemEvent.requiresIndexScan)
+        XCTAssertTrue(recoveryEvent.requiresIndexScan)
+        XCTAssertFalse(itemEvent.isMetadataOnly)
+    }
+
+    func testICloudXattrAndFinderInfoAreMetadataOnly() {
+        let xattr = FileSystemChangeEvent(
+            path: "/tmp/icloud/照片.jpg",
+            flags: FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemXattrMod
+                    | kFSEventStreamEventFlagItemIsFile
+            )
+        )
+        let finderInfo = FileSystemChangeEvent(
+            path: "/tmp/icloud/照片.jpg",
+            flags: FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemFinderInfoMod
+                    | kFSEventStreamEventFlagItemIsFile
+            )
+        )
+        let write = FileSystemChangeEvent(
+            path: "/tmp/icloud/照片.jpg",
+            flags: FSEventStreamEventFlags(
+                kFSEventStreamEventFlagItemXattrMod
+                    | kFSEventStreamEventFlagItemModified
+                    | kFSEventStreamEventFlagItemIsFile
+            )
+        )
+
+        XCTAssertTrue(xattr.isMetadataOnly)
+        XCTAssertFalse(xattr.requiresIndexScan)
+        XCTAssertTrue(finderInfo.isMetadataOnly)
+        XCTAssertFalse(finderInfo.requiresIndexScan)
+        XCTAssertFalse(write.isMetadataOnly)
+        XCTAssertTrue(write.requiresIndexScan)
     }
 
     func testRealFSEventsMonitorReportsCreatedFile() async throws {

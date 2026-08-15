@@ -192,6 +192,8 @@ actor JSONLineRPCPeer {
     private static let maximumQueuedNotifications = 256
     private static let notificationQuiescenceNanoseconds: UInt64 = 150_000_000
     private static let requiredNotificationQuiescenceChecks = 2
+    /// Hard ceiling for any single request; generation policy allows 75s.
+    static let maximumRequestTimeoutNanoseconds: UInt64 = 75_000_000_000
     /// Stateless for decoding; used by every received line. `decode` is
     /// documented thread-safe for independent calls.
     private static let sharedDecoder = JSONDecoder()
@@ -231,9 +233,12 @@ actor JSONLineRPCPeer {
     ) async throws -> JSONValue {
         try Task.checkCancellation()
         try ensureOpen()
+        // A caller may extend the deadline beyond the default (the
+        // verification window is 45-60s and generation policy 75s), but
+        // never beyond the hard ceiling.
         let timeoutNanoseconds = min(
             requestedTimeoutNanoseconds ?? requestTimeoutNanoseconds,
-            requestTimeoutNanoseconds
+            Self.maximumRequestTimeoutNanoseconds
         )
         guard !method.isEmpty, timeoutNanoseconds > 0 else {
             throw JSONLineRPCError.invalidEnvelope
@@ -295,7 +300,8 @@ actor JSONLineRPCPeer {
     // Verification-only boundary: callers must not have a concurrent notification consumer.
     func requestAndDrainQueuedNotifications(
         method: String,
-        params: JSONValue? = nil
+        params: JSONValue? = nil,
+        timeoutNanoseconds requestedTimeoutNanoseconds: UInt64? = nil
     ) async throws -> JSONRPCRequestCompletion {
         guard !verificationDrainIsActive, notificationWaiters.isEmpty else {
             await failClosed(.invalidState)
@@ -304,7 +310,11 @@ actor JSONLineRPCPeer {
         verificationDrainIsActive = true
         defer { verificationDrainIsActive = false }
 
-        let result = try await request(method: method, params: params)
+        let result = try await request(
+            method: method,
+            params: params,
+            timeoutNanoseconds: requestedTimeoutNanoseconds
+        )
         guard notificationWaiters.isEmpty else {
             await failClosed(.invalidState)
             throw JSONLineRPCError.invalidState

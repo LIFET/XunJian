@@ -530,6 +530,10 @@ actor CodexAppServerClient {
             return try await fail(.unknownThread)
         }
         guard !text.isEmpty else { return try await fail(.invalidResponse) }
+        // The bundled App Server can take tens of seconds to answer the
+        // first verification turn; the 45s default would kill slow-but-valid
+        // responses inside the 60s verification window (or the 75s
+        // generation policy).
         let result = try await peer.request(
             method: "turn/start",
             params: .object([
@@ -546,7 +550,8 @@ actor CodexAppServerClient {
                         "text": .string(text)
                     ])
                 ])
-            ])
+            ]),
+            timeoutNanoseconds: JSONLineRPCPeer.maximumRequestTimeoutNanoseconds
         )
         guard let turnID = result.objectValue?["turn"]?
             .objectValue?["id"]?.stringValue,

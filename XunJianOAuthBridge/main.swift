@@ -441,7 +441,7 @@ private actor OAuthBridgeCoordinator {
     private var grokConnectionVerified = false
     private var codexVerificationRestored = false
     private var grokVerificationRestored = false
-    private var providersInFlight = Set<OAuthBridgeProvider>()
+    private var providerReservations: [OAuthBridgeProvider: UUID] = [:]
     private var isInvalidated = false
 
     func handle(_ request: OAuthBridgeRequest) async -> OAuthBridgeResponse {
@@ -468,19 +468,28 @@ private actor OAuthBridgeCoordinator {
         }
 
         let reservedProvider = request.arguments?.provider
-        if let reservedProvider,
-           !providersInFlight.insert(reservedProvider).inserted {
-            return .failure(
-                requestID: request.requestID,
-                code: request.operation == .startLogin
-                    ? .loginAlreadyInProgress
-                    : .authenticationFailed,
-                message: "An OAuth operation is already in progress."
-            )
+        let reservationID = UUID()
+        if let reservedProvider {
+            if providerReservations[reservedProvider] != nil,
+               !Self.preemptsProviderOperation(request.operation) {
+                return .failure(
+                    requestID: request.requestID,
+                    code: request.operation == .startLogin
+                        ? .loginAlreadyInProgress
+                        : .authenticationFailed,
+                    message: "An OAuth operation is already in progress."
+                )
+            }
+            // Disconnect and logout are user-requested termination operations.
+            // Replacing the token lets them enter the actor and close the
+            // owned runtime; the displaced request can no longer clear this
+            // reservation when its cancelled transport unwinds.
+            providerReservations[reservedProvider] = reservationID
         }
         defer {
-            if let reservedProvider {
-                providersInFlight.remove(reservedProvider)
+            if let reservedProvider,
+               providerReservations[reservedProvider] == reservationID {
+                providerReservations.removeValue(forKey: reservedProvider)
             }
         }
 
@@ -548,6 +557,12 @@ private actor OAuthBridgeCoordinator {
                 message: "OAuth authentication operation failed."
             )
         }
+    }
+
+    private static func preemptsProviderOperation(
+        _ operation: OAuthBridgeOperation
+    ) -> Bool {
+        operation == .disconnectProvider || operation == .logoutProvider
     }
 
     func invalidate() async {
@@ -951,7 +966,7 @@ private actor OAuthBridgeCoordinator {
                         )
                     }
                     group.addTask {
-                        try await Task.sleep(nanoseconds: 45_000_000_000)
+                        try await Task.sleep(nanoseconds: 60_000_000_000)
                         try Task.checkCancellation()
                         throw VerificationRunError.timedOut
                     }
@@ -1026,7 +1041,7 @@ private actor OAuthBridgeCoordinator {
                         )
                     }
                     group.addTask {
-                        try await Task.sleep(nanoseconds: 45_000_000_000)
+                        try await Task.sleep(nanoseconds: 60_000_000_000)
                         try Task.checkCancellation()
                         throw VerificationRunError.timedOut
                     }

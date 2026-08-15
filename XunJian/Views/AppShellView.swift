@@ -466,7 +466,6 @@ private struct FileExportProgressBanner: View {
             .padding(.horizontal, XunJianUI.Spacing.page)
             .padding(.vertical, 8)
             .background(XunJianUI.Fill.accentWash)
-            .accessibilityElement(children: .combine)
         }
     }
 }
