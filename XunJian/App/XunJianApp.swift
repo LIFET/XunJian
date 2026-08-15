@@ -63,6 +63,18 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     static func localizedRuntimeMessage(_ message: String) -> String {
+        let codexDiagnosticPrefix = "Codex verification rejected ["
+        if message.hasPrefix(codexDiagnosticPrefix), message.hasSuffix("].") {
+            let code = String(message.dropFirst(codexDiagnosticPrefix.count).dropLast(2))
+            guard codexVerificationDiagnosticCodes.contains(code) else {
+                return selected.usesEnglish
+                    ? "The OAuth operation didn’t complete. Try again later."
+                    : "OAuth 操作没有完成，请稍后重试。"
+            }
+            return selected.usesEnglish
+                ? message
+                : "Codex 验证在安全检查阶段被拒绝（\(code)）。"
+        }
         let grokDiagnosticMarker = "Grok verification rejected"
         let grokDiagnosticPrefix = "Grok verification rejected ["
         if message.hasPrefix(grokDiagnosticMarker) {
@@ -235,6 +247,8 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     private static let grokVerificationDiagnosticCodes: Set<String> = [
+        "runtime.start",
+        "runtime.cleanup",
         "AvailableCommandsUpdate",
         "Reply exactly XUNJIAN_OK. Do not use tools.",
         "XUNJIAN_OK",
@@ -249,7 +263,7 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         "close.sessions-changed",
         "close.transport",
         "end_turn",
-        "grok-4.5",
+        "grok-4.6",
         "high",
         "model_changed",
         "post.agent.content",
@@ -313,6 +327,11 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         "prompt.cancelled",
         "prompt.closed",
         "prompt.io",
+        "prompt.process-exit-1",
+        "prompt.process-exit-2",
+        "prompt.process-exit-zero",
+        "prompt.process-signal",
+        "prompt.process-reap-timeout",
         "prompt.notification-overflow",
         "prompt.protocol",
         "prompt.remote-error",
@@ -343,6 +362,37 @@ enum AppLanguage: String, CaseIterable, Identifiable {
         "setup.session",
         "setup.transport",
         "text",
+    ]
+
+    private static let codexVerificationDiagnosticCodes: Set<String> = [
+        "codex.runtime-start",
+        "codex.account-read",
+        "codex.account-request",
+        "codex.account-remote-error",
+        "codex.account-notification",
+        "codex.account-transport",
+        "codex.account-process-exit",
+        "codex.account-process-exit-1",
+        "codex.account-process-exit-2",
+        "codex.account-process-reap-timeout",
+        "codex.account-process-exit-zero",
+        "codex.account-process-signal",
+        "codex.account-envelope",
+        "codex.account-auth-requirement",
+        "codex.account-identity",
+        "codex.account-signed-out",
+        "codex.model-list",
+        "codex.model-unavailable",
+        "codex.thread-start",
+        "codex.turn-start",
+        "codex.event-transport",
+        "codex.event-envelope",
+        "codex.event-disallowed-item",
+        "codex.event-error-item",
+        "codex.event-unexpected",
+        "codex.transcript",
+        "codex.runtime-cleanup",
+        "unexpected_reply"
     ]
 
     private static func value(

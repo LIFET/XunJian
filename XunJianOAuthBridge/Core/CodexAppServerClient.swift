@@ -53,6 +53,36 @@ enum CodexRestrictedReadSupport: Sendable {
     case supported
 }
 
+enum CodexGenerationDiagnostic: String, Equatable, Sendable {
+    case runtimeStart = "codex.runtime-start"
+    case accountRead = "codex.account-read"
+    case accountRequest = "codex.account-request"
+    case accountRemoteError = "codex.account-remote-error"
+    case accountNotification = "codex.account-notification"
+    case accountTransport = "codex.account-transport"
+    case accountProcessExit = "codex.account-process-exit"
+    case accountProcessExitOne = "codex.account-process-exit-1"
+    case accountProcessExitTwo = "codex.account-process-exit-2"
+    case accountProcessReapTimeout = "codex.account-process-reap-timeout"
+    case accountProcessExitZero = "codex.account-process-exit-zero"
+    case accountProcessSignal = "codex.account-process-signal"
+    case accountEnvelope = "codex.account-envelope"
+    case accountAuthRequirement = "codex.account-auth-requirement"
+    case accountIdentity = "codex.account-identity"
+    case accountSignedOut = "codex.account-signed-out"
+    case modelList = "codex.model-list"
+    case modelUnavailable = "codex.model-unavailable"
+    case threadStart = "codex.thread-start"
+    case turnStart = "codex.turn-start"
+    case eventTransport = "codex.event-transport"
+    case eventEnvelope = "codex.event-envelope"
+    case eventDisallowedItem = "codex.event-disallowed-item"
+    case eventErrorItem = "codex.event-error-item"
+    case eventUnexpected = "codex.event-unexpected"
+    case transcript = "codex.transcript"
+    case runtimeCleanup = "codex.runtime-cleanup"
+}
+
 actor CodexAppServerClient {
     private static let maximumGeneratedTextBytes = 131_072
     static let optedOutNotifications: Set<String> = [
@@ -145,6 +175,7 @@ actor CodexAppServerClient {
     private var listedModelIDs = Set<String>()
     private var ownedThreadIDs = Set<String>()
     private var turnThreadIDs: [String: String] = [:]
+    private var generationDiagnostic: CodexGenerationDiagnostic?
 
     init(
         peer: JSONLineRPCPeer,
@@ -180,27 +211,64 @@ actor CodexAppServerClient {
 
     func readAccount() async throws -> CodexAccountState {
         try requireInitialized()
-        let result = try await peer.request(
-            method: "account/read",
-            params: .object(["refreshToken": .bool(false)])
-        )
-        guard let object = result.objectValue,
-              let requiresOpenAIAuth = object["requiresOpenaiAuth"]?.boolValue,
-              let account = object["account"] else {
+        let result: JSONValue
+        do {
+            result = try await peer.request(
+                method: "account/read",
+                params: .object(["refreshToken": .bool(false)])
+            )
+        } catch let error as JSONLineRPCError {
+            switch error {
+            case .remoteError:
+                recordGenerationDiagnostic(.accountRemoteError)
+            case .unknownNotification, .notificationOverflow:
+                recordGenerationDiagnostic(.accountNotification)
+            case .closed, .transportFailure, .requestTimedOut, .requestCancelled:
+                recordGenerationDiagnostic(.accountTransport)
+            case let .transportProcessExited(code):
+                if code == -1 {
+                    recordGenerationDiagnostic(.accountProcessReapTimeout)
+                } else if code == 0 {
+                    recordGenerationDiagnostic(.accountProcessExitZero)
+                } else if code == 1 {
+                    recordGenerationDiagnostic(.accountProcessExitOne)
+                } else if code == 2 {
+                    recordGenerationDiagnostic(.accountProcessExitTwo)
+                } else if code >= 128 {
+                    recordGenerationDiagnostic(.accountProcessSignal)
+                } else {
+                    recordGenerationDiagnostic(.accountProcessExit)
+                }
+            default:
+                recordGenerationDiagnostic(.accountRequest)
+            }
+            throw error
+        } catch {
+            recordGenerationDiagnostic(.accountRequest)
+            throw error
+        }
+        guard let object = result.objectValue else {
+            recordGenerationDiagnostic(.accountEnvelope)
             return try await fail(.invalidResponse)
         }
-        if account == .null {
+        guard let requiresOpenAIAuth = object["requiresOpenaiAuth"]?.boolValue else {
+            recordGenerationDiagnostic(.accountAuthRequirement)
+            return try await fail(.invalidResponse)
+        }
+        guard let account = object["account"], account != .null else {
             return .signedOut(requiresOpenAIAuth: requiresOpenAIAuth)
         }
         guard let accountObject = account.objectValue,
               let type = accountObject["type"]?.stringValue,
               !type.isEmpty else {
+            recordGenerationDiagnostic(.accountIdentity)
             return try await fail(.invalidResponse)
         }
         let planType: String?
         if let value = accountObject["planType"], value != .null {
             guard let parsedPlanType = value.stringValue,
                   !parsedPlanType.isEmpty else {
+                recordGenerationDiagnostic(.accountIdentity)
                 return try await fail(.invalidResponse)
             }
             planType = parsedPlanType
@@ -491,35 +559,63 @@ actor CodexAppServerClient {
 
     func generateText(model: String?, prompt: String) async throws -> String {
         try requireInitialized()
+        generationDiagnostic = nil
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               prompt.utf8.count <= Self.maximumGeneratedTextBytes,
               !prompt.contains("\0") else {
             throw CodexAppServerError.invalidResponse
         }
 
-        let models = try await listModels()
+        let models: [CodexModel]
+        do {
+            models = try await listModels()
+        } catch {
+            recordGenerationDiagnostic(.modelList)
+            throw error
+        }
         if let model, !models.contains(where: { $0.id == model }) {
+            recordGenerationDiagnostic(.modelUnavailable)
             throw CodexAppServerError.invalidResponse
         }
 
-        let threadID = try await startEphemeralThread(model: model)
+        let threadID: String
+        do {
+            threadID = try await startEphemeralThread(model: model)
+        } catch {
+            recordGenerationDiagnostic(.threadStart)
+            throw error
+        }
         var turnID: String?
         var didComplete = false
         do {
-            let startedTurnID = try await startTextTurn(
-                threadID: threadID,
-                text: prompt
-            )
+            let startedTurnID: String
+            do {
+                startedTurnID = try await startTextTurn(
+                    threadID: threadID,
+                    text: prompt
+                )
+            } catch {
+                recordGenerationDiagnostic(.turnStart)
+                throw error
+            }
             turnID = startedTurnID
 
             var deltas = ""
             var finalMessage: String?
             while true {
-                switch try await nextEvent() {
+                let event: CodexEvent
+                do {
+                    event = try await nextEvent()
+                } catch {
+                    recordGenerationDiagnostic(.eventTransport)
+                    throw error
+                }
+                switch event {
                 case let .agentMessageDelta(delta):
                     guard finalMessage == nil,
                           deltas.utf8.count + delta.utf8.count
                             <= Self.maximumGeneratedTextBytes else {
+                        recordGenerationDiagnostic(.transcript)
                         throw CodexAppServerError.invalidResponse
                     }
                     deltas += delta
@@ -528,6 +624,7 @@ actor CodexAppServerClient {
                     guard finalMessage == nil,
                           Self.generatedTextIsValid(message),
                           deltas.isEmpty || deltas == message else {
+                        recordGenerationDiagnostic(.transcript)
                         throw CodexAppServerError.invalidResponse
                     }
                     finalMessage = message
@@ -536,6 +633,7 @@ actor CodexAppServerClient {
                     guard status == "completed",
                           let finalMessage,
                           deltas.isEmpty || deltas == finalMessage else {
+                        recordGenerationDiagnostic(.transcript)
                         throw CodexAppServerError.invalidResponse
                     }
                     didComplete = true
@@ -566,20 +664,23 @@ actor CodexAppServerClient {
                 let params = try await requireOwnedTurnEvent(notification.params)
                 guard let item = params["item"]?.objectValue,
                       let type = item["type"]?.stringValue else {
-                    return try await fail(.invalidResponse)
+                    return try await rejectGeneration(.eventEnvelope, as: .invalidResponse)
                 }
                 guard Self.safeItemTypes.contains(type) else {
-                    return try await fail(.disallowedItem)
+                    return try await rejectGeneration(.eventDisallowedItem, as: .disallowedItem)
                 }
 
             case "item/completed":
                 let params = try await requireOwnedTurnEvent(notification.params)
                 guard let item = params["item"]?.objectValue,
                       let type = item["type"]?.stringValue else {
-                    return try await fail(.invalidResponse)
+                    return try await rejectGeneration(.eventEnvelope, as: .invalidResponse)
+                }
+                if type == "error" {
+                    return try await rejectGeneration(.eventErrorItem, as: .invalidResponse)
                 }
                 guard Self.safeItemTypes.contains(type) else {
-                    return try await fail(.disallowedItem)
+                    return try await rejectGeneration(.eventDisallowedItem, as: .disallowedItem)
                 }
                 if type == "agentMessage", let text = Self.agentMessageText(from: item) {
                     return .agentMessage(text)
@@ -604,7 +705,7 @@ actor CodexAppServerClient {
                 continue
 
             default:
-                return try await fail(.invalidResponse)
+                return try await rejectGeneration(.eventUnexpected, as: .invalidResponse)
             }
         }
     }
@@ -633,6 +734,12 @@ actor CodexAppServerClient {
         ownedThreadIDs.removeAll()
         turnThreadIDs.removeAll()
         await peer.close()
+    }
+
+    func takeGenerationDiagnostic() -> CodexGenerationDiagnostic? {
+        let diagnostic = generationDiagnostic
+        generationDiagnostic = nil
+        return diagnostic
     }
 
     private static func generatedTextIsValid(_ text: String) -> Bool {
@@ -678,6 +785,20 @@ actor CodexAppServerClient {
         activeLoginID = nil
         await peer.close()
         throw error
+    }
+
+    private func recordGenerationDiagnostic(_ diagnostic: CodexGenerationDiagnostic) {
+        if generationDiagnostic == nil {
+            generationDiagnostic = diagnostic
+        }
+    }
+
+    private func rejectGeneration<T>(
+        _ diagnostic: CodexGenerationDiagnostic,
+        as error: CodexAppServerError
+    ) async throws -> T {
+        recordGenerationDiagnostic(diagnostic)
+        return try await fail(error)
     }
 
     private static func validHTTPSURL(_ rawValue: String) -> URL? {

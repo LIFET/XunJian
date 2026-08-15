@@ -1606,6 +1606,40 @@ actor FileIndexDatabase {
         }
     }
 
+    /// Applies only the files explicitly staged by an incremental content
+    /// refresh. Unchanged files keep their extracted text and FTS rows.
+    func commitStagedTextContentUpdates(scanID: UUID) throws {
+        try transaction {
+            try ensureStagedTextContentTable()
+            let fileIDs = try stagedTextContentFileIDs(scanID: scanID)
+            guard !fileIDs.isEmpty else {
+                try deleteStagedTextContents(scanID: scanID)
+                return
+            }
+
+            let statement = try prepare(
+                """
+                UPDATE files
+                SET text_content = (
+                    SELECT staged_text_contents.text_content
+                    FROM staged_text_contents
+                    WHERE staged_text_contents.scan_id = ?
+                      AND staged_text_contents.file_id = files.id
+                )
+                WHERE id IN (
+                    SELECT file_id FROM staged_text_contents WHERE scan_id = ?
+                );
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind(scanID.uuidString, at: 1, to: statement)
+            try bind(scanID.uuidString, at: 2, to: statement)
+            try stepDone(statement)
+            try rebuildSearchEntries(fileIDs)
+            try deleteStagedTextContents(scanID: scanID)
+        }
+    }
+
     func discardStagedTextContents(scanID: UUID) throws {
         try transaction {
             try ensureStagedTextContentTable()
@@ -2331,6 +2365,19 @@ actor FileIndexDatabase {
         defer { sqlite3_finalize(statement) }
         try bind(scanID.uuidString, at: 1, to: statement)
         try stepDone(statement)
+    }
+
+    private func stagedTextContentFileIDs(scanID: UUID) throws -> [String] {
+        let statement = try prepare(
+            "SELECT file_id FROM staged_text_contents WHERE scan_id = ?;"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(scanID.uuidString, at: 1, to: statement)
+        var fileIDs: [String] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            fileIDs.append(text(statement, column: 0))
+        }
+        return fileIDs
     }
 
     /// Rebuilds one derived search row per file ID, preparing the three

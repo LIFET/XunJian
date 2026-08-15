@@ -31,7 +31,7 @@ enum AIProviderKind: String, CaseIterable, Codable, Identifiable, Sendable {
     var defaultModel: String {
         switch self {
         case .codex: "gpt-5.3-codex"
-        case .grok: "grok-4.5"
+        case .grok: "grok-4.6"
         case .deepSeek: "deepseek-v4-flash"
         case .qwen: "qwen3.7-plus"
         }

@@ -136,6 +136,7 @@ struct AIProviderSettingsRow: View {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
             isExpanded = ai.activeProviderKind == kind
+                || (ai.activeProviderKind == nil && kind == .codex)
         }
         .onChange(of: ai.providerSettings) { _, _ in
             guard !hasUnsavedConfigurationChanges else { return }

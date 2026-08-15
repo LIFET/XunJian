@@ -46,6 +46,8 @@ final class OAuthCoordinator: ObservableObject {
     private var statusInFlight = Set<AIProviderKind>()
     private var statusWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var pollingTask: Task<Void, Never>?
+    private var isApplicationActive = false
+    private var isPollingPausedForVerification = false
 
     init(bridgeService: any OAuthBridgeServicing, isRunningTests: Bool) {
         self.bridgeService = bridgeService
@@ -91,11 +93,24 @@ final class OAuthCoordinator: ObservableObject {
 
     func applicationBecameActive() {
         guard !isRunningTests else { return }
-        pollingTask?.cancel()
+        isApplicationActive = true
+        startPolling()
+    }
+
+    private func startPolling() {
+        guard pollingTask == nil,
+              isApplicationActive,
+              !isPollingPausedForVerification else { return }
         pollingTask = Task { [weak self] in
             guard let self else { return }
+            var endedForLifecycleChange = false
             await self.refreshAllProviders(presentsFailure: false)
             while !Task.isCancelled {
+                guard self.isApplicationActive,
+                      !self.isPollingPausedForVerification else {
+                    endedForLifecycleChange = true
+                    break
+                }
                 let shouldContinue = AIProviderKind.allCases.contains { kind in
                     Self.oauthProvider(for: kind) != nil
                         && self.states[kind]?.shouldPoll == true
@@ -108,12 +123,27 @@ final class OAuthCoordinator: ObservableObject {
                 }
                 await self.refreshAllProviders(presentsFailure: false)
             }
+            let wasCancelled = Task.isCancelled
+            self.pollingTask = nil
+            if (endedForLifecycleChange || wasCancelled),
+               self.isApplicationActive,
+               !self.isPollingPausedForVerification {
+                self.startPolling()
+            }
         }
     }
 
     func applicationResignedActive() {
-        pollingTask?.cancel()
-        pollingTask = nil
+        isApplicationActive = false
+        // A confirmation alert temporarily resigns the scene. Cancelling an
+        // in-flight status RPC here invalidates its XPC connection while the
+        // helper is still closing the managed runtime; an immediately
+        // confirmed verification can then race that teardown. Let an active
+        // status request finish naturally. A sleeping poll has no RPC to
+        // preserve and can stop immediately.
+        if statusInFlight.isEmpty {
+            pollingTask?.cancel()
+        }
     }
 
     private func refreshAllProviders(presentsFailure: Bool) async {
@@ -258,11 +288,28 @@ final class OAuthCoordinator: ObservableObject {
 
     func verifyConnection(for kind: AIProviderKind) async {
         guard let provider = Self.oauthProvider(for: kind) else { return }
-        await waitForStatus(for: kind)
+        // The confirmation alert temporarily deactivates the scene and
+        // cancels foreground polling. Wait for every provider's in-flight
+        // status request to unwind before opening the verification request;
+        // otherwise cancellation can invalidate the shared XPC connection
+        // underneath the first account/session RPC.
+        isPollingPausedForVerification = true
+        if statusInFlight.isEmpty {
+            let poll = pollingTask
+            poll?.cancel()
+            await poll?.value
+        }
+        for oauthKind in AIProviderKind.allCases where Self.oauthProvider(for: oauthKind) != nil {
+            await waitForStatus(for: oauthKind)
+        }
         guard !Task.isCancelled,
               loginStartGenerations[kind] == nil,
               mutationGenerations[kind] == nil,
-              states[kind] == .signedInUnverified else { return }
+              states[kind] == .signedInUnverified else {
+            isPollingPausedForVerification = false
+            if isApplicationActive { startPolling() }
+            return
+        }
 
         let generation = beginOperation(for: kind)
         mutationGenerations[kind] = generation
@@ -270,6 +317,10 @@ final class OAuthCoordinator: ObservableObject {
         defer {
             verificationsInFlight.remove(kind)
             finishMutation(for: kind, generation: generation)
+            isPollingPausedForVerification = false
+            if isApplicationActive {
+                startPolling()
+            }
         }
 
         do {

@@ -1013,6 +1013,7 @@ struct SupervisedLineProcessConfiguration: Equatable, Sendable {
     let environment: [String: String]
     let maximumLineBytes: Int
     let terminationGraceNanoseconds: UInt64
+    let allowsSuccessfulExit: Bool
 
     fileprivate let ownedTemporaryDirectories: [OwnedTemporaryDirectory]
     fileprivate let requiredImmutableFiles: [OwnedImmutableFile]
@@ -1023,7 +1024,8 @@ struct SupervisedLineProcessConfiguration: Equatable, Sendable {
         currentDirectoryURL: URL,
         environment: [String: String],
         maximumLineBytes: Int,
-        terminationGraceNanoseconds: UInt64
+        terminationGraceNanoseconds: UInt64,
+        allowsSuccessfulExit: Bool = true
     ) {
         self.init(
             executableURL: executableURL,
@@ -1032,6 +1034,7 @@ struct SupervisedLineProcessConfiguration: Equatable, Sendable {
             environment: environment,
             maximumLineBytes: maximumLineBytes,
             terminationGraceNanoseconds: terminationGraceNanoseconds,
+            allowsSuccessfulExit: allowsSuccessfulExit,
             ownedTemporaryDirectories: [],
             requiredImmutableFiles: []
         )
@@ -1044,6 +1047,7 @@ struct SupervisedLineProcessConfiguration: Equatable, Sendable {
         environment: [String: String],
         maximumLineBytes: Int,
         terminationGraceNanoseconds: UInt64,
+        allowsSuccessfulExit: Bool = true,
         ownedTemporaryDirectories: [OwnedTemporaryDirectory],
         requiredImmutableFiles: [OwnedImmutableFile] = []
     ) {
@@ -1053,6 +1057,7 @@ struct SupervisedLineProcessConfiguration: Equatable, Sendable {
         self.environment = environment
         self.maximumLineBytes = maximumLineBytes
         self.terminationGraceNanoseconds = terminationGraceNanoseconds
+        self.allowsSuccessfulExit = allowsSuccessfulExit
         self.ownedTemporaryDirectories = ownedTemporaryDirectories
         self.requiredImmutableFiles = requiredImmutableFiles
     }
@@ -1196,12 +1201,17 @@ actor SupervisedLineProcess: JSONLineTransport {
                 control: control
             )
         }
+        let processMonitor = control.takeProcessMonitor()
         let waitTask = Task.detached(priority: .userInitiated) {
-            Self.waitForExit(of: spawned.identifier)
+            Self.waitForExit(
+                of: spawned.identifier,
+                processMonitor: processMonitor
+            )
         }
+        let allowsSuccessfulExit = configuration.allowsSuccessfulExit
         let lifecycle = Task.detached(priority: .userInitiated) {
             let exitCode = await waitTask.value
-            control.markExited()
+            control.markExited(exitCode: exitCode)
             input.close()
             let outputError = await standardOutputTask.value
             await standardErrorTask.value
@@ -1211,10 +1221,14 @@ actor SupervisedLineProcess: JSONLineTransport {
                 await lineChannel.finish(with: nil)
             } else if let outputError {
                 await lineChannel.finish(with: outputError)
-            } else if exitCode != 0 {
-                await lineChannel.finish(with: .processExited(exitCode))
-            } else {
+            } else if exitCode == 0, allowsSuccessfulExit {
                 await lineChannel.finish(with: nil)
+            } else {
+                // A protocol runtime is expected to remain available until
+                // `close()` marks the shutdown intentional. Even exit(0) is
+                // therefore an unexpected transport termination and must not
+                // be collapsed into an ambiguous EOF.
+                await lineChannel.finish(with: .processExited(exitCode))
             }
         }
 
@@ -1246,7 +1260,9 @@ actor SupervisedLineProcess: JSONLineTransport {
             }
         }
         guard !process.control.hasExited else {
-            throw SupervisedLineProcessError.closed
+            throw SupervisedLineProcessError.processExited(
+                process.control.exitCode ?? -1
+            )
         }
 
         var framedData = data
@@ -1437,56 +1453,68 @@ actor SupervisedLineProcess: JSONLineTransport {
 
     /// Polls with WNOHANG instead of blocking: a child stuck in an
     /// uninterruptible state (D-state I/O) survives SIGKILL and would make a
-    /// blocking `waitpid` wedge the lifecycle task — and with it `close()`
-    /// and every teardown path — forever. After the deadline the state
-    /// machine finalizes regardless; a detached blocking reaper keeps
-    /// ownership of `waitpid` so the child cannot become a zombie later.
-    private static func waitForExit(of identifier: pid_t) -> Int32 {
-        var processStatus: Int32 = 0
-        let deadline = DispatchTime.now().uptimeNanoseconds
-            + maximumReapWaitNanoseconds
-        while true {
-            let result = waitpid(identifier, &processStatus, WNOHANG)
-            if result == identifier { break }
-            if result == -1, errno == EINTR { continue }
-            if DispatchTime.now().uptimeNanoseconds >= deadline {
-                continueReapingInBackground(identifier)
-                return -1
-            }
-            // Keep the poll cheap: nanosleep between attempts.
-            var request = timespec(tv_sec: 0, tv_nsec: 10_000_000)
+    /// Waits for the actual process-exit event. The previous implementation
+    /// started a five-second reap deadline at launch, so every healthy,
+    /// long-lived OAuth runtime was incorrectly marked exited after five
+    /// seconds. EVFILT_PROC also keeps this reliable in XPC hosts that may
+    /// reap SIGCHLD before `waitpid` can observe the child.
+    private static func waitForExit(
+        of identifier: pid_t,
+        processMonitor: Int32?
+    ) -> Int32 {
+        if let processMonitor {
+            defer { Darwin.close(processMonitor) }
+            var event = Darwin.kevent()
             while true {
-                var remaining = timespec(tv_sec: 0, tv_nsec: 0)
-                let result = nanosleep(&request, &remaining)
-                if result != -1 { break }
-                guard errno == EINTR else { break }
-                request = remaining
+                let result = kevent(
+                    processMonitor,
+                    nil,
+                    0,
+                    &event,
+                    1,
+                    nil
+                )
+                if result == -1, errno == EINTR { continue }
+                guard result == 1,
+                      event.filter == Int16(EVFILT_PROC) else {
+                    return -1
+                }
+                // Grok forks helper processes during a prompt. NOTE_FORK is
+                // informational for ownership tracking and must not be
+                // mistaken for termination of the supervised root process.
+                guard event.fflags & UInt32(NOTE_EXIT) != 0 else { continue }
+
+                var processStatus: Int32 = 0
+                let waited = waitpid(identifier, &processStatus, WNOHANG)
+                if waited == identifier {
+                    return decodedExitCode(from: processStatus)
+                }
+                guard event.fflags & UInt32(NOTE_EXITSTATUS) != 0 else {
+                    return -1
+                }
+                return decodedExitCode(
+                    from: Int32(truncatingIfNeeded: event.data)
+                )
             }
         }
 
+        var processStatus: Int32 = 0
+        while true {
+            let result = waitpid(identifier, &processStatus, 0)
+            if result == identifier { break }
+            if result == -1, errno == EINTR { continue }
+            return -1
+        }
+        return decodedExitCode(from: processStatus)
+    }
+
+    private static func decodedExitCode(from processStatus: Int32) -> Int32 {
         let terminatingSignal = processStatus & 0x7F
         if terminatingSignal == 0 {
             return (processStatus >> 8) & 0xFF
         }
         return 128 + terminatingSignal
     }
-
-    private static func continueReapingInBackground(_ identifier: pid_t) {
-        Thread.detachNewThread {
-            var processStatus: Int32 = 0
-            while true {
-                let result = waitpid(identifier, &processStatus, 0)
-                if result == identifier { return }
-                if result == -1, errno == EINTR { continue }
-                return
-            }
-        }
-    }
-
-    /// How long `waitForExit` keeps polling before giving up on an
-    /// unkillable child. The drain loops in `close()` are already bounded;
-    /// this bounds the final reap as well.
-    private static let maximumReapWaitNanoseconds: UInt64 = 5_000_000_000
 
     private struct SpawnedProcess {
         let identifier: pid_t
@@ -1696,7 +1724,9 @@ actor SupervisedLineProcess: JSONLineTransport {
             | UInt16(EV_ENABLE)
             | UInt16(EV_CLEAR)
             | UInt16(EV_RECEIPT)
-        let notes = UInt32(NOTE_FORK) | UInt32(NOTE_EXIT)
+        let notes = UInt32(NOTE_FORK)
+            | UInt32(NOTE_EXIT)
+            | UInt32(NOTE_EXITSTATUS)
         var change = Darwin.kevent(
             ident: UInt(identifier),
             filter: Int16(EVFILT_PROC),
@@ -1858,7 +1888,8 @@ enum OAuthCLIProcessSecurity {
                 ],
                 substitutesWorkingDirectory: true,
                 agentProfileContents: grokAgentProfileContents,
-                maximumLineBytes: 1_048_576
+                maximumLineBytes: 1_048_576,
+                allowsSuccessfulExit: false
             )
         }
 
@@ -1923,6 +1954,7 @@ enum OAuthCLIProcessSecurity {
             ],
             maximumLineBytes: 1_048_576,
             terminationGraceNanoseconds: 1_000_000_000,
+            allowsSuccessfulExit: false,
             ownedTemporaryDirectories: ownedDirectories
         )
     }
@@ -2024,7 +2056,8 @@ enum OAuthCLIProcessSecurity {
         arguments: [String],
         substitutesWorkingDirectory: Bool,
         agentProfileContents: Data? = nil,
-        maximumLineBytes: Int
+        maximumLineBytes: Int,
+        allowsSuccessfulExit: Bool = true
     ) throws -> SupervisedLineProcessConfiguration {
         guard isPrivateDirectory(grokHomeDirectoryURL) else {
             throw SupervisedLineProcessError.invalidConfiguration
@@ -2113,6 +2146,7 @@ enum OAuthCLIProcessSecurity {
             ),
             maximumLineBytes: maximumLineBytes,
             terminationGraceNanoseconds: 1_000_000_000,
+            allowsSuccessfulExit: allowsSuccessfulExit,
             ownedTemporaryDirectories: ownedDirectories,
             requiredImmutableFiles: agentProfile.map { [$0] } ?? []
         )
@@ -2593,6 +2627,7 @@ private final class ProcessControl: @unchecked Sendable {
     private var trackedIdentities: [pid_t: ProcessIdentity]
     private var processMonitor: Int32?
     private var exited = false
+    private var recordedExitCode: Int32?
     private var intentionallyClosed = false
     private var fullyDrained = false
     private var drainingStopped = false
@@ -2614,6 +2649,10 @@ private final class ProcessControl: @unchecked Sendable {
         lock.withLock { exited }
     }
 
+    var exitCode: Int32? {
+        lock.withLock { recordedExitCode }
+    }
+
     var wasClosedIntentionally: Bool {
         lock.withLock { intentionallyClosed }
     }
@@ -2630,8 +2669,11 @@ private final class ProcessControl: @unchecked Sendable {
         lock.withLock { intentionallyClosed = true }
     }
 
-    func markExited() {
-        lock.withLock { exited = true }
+    func markExited(exitCode: Int32) {
+        lock.withLock {
+            recordedExitCode = exitCode
+            exited = true
+        }
     }
 
     func markFullyDrained() {
@@ -2701,6 +2743,13 @@ private final class ProcessControl: @unchecked Sendable {
         }
         if let descriptor {
             Darwin.close(descriptor)
+        }
+    }
+
+    func takeProcessMonitor() -> Int32? {
+        lock.withLock {
+            defer { processMonitor = nil }
+            return processMonitor
         }
     }
 

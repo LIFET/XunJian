@@ -1165,7 +1165,7 @@ final class OAuthProcessTests: XCTestCase {
             runtime.arguments.firstIndex(of: "--reasoning-effort")
         )
         let profileIndex = try XCTUnwrap(runtime.arguments.firstIndex(of: "--agent-profile"))
-        XCTAssertEqual(runtime.arguments[modelIndex + 1], "grok-4.5")
+        XCTAssertEqual(runtime.arguments[modelIndex + 1], "grok-4.6")
         XCTAssertEqual(runtime.arguments[reasoningIndex + 1], "high")
         XCTAssertEqual(modelIndex + 2, reasoningIndex)
         XCTAssertEqual(reasoningIndex + 2, profileIndex)
@@ -1177,7 +1177,7 @@ final class OAuthProcessTests: XCTestCase {
         XCTAssertEqual(
             Array(runtime.arguments.suffix(9)),
             [
-                "agent", "--no-leader", "--model", "grok-4.5",
+                "agent", "--no-leader", "--model", "grok-4.6",
                 "--reasoning-effort", "high",
                 "--agent-profile", profileURL.path, "stdio"
             ]
@@ -1198,7 +1198,7 @@ final class OAuthProcessTests: XCTestCase {
                 ].joined(separator: ","),
                 "--disable-web-search", "--no-memory", "--no-subagents",
                 "--sandbox", "strict", "--cwd", runtime.currentDirectoryURL.path,
-                "agent", "--no-leader", "--model", "grok-4.5",
+                "agent", "--no-leader", "--model", "grok-4.6",
                 "--reasoning-effort", "high",
                 "--agent-profile", profileURL.path, "stdio"
             ]
@@ -1384,6 +1384,34 @@ final class OAuthProcessTests: XCTestCase {
                 XCTAssertEqual(error, .processExited(17))
                 XCTAssertFalse(String(describing: error).contains("stderr"))
             }
+        }
+    }
+
+    func testProcessRemainsUsableBeyondFormerFiveSecondReapDeadline() async throws {
+        try await withProcess(mode: "echo") { process in
+            try await Task.sleep(for: .seconds(5.25))
+            let request = try JSONEncoder().encode(
+                JSONValue.object(["id": .integer(1), "method": .string("echo")])
+            )
+            try await process.writeLine(request)
+            let receivedResponse = try await process.readLine()
+            let rawResponse = try XCTUnwrap(receivedResponse)
+            let value = try JSONDecoder().decode(JSONValue.self, from: rawResponse)
+            XCTAssertEqual(value.objectValue?["result"]?.objectValue?["ok"], .bool(true))
+        }
+    }
+
+    func testForkNotificationDoesNotTerminateSupervisedRootProcess() async throws {
+        try await withProcess(mode: "fork-then-echo") { process in
+            try await Task.sleep(for: .milliseconds(100))
+            let request = try JSONEncoder().encode(
+                JSONValue.object(["id": .integer(1), "method": .string("echo")])
+            )
+            try await process.writeLine(request)
+            let receivedResponse = try await process.readLine()
+            let rawResponse = try XCTUnwrap(receivedResponse)
+            let value = try JSONDecoder().decode(JSONValue.self, from: rawResponse)
+            XCTAssertEqual(value.objectValue?["result"]?.objectValue?["ok"], .bool(true))
         }
     }
 

@@ -688,8 +688,7 @@ struct AllFilesView: View {
                 EquatableSnapshotList(
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
-                    contentWidth: contentWidth,
-                    selectionToken: appModel.selectedFileIDs.hashValue
+                    contentWidth: contentWidth
                 ) {
                     VStack(alignment: .leading, spacing: 6) {
                         if FileTableLayout.needsHorizontalScroll(contentWidth: contentWidth) {
@@ -1107,6 +1106,7 @@ struct AllFilesView: View {
               isVisible,
               displayedFilesRefreshKey.signature == signature else { return }
         let result = computed.files
+        appModel.browseSnapshotIDs = result.map(\.id)
         appModel.browseSnapshot = result
         appModel.browseSnapshotSignature = signature
         appModel.browseSnapshotUserSignature = userSignature
@@ -1318,12 +1318,21 @@ struct AllFilesView: View {
                     FileGridCard(
                         file: file,
                         isSelected: appModel.selectedFileIDs.contains(file.id),
-                        onSelect: { appModel.selectDisplayedFile(file, in: files) },
+                        onSelect: {
+                            let modifiers = NSEvent.modifierFlags
+                            appModel.selectDisplayedFile(
+                                file.id,
+                                inIDs: appModel.browseSnapshotIDs,
+                                command: modifiers.contains(.command),
+                                shift: modifiers.contains(.shift)
+                            )
+                        },
                         onOpen: {
                             appModel.selectedFileID = file.id
                             doubleClickBehavior.perform(on: file, using: appModel)
                         }
                     )
+                    .equatable()
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
@@ -1402,14 +1411,14 @@ private struct EquatableSnapshotList<Content: View>: View, Equatable {
     let signature: Int?
     let viewMode: FileBrowseViewMode
     let contentWidth: CGFloat
-    let selectionToken: Int
+    let selectionToken: Int?
     let content: () -> Content
 
     init(
         signature: Int?,
         viewMode: FileBrowseViewMode,
         contentWidth: CGFloat,
-        selectionToken: Int,
+        selectionToken: Int? = nil,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature

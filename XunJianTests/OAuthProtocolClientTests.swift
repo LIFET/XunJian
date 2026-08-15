@@ -50,6 +50,17 @@ private enum FakeJSONLServerMain {
             runEcho(fragmented: false)
         case "fragmented":
             runEcho(fragmented: true)
+        case "fork-then-echo":
+            let child = Process()
+            child.executableURL = URL(fileURLWithPath: "/usr/bin/true")
+            child.standardOutput = FileHandle.nullDevice
+            child.standardError = FileHandle.nullDevice
+            do {
+                try child.run()
+            } catch {
+                exit(71)
+            }
+            runEcho(fragmented: false)
         default:
             runEcho(fragmented: false)
         }
@@ -262,7 +273,7 @@ private func makeGrokSessionUpdateParams(
             "sessionId": .string(sessionID),
             "update": .object([
                 "_meta": .object([
-                    "modelId": .string("grok-4.5"),
+                    "modelId": .string("grok-4.6"),
                     "promptIndex": .integer(0)
                 ]),
                 "sessionUpdate": .string(type),
@@ -335,7 +346,7 @@ private func sendGrokResponseStarted(
                 "cache_read_input_tokens": .integer(0),
                 "input_tokens": .integer(1),
                 "message_id": .string(messageID),
-                "model": .string("grok-4.5"),
+                "model": .string("grok-4.6"),
                 "sessionUpdate": .string("response_started")
             ])
         ])
@@ -664,7 +675,7 @@ private func sendGrokVerificationSetupLifecycle(
     secondAvailableOuterMetadata: [String: JSONValue]? = nil,
     injectedHookEventName: String? = nil,
     hookRuns: [JSONValue] = [],
-    modelID: String = "grok-4.5",
+    modelID: String = "grok-4.6",
     modelChangedMethod: String = "_x.ai/session_notification"
 ) async throws {
     let scopedSessionID = lifecycleSessionID ?? sessionID
@@ -1580,7 +1591,7 @@ final class OAuthProtocolClientTests: XCTestCase {
                 "--disallowed-tools", exactGrokDisallowedToolIdentifiers.joined(separator: ","),
                 "--disable-web-search", "--no-memory", "--no-subagents",
                 "--sandbox", "strict", "--cwd", runtime.currentDirectoryURL.path,
-                "agent", "--no-leader", "--model", "grok-4.5",
+                "agent", "--no-leader", "--model", "grok-4.6",
                 "--reasoning-effort", "high",
                 "--agent-profile", profileURL.path, "stdio"
             ]
@@ -1977,6 +1988,8 @@ final class OAuthProtocolClientTests: XCTestCase {
         } catch let error as CodexAppServerError {
             XCTAssertEqual(error, .invalidResponse)
         }
+        let diagnostic = await client.takeGenerationDiagnostic()
+        XCTAssertEqual(diagnostic, .modelUnavailable)
         try await server.value
         let outgoingCount = await transport.queuedOutgoingCount()
         XCTAssertEqual(outgoingCount, 0)
@@ -2165,6 +2178,41 @@ final class OAuthProtocolClientTests: XCTestCase {
         try await client.initialize()
         let state = try await client.readAccount()
         XCTAssertEqual(state, .signedOut(requiresOpenAIAuth: true))
+        try await server.value
+        await client.close()
+    }
+
+    func testCodexAccountStateAcceptsOfficialOmittedSignedOutAccount() async throws {
+        let transport = ScriptedLineTransport()
+        let peer = JSONLineRPCPeer(
+            transport: transport,
+            dialect: .codex,
+            allowedNotifications: CodexAppServerClient.allowedNotifications
+        )
+        let client = CodexAppServerClient(
+            peer: peer,
+            workingDirectoryURL: URL(fileURLWithPath: "/private/tmp/xunjian-empty")
+        )
+        let server = Task {
+            let initialize = try await transport.nextClientObject().objectValue!
+            try await transport.sendServerObject(.object([
+                "id": initialize["id"]!, "result": .object([:])
+            ]))
+            _ = try await transport.nextClientObject()
+            let account = try await transport.nextClientObject().objectValue!
+            XCTAssertEqual(account["method"], .string("account/read"))
+            try await transport.sendServerObject(.object([
+                "id": account["id"]!,
+                "result": .object(["requiresOpenaiAuth": .bool(true)])
+            ]))
+        }
+
+        try await client.initialize()
+        let state = try await client.readAccount()
+        XCTAssertEqual(
+            state,
+            .signedOut(requiresOpenAIAuth: true)
+        )
         try await server.value
         await client.close()
     }
@@ -3710,7 +3758,7 @@ final class OAuthProtocolClientTests: XCTestCase {
                         "cwd": .string("/private/tmp/xunjian-empty"),
                         "isWorktree": .bool(false),
                         "lastChangeUnixMs": .integer(1_786_356_200_000),
-                        "modelId": .string("grok-4.5"),
+                        "modelId": .string("grok-4.6"),
                         "origin": .object(["kind": .string("acp")]),
                         "reasoningEffort": .string("high"),
                         "resident": .bool(false),

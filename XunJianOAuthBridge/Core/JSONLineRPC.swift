@@ -166,6 +166,7 @@ struct JSONRPCRequestCompletion: Equatable, Sendable {
 enum JSONLineRPCError: Error, Equatable, Sendable {
     case closed
     case transportFailure
+    case transportProcessExited(Int32)
     case malformedMessage
     case messageTooLarge
     case invalidDialect
@@ -265,6 +266,13 @@ actor JSONLineRPCPeer {
 
         do {
             try await transport.writeLine(encoded)
+        } catch let error as SupervisedLineProcessError {
+            if case let .processExited(code) = error {
+                await failClosed(.transportProcessExited(code))
+                throw JSONLineRPCError.transportProcessExited(code)
+            }
+            await failClosed(.transportFailure)
+            throw JSONLineRPCError.transportFailure
         } catch {
             await failClosed(.transportFailure)
             throw JSONLineRPCError.transportFailure
@@ -341,6 +349,13 @@ actor JSONLineRPCPeer {
         let encoded = try encodeOutbound(method: method, params: params, identifier: nil)
         do {
             try await transport.writeLine(encoded)
+        } catch let error as SupervisedLineProcessError {
+            if case let .processExited(code) = error {
+                await failClosed(.transportProcessExited(code))
+                throw JSONLineRPCError.transportProcessExited(code)
+            }
+            await failClosed(.transportFailure)
+            throw JSONLineRPCError.transportFailure
         } catch {
             await failClosed(.transportFailure)
             throw JSONLineRPCError.transportFailure
@@ -429,6 +444,13 @@ actor JSONLineRPCPeer {
             do {
                 data = try await transport.readLine()
             } catch is CancellationError {
+                break
+            } catch let error as SupervisedLineProcessError {
+                if case let .processExited(code) = error {
+                    await failClosed(.transportProcessExited(code))
+                } else {
+                    await failClosed(.transportFailure)
+                }
                 break
             } catch {
                 await failClosed(.transportFailure)

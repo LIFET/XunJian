@@ -176,6 +176,7 @@ final class FileIndexCoordinator: ObservableObject {
     private var hiddenFilesPreferenceRevision = UUID()
     private var contentIndexPreferenceTask: Task<Void, Never>?
     private var contentIndexPreferenceRevision = UUID()
+    private var pendingFullTextExtractionSourceIDs: Set<UUID> = []
     private var scanGeneration = UUID()
     private var scanningSourceIDs = Set<UUID>()
     private var currentScanningSourceID: UUID?
@@ -1304,18 +1305,21 @@ final class FileIndexCoordinator: ObservableObject {
         UserDefaults.standard.set(enabled, forKey: FileIndexPreferences.indexesFileContentsKey)
         UserDefaults.standard.set(false, forKey: FileIndexPreferences.disabledContentPurgeCompletedKey)
         if enabled {
+            pendingFullTextExtractionSourceIDs = Set(
+                sources.filter(Self.isSourceEligibleForScanning).map(\.id)
+            )
+            isUpdatingContentIndex = !pendingFullTextExtractionSourceIDs.isEmpty
             contentIndexPreferenceTask = Task { [weak self] in
                 await previousTask?.value
                 guard !Task.isCancelled,
                       self?.contentIndexPreferenceRevision == revision else { return }
                 self?.refreshAllSources()
-                guard self?.contentIndexPreferenceRevision == revision else { return }
-                self?.isUpdatingContentIndex = false
                 self?.contentIndexPreferenceTask = nil
             }
             return
         }
 
+        pendingFullTextExtractionSourceIDs.removeAll()
         cancelScan(startsPendingFullRescan: false)
         guard let database else { return reportDatabaseUnavailable() }
         isUpdatingContentIndex = true
@@ -2456,6 +2460,7 @@ final class FileIndexCoordinator: ObservableObject {
             let indexesFileContents = FileIndexPreferences.indexesFileContents
             let excludedNames = ScanExclusions.builtIn.union(ScanExclusions.current())
             let existingSourceFiles = try await database.fetchFiles(forSourceID: source.id)
+            let forcesFullTextExtraction = pendingFullTextExtractionSourceIDs.contains(source.id)
             let includesHiddenFiles = self.includesHiddenFiles
             // Path-only comparison off the main actor: the root is
             // canonicalized once, and the stored file paths are already
@@ -2488,6 +2493,11 @@ final class FileIndexCoordinator: ObservableObject {
             try Task.checkCancellation()
             guard scanGeneration == generation,
                   scanningSourceIDs.contains(source.id) else { return }
+            let filesRequiringTextRefresh = Self.filesRequiringTextRefresh(
+                scannedFiles: scannedFiles,
+                existingFiles: existingSourceFiles,
+                forcesFullRefresh: forcesFullTextExtraction
+            )
             try await database.replaceFiles(
                 for: source.id,
                 with: scannedFiles,
@@ -2503,10 +2513,18 @@ final class FileIndexCoordinator: ObservableObject {
             }
             await reloadIndex()
 
-            if indexesFileContents {
+            if indexesFileContents && (forcesFullTextExtraction || !filesRequiringTextRefresh.isEmpty) {
                 hasStagedTextContents = true
+                if !forcesFullTextExtraction {
+                    try await database.stageTextContents(
+                        filesRequiringTextRefresh.map {
+                            FileTextContentUpdate(fileID: $0.id, textContent: nil)
+                        },
+                        scanID: contentScanID
+                    )
+                }
                 try await scanner.extractTextContents(
-                    in: scannedFiles,
+                    in: forcesFullTextExtraction ? scannedFiles : filesRequiringTextRefresh,
                     consume: { updates in
                         try Task.checkCancellation()
                         try await database.stageTextContents(updates, scanID: contentScanID)
@@ -2522,11 +2540,19 @@ final class FileIndexCoordinator: ObservableObject {
                 )
                 try Task.checkCancellation()
                 guard scanGeneration == generation else { throw CancellationError() }
-                try await database.commitStagedTextContents(
-                    scanID: contentScanID,
-                    sourceID: source.id,
-                    preservedUnscannedFileIDs: preservedUnscannedFileIDs
-                )
+                if forcesFullTextExtraction {
+                    try await database.commitStagedTextContents(
+                        scanID: contentScanID,
+                        sourceID: source.id,
+                        preservedUnscannedFileIDs: preservedUnscannedFileIDs
+                    )
+                    pendingFullTextExtractionSourceIDs.remove(source.id)
+                    if pendingFullTextExtractionSourceIDs.isEmpty {
+                        isUpdatingContentIndex = false
+                    }
+                } else {
+                    try await database.commitStagedTextContentUpdates(scanID: contentScanID)
+                }
                 hasStagedTextContents = false
                 refreshActiveSearchIfNeeded()
             }
@@ -2566,6 +2592,21 @@ final class FileIndexCoordinator: ObservableObject {
             includesHiddenFiles: includesHiddenFiles,
             excludedDirectoryNames: excludedDirectoryNames
         )
+    }
+
+    nonisolated static func filesRequiringTextRefresh(
+        scannedFiles: [IndexedFile],
+        existingFiles: [IndexedFile],
+        forcesFullRefresh: Bool
+    ) -> [IndexedFile] {
+        guard !forcesFullRefresh else { return scannedFiles }
+        let existingByID = Dictionary(uniqueKeysWithValues: existingFiles.map { ($0.id, $0) })
+        return scannedFiles.filter { scanned in
+            guard let existing = existingByID[scanned.id] else { return true }
+            return scanned.size != existing.size
+                || scanned.modifiedAt != existing.modifiedAt
+                || scanned.fileExtension != existing.fileExtension
+        }
     }
 
     /// Path-only comparison. The stored `file.path` is already canonical, so

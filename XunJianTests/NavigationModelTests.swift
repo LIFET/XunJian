@@ -4,6 +4,86 @@ import XCTest
 @testable import XunJian
 
 final class NavigationModelTests: XCTestCase {
+    func testFullScanRefreshesTextOnlyForNewOrContentChangedFiles() {
+        let sourceID = UUID()
+        let modifiedAt = Date(timeIntervalSince1970: 100)
+        let unchanged = IndexedFile(
+            id: "unchanged", sourceID: sourceID, name: "A.txt", path: "/tmp/A.txt",
+            fileExtension: "txt", kind: .document, size: 10,
+            createdAt: nil, modifiedAt: modifiedAt, indexedAt: Date()
+        )
+        let changed = IndexedFile(
+            id: "changed", sourceID: sourceID, name: "B.txt", path: "/tmp/B.txt",
+            fileExtension: "txt", kind: .document, size: 20,
+            createdAt: nil, modifiedAt: modifiedAt, indexedAt: Date()
+        )
+        let previousChanged = IndexedFile(
+            id: "changed", sourceID: sourceID, name: "B.txt", path: "/tmp/B.txt",
+            fileExtension: "txt", kind: .document, size: 10,
+            createdAt: nil, modifiedAt: modifiedAt, indexedAt: Date()
+        )
+        let newFile = IndexedFile(
+            id: "new", sourceID: sourceID, name: "C.txt", path: "/tmp/C.txt",
+            fileExtension: "txt", kind: .document, size: 5,
+            createdAt: nil, modifiedAt: modifiedAt, indexedAt: Date()
+        )
+
+        let incremental = FileIndexCoordinator.filesRequiringTextRefresh(
+            scannedFiles: [unchanged, changed, newFile],
+            existingFiles: [unchanged, previousChanged],
+            forcesFullRefresh: false
+        )
+        XCTAssertEqual(Set(incremental.map(\.id)), ["changed", "new"])
+        XCTAssertEqual(
+            FileIndexCoordinator.filesRequiringTextRefresh(
+                scannedFiles: [unchanged, changed, newFile],
+                existingFiles: [unchanged, previousChanged],
+                forcesFullRefresh: true
+            ).map(\.id),
+            ["unchanged", "changed", "new"]
+        )
+    }
+
+    func testIncrementalTextCommitPreservesUnchangedSearchRows() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "Content", path: directory.path, bookmark: Data([1])
+        )
+        let first = IndexedFile(
+            id: "first", sourceID: source.id, name: "First.txt",
+            path: directory.appendingPathComponent("First.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "old first phrase"
+        )
+        let second = IndexedFile(
+            id: "second", sourceID: source.id, name: "Second.txt",
+            path: directory.appendingPathComponent("Second.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "stable second phrase"
+        )
+        try await database.replaceFiles(for: source.id, with: [first, second])
+
+        let scanID = UUID()
+        try await database.stageTextContents(
+            [FileTextContentUpdate(fileID: first.id, textContent: "new first phrase")],
+            scanID: scanID
+        )
+        try await database.commitStagedTextContentUpdates(scanID: scanID)
+
+        let newMatches = try await database.searchFiles(matching: "new").map(\.id)
+        let stableMatches = try await database.searchFiles(matching: "stable").map(\.id)
+        let oldMatches = try await database.searchFiles(matching: "old")
+        XCTAssertEqual(newMatches, [first.id])
+        XCTAssertEqual(stableMatches, [second.id])
+        XCTAssertTrue(oldMatches.isEmpty)
+    }
+
     @MainActor
     func testIndexReloadRetriesAfterAnIncrementalPublication() {
         XCTAssertEqual(
@@ -2395,7 +2475,7 @@ final class PhaseSixAITests: XCTestCase {
 
     func testOfficialProviderDefaultsUseCurrentDocumentedModels() {
         XCTAssertEqual(AIProviderKind.codex.defaultModel, "gpt-5.3-codex")
-        XCTAssertEqual(AIProviderKind.grok.defaultModel, "grok-4.5")
+        XCTAssertEqual(AIProviderKind.grok.defaultModel, "grok-4.6")
         XCTAssertEqual(AIProviderKind.deepSeek.defaultModel, "deepseek-v4-flash")
         XCTAssertEqual(AIProviderKind.qwen.defaultModel, "qwen3.7-plus")
     }

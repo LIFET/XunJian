@@ -984,10 +984,17 @@ private actor OAuthBridgeCoordinator {
                         "Codex connection verification timed out."
                     )
                 }
-                if case VerificationRunError.rejected = error {
+                if case let VerificationRunError.rejected(diagnostic) = error {
+                    if diagnostic == CodexGenerationDiagnostic.accountSignedOut.rawValue {
+                        codexCredentialState = .signedOut
+                        return disconnectedStatus(
+                            provider: .codex,
+                            credential: .signedOut
+                        )
+                    }
                     throw Failure.response(
                         .safeVerificationUnavailable,
-                        "Codex connection verification returned an unexpected reply."
+                        "Codex verification rejected [\(diagnostic)]."
                     )
                 }
                 if let failure = error as? Failure { throw failure }
@@ -1060,6 +1067,10 @@ private actor OAuthBridgeCoordinator {
                 }
                 if case GrokACPError.cachedTokenUnavailable = error {
                     grokCredentialState = .signedOut
+                    return disconnectedStatus(
+                        provider: .grok,
+                        credential: .signedOut
+                    )
                 }
                 if case GrokACPError.disallowedUpdate = error {
                     throw Failure.response(
@@ -1193,15 +1204,32 @@ private actor OAuthBridgeCoordinator {
         }
         let executable = try bundledCodexExecutable()
 
-        let runtime = try await ensureCodexRuntime(executableURL: executable)
-        let generationResult: Result<String, Error>
+        let runtime: CodexRuntime
         do {
-            switch try await runtime.client.readAccount() {
+            runtime = try await ensureCodexRuntime(executableURL: executable)
+        } catch let failure as Failure {
+            throw failure
+        } catch {
+            throw VerificationRunError.rejected(
+                CodexGenerationDiagnostic.runtimeStart.rawValue
+            )
+        }
+        let generationResult: Result<String, Error>
+        var generationDiagnostic: CodexGenerationDiagnostic?
+        do {
+            let account: CodexAccountState
+            do {
+                account = try await runtime.client.readAccount()
+            } catch {
+                throw VerificationRunError.rejected(
+                    CodexGenerationDiagnostic.accountRead.rawValue
+                )
+            }
+            switch account {
             case .signedOut:
                 codexCredentialState = .signedOut
-                throw Failure.response(
-                    .authenticationFailed,
-                    "ChatGPT authentication is required."
+                throw VerificationRunError.rejected(
+                    CodexGenerationDiagnostic.accountSignedOut.rawValue
                 )
             case let .signedIn(type, _, _):
                 guard type.lowercased() == "chatgpt" else {
@@ -1221,7 +1249,14 @@ private actor OAuthBridgeCoordinator {
             // pinned model attempt fails closed.
             let generationModel: String
             if fallbackToFirstListedModel {
-                let listedModels = try await runtime.client.listModels()
+                let listedModels: [CodexModel]
+                do {
+                    listedModels = try await runtime.client.listModels()
+                } catch {
+                    throw VerificationRunError.rejected(
+                        CodexGenerationDiagnostic.modelList.rawValue
+                    )
+                }
                 if listedModels.contains(where: { $0.id == model }) {
                     generationModel = model
                 } else {
@@ -1237,6 +1272,7 @@ private actor OAuthBridgeCoordinator {
                 )
             )
         } catch {
+            generationDiagnostic = await runtime.client.takeGenerationDiagnostic()
             generationResult = .failure(error)
         }
 
@@ -1248,6 +1284,9 @@ private actor OAuthBridgeCoordinator {
             // Connection invalidation already took ownership of teardown.
             cleanupSucceeded = false
         }
+        if let generationDiagnostic {
+            throw VerificationRunError.rejected(generationDiagnostic.rawValue)
+        }
         switch generationResult {
         case let .failure(error):
             throw error
@@ -1256,9 +1295,8 @@ private actor OAuthBridgeCoordinator {
             guard cleanupSucceeded,
                   !isInvalidated,
                   OAuthBridgeGenerationPolicy.outputIsValid(text) else {
-                throw Failure.response(
-                    .generationFailed,
-                    "Codex generation runtime cleanup failed."
+                throw VerificationRunError.rejected(
+                    CodexGenerationDiagnostic.runtimeCleanup.rawValue
                 )
             }
             return text
@@ -1286,7 +1324,16 @@ private actor OAuthBridgeCoordinator {
         if let existingRuntime = grokRuntime {
             runtime = existingRuntime
         } else {
-            runtime = try await makeGrokRuntime()
+            do {
+                runtime = try await makeGrokRuntime()
+            } catch let failure as Failure {
+                throw failure
+            } catch GrokACPError.cachedTokenUnavailable {
+                grokCredentialState = .signedOut
+                throw GrokACPError.cachedTokenUnavailable
+            } catch {
+                throw VerificationRunError.rejected("runtime.start")
+            }
             grokRuntime = runtime
         }
 
@@ -1407,10 +1454,7 @@ private actor OAuthBridgeCoordinator {
         guard cleanupSucceeded,
               !isInvalidated,
               grokGeneration == generation else {
-            throw Failure.response(
-                .authenticationFailed,
-                "Grok verification runtime cleanup failed."
-            )
+            throw VerificationRunError.rejected("runtime.cleanup")
         }
     }
 

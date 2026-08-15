@@ -193,6 +193,9 @@ final class AppModel: ObservableObject {
     /// view so switching pages does not throw it away and force a visible
     /// re-preparation every time the user comes back.
     @Published var browseSnapshot: [IndexedFile] = []
+    /// Ordered IDs for the cached snapshot. Grid selection uses this instead
+    /// of rebuilding an O(n) ID array on every click.
+    var browseSnapshotIDs: [String] = []
     /// Identifies the inputs `browseSnapshot` was built from. `nil` means
     /// nothing has been prepared yet, which is the only case that warrants
     /// showing a spinner.
@@ -367,7 +370,7 @@ final class AppModel: ObservableObject {
         let modifiers = NSEvent.modifierFlags
         selectDisplayedFile(
             file.id,
-            in: files,
+            inIDs: files.map(\.id),
             command: modifiers.contains(.command),
             shift: modifiers.contains(.shift)
         )
@@ -379,8 +382,22 @@ final class AppModel: ObservableObject {
         command: Bool,
         shift: Bool
     ) {
+        selectDisplayedFile(
+            fileID,
+            inIDs: files.map(\.id),
+            command: command,
+            shift: shift
+        )
+    }
+
+    func selectDisplayedFile(
+        _ fileID: String,
+        inIDs orderedIDs: [String],
+        command: Bool,
+        shift: Bool
+    ) {
         var next = fileSelection
-        next.select(fileID, in: files.map(\.id), command: command, shift: shift)
+        next.select(fileID, in: orderedIDs, command: command, shift: shift)
         applyFileSelection(next)
     }
 

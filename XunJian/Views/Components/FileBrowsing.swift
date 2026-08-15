@@ -82,11 +82,15 @@ enum FileBrowseViewMode: String, CaseIterable, Identifiable {
 
 /// Presentational grid cell for a file. Selection and activation are supplied
 /// by the host page so this stays free of app state.
-struct FileGridCard: View {
+struct FileGridCard: View, Equatable {
     let file: IndexedFile
     let isSelected: Bool
     let onSelect: () -> Void
     let onOpen: () -> Void
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.file == rhs.file && lhs.isSelected == rhs.isSelected
+    }
 
     /// Hover lives on the card instead of the page: a page-level @State made
     /// every mouse move invalidate the whole grid (and on All Files, the

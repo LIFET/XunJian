@@ -506,6 +506,14 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
                 gate.resume(throwing: CancellationError())
             }
         } catch {
+            // Drop the cached reference before invalidation. The invalidation
+            // handler is delivered asynchronously; without this synchronous
+            // detach, a request started immediately after an alert closes can
+            // reuse the already-invalid connection and fail at its first RPC.
+            if self.connection === connection {
+                self.connection = nil
+                connectionGeneration = nil
+            }
             connection.invalidate()
             throw error
         }

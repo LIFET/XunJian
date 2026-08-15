@@ -40,6 +40,11 @@ enum GrokVerificationDiagnostic: String, Equatable, Sendable {
     case promptTransport = "prompt.transport"
     case promptClosed = "prompt.closed"
     case promptIO = "prompt.io"
+    case promptProcessExitOne = "prompt.process-exit-1"
+    case promptProcessExitTwo = "prompt.process-exit-2"
+    case promptProcessExitZero = "prompt.process-exit-zero"
+    case promptProcessSignal = "prompt.process-signal"
+    case promptProcessReapTimeout = "prompt.process-reap-timeout"
     case promptProtocol = "prompt.protocol"
     case promptTimeout = "prompt.timeout"
     case promptCancelled = "prompt.cancelled"
@@ -110,7 +115,11 @@ enum GrokVerificationDiagnostic: String, Equatable, Sendable {
 }
 
 actor GrokACPClient {
-    static let fixedModelID = "grok-4.5"
+    static let fixedModelID = "grok-4.6"
+    private static let supportedModelIDs: Set<String> = [
+        "grok-4.6",
+        "grok-4.5"
+    ]
 
     private struct PendingSessionCreation: Sendable {
         let token: UUID
@@ -375,7 +384,7 @@ actor GrokACPClient {
                 recordVerificationTransportFailure(.setupTransport, error: error)
                 throw error
             }
-            try validateVerificationSetupNotifications(
+            let expectedModelID = try validateVerificationSetupNotifications(
                 setupNotifications,
                 sessionID: sessionID
             )
@@ -406,6 +415,7 @@ actor GrokACPClient {
                 sessionID: sessionID,
                 expectedPrompt: prompt,
                 exactReply: exactReply,
+                expectedModelID: expectedModelID,
                 requireCompleteReply: false
             )
             try Task.checkCancellation()
@@ -434,6 +444,7 @@ actor GrokACPClient {
                 sessionID: sessionID,
                 expectedPrompt: prompt,
                 exactReply: exactReply,
+                expectedModelID: expectedModelID,
                 requireCompleteReply: true
             )
         } catch is CancellationError {
@@ -558,7 +569,7 @@ actor GrokACPClient {
     private func validateVerificationSetupNotifications(
         _ notifications: [JSONRPCNotification],
         sessionID: String
-    ) throws {
+    ) throws -> String {
         let lifecycle = notifications.filter {
             !Self.ambientPassiveNotifications.contains($0.method)
         }
@@ -588,7 +599,7 @@ actor GrokACPClient {
         guard firstCommands == secondCommands else {
             try rejectVerification(.setupCommandsMismatch, as: .disallowedUpdate)
         }
-        try validateModelChanged(lifecycle[4], sessionID: sessionID)
+        return try validateModelChanged(lifecycle[4], sessionID: sessionID)
     }
 
     private func validateVerificationCloseNotifications(
@@ -724,7 +735,7 @@ actor GrokACPClient {
     private func validateModelChanged(
         _ notification: JSONRPCNotification,
         sessionID: String
-    ) throws {
+    ) throws -> String {
         guard Self.modelChangedNotificationMethods.contains(notification.method),
               let params = notification.params?.objectValue,
               Set(params.keys) == ["sessionId", "update"],
@@ -732,10 +743,12 @@ actor GrokACPClient {
               let update = params["update"]?.objectValue,
               Set(update.keys) == ["model_id", "reasoning_effort", "sessionUpdate"],
               update["sessionUpdate"]?.stringValue == "model_changed",
-              update["model_id"]?.stringValue == Self.fixedModelID,
+              let modelID = update["model_id"]?.stringValue,
+              Self.supportedModelIDs.contains(modelID),
               update["reasoning_effort"]?.stringValue == "high" else {
             try rejectVerification(.setupModel, as: .invalidResponse)
         }
+        return modelID
     }
 
     private func validateSessionsChanged(
@@ -773,6 +786,7 @@ actor GrokACPClient {
         sessionID: String,
         expectedPrompt: String,
         exactReply: String?,
+        expectedModelID: String,
         requireCompleteReply: Bool
     ) throws -> String {
         var reply = ""
@@ -882,7 +896,7 @@ actor GrokACPClient {
                       ],
                       session["sessionId"]?.stringValue == sessionID,
                       session["cwd"]?.stringValue == workingDirectoryURL.path,
-                      session["modelId"]?.stringValue == Self.fixedModelID,
+                      session["modelId"]?.stringValue == expectedModelID,
                       session["reasoningEffort"]?.stringValue == "high",
                       session["isWorktree"]?.boolValue == false,
                       session["yolo"]?.boolValue == false,
@@ -951,7 +965,11 @@ actor GrokACPClient {
                         phase = .receivingAgentReply
                     }
                 case "user_message_chunk":
-                    let text = try validateUserMessageChunk(params: params, update: update)
+                    let text = try validateUserMessageChunk(
+                        params: params,
+                        update: update,
+                        expectedModelID: expectedModelID
+                    )
                     guard phase == .awaitingPromptEcho else {
                         try rejectVerification(.postUnexpectedUpdate, as: .disallowedUpdate)
                     }
@@ -1041,6 +1059,7 @@ actor GrokACPClient {
                 responseMessageID = try validateResponseStarted(
                     params: params,
                     update: update,
+                    expectedModelID: expectedModelID,
                     existingMessageID: responseMessageID
                 )
                 sawResponseStarted = true
@@ -1173,7 +1192,8 @@ actor GrokACPClient {
 
     private func validateUserMessageChunk(
         params: [String: JSONValue],
-        update: [String: JSONValue]
+        update: [String: JSONValue],
+        expectedModelID: String
     ) throws -> String {
         guard Set(params.keys) == ["_meta", "sessionId", "update"],
               let outerMetadata = params["_meta"]?.objectValue,
@@ -1187,7 +1207,7 @@ actor GrokACPClient {
         guard Set(update.keys) == ["_meta", "content", "sessionUpdate"],
               let chunkMetadata = update["_meta"]?.objectValue,
               Set(chunkMetadata.keys) == ["modelId", "promptIndex"],
-              chunkMetadata["modelId"]?.stringValue == Self.fixedModelID,
+              chunkMetadata["modelId"]?.stringValue == expectedModelID,
               let promptIndex = chunkMetadata["promptIndex"]?.integerValue,
               promptIndex >= 0 else {
             try rejectVerification(.postUserUpdate, as: .disallowedUpdate)
@@ -1343,6 +1363,7 @@ actor GrokACPClient {
     private func validateResponseStarted(
         params: [String: JSONValue],
         update: [String: JSONValue],
+        expectedModelID: String,
         existingMessageID: String?
     ) throws -> String {
         guard Set(params.keys) == ["sessionId", "update"],
@@ -1357,7 +1378,7 @@ actor GrokACPClient {
               let messageID = update["message_id"]?.stringValue,
               !messageID.isEmpty,
               existingMessageID == nil || existingMessageID == messageID,
-              update["model"]?.stringValue == Self.fixedModelID,
+              update["model"]?.stringValue == expectedModelID,
               Self.hasNonnegativeIntegers(
                 update,
                 keys: [
@@ -1687,6 +1708,20 @@ actor GrokACPClient {
             verificationDiagnostic = switch transportError {
             case .closed: .promptClosed
             case .transportFailure: .promptIO
+            case let .transportProcessExited(code):
+                if code == -1 {
+                    .promptProcessReapTimeout
+                } else if code == 0 {
+                    .promptProcessExitZero
+                } else if code == 1 {
+                    .promptProcessExitOne
+                } else if code == 2 {
+                    .promptProcessExitTwo
+                } else if code >= 128 {
+                    .promptProcessSignal
+                } else {
+                    .promptIO
+                }
             case .requestTimedOut: .promptTimeout
             case .requestCancelled: .promptCancelled
             case .remoteError: .promptRemoteError
