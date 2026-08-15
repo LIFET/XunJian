@@ -15,6 +15,10 @@ struct CategoriesView: View {
     @State private var categoryQuery = ""
     @State private var displayedFiles: [IndexedFile] = []
     @State private var displayedFileIDs: Set<String> = []
+    /// Ordered positions for `displayedFiles`, so selection and arrow-key
+    /// navigation do not pay O(n) index scans per click/keypress.
+    @State private var displayedFileOrderedIDs: [String] = []
+    @State private var displayedFileIDIndex: [String: Int] = [:]
     @State private var categoryFileCount = 0
     @State private var displayedSignature: Int?
     @State private var isCategorySearching = false
@@ -79,6 +83,8 @@ struct CategoriesView: View {
             selectedKind = nil
             displayedFiles = []
             displayedFileIDs = []
+            displayedFileOrderedIDs = []
+            displayedFileIDIndex = [:]
             categoryFileCount = 0
             displayedSignature = nil
             appModel.updateCommandTargetFiles([])
@@ -394,11 +400,17 @@ struct CategoriesView: View {
                     categoryFileGrid(files)
                         .fileListKeyboardNavigation(
                             files: files,
+                            orderedIDs: displayedFileOrderedIDs,
+                            idIndex: displayedFileIDIndex,
                             columnCount: FileGridCard.columnCount(forWidth: contentWidth)
                         )
                 } else {
                     categoryFileList(files)
-                        .fileListKeyboardNavigation(files: files)
+                        .fileListKeyboardNavigation(
+                            files: files,
+                            orderedIDs: displayedFileOrderedIDs,
+                            idIndex: displayedFileIDIndex
+                        )
                 }
             }
             .xunjianAnimation(value: viewMode)
@@ -440,7 +452,16 @@ struct CategoriesView: View {
                 FileGridCard(
                     file: file,
                     isSelected: appModel.selectedFileIDs.contains(file.id),
-                    onSelect: { appModel.selectDisplayedFile(file, in: files) },
+                    onSelect: {
+                        let modifiers = NSEvent.modifierFlags
+                        appModel.selectDisplayedFile(
+                            file.id,
+                            inIDs: displayedFileOrderedIDs,
+                            command: modifiers.contains(.command),
+                            shift: modifiers.contains(.shift),
+                            idIndex: displayedFileIDIndex
+                        )
+                    },
                     onOpen: {
                         appModel.selectedFileID = file.id
                         doubleClickBehavior.perform(on: file, using: appModel)
@@ -461,7 +482,16 @@ struct CategoriesView: View {
                     CategoryFileRow(
                         file: file,
                         isSelected: appModel.selectedFileIDs.contains(file.id),
-                        onSelect: { appModel.selectDisplayedFile(file, in: files) },
+                        onSelect: {
+                            let modifiers = NSEvent.modifierFlags
+                            appModel.selectDisplayedFile(
+                                file.id,
+                                inIDs: displayedFileOrderedIDs,
+                                command: modifiers.contains(.command),
+                                shift: modifiers.contains(.shift),
+                                idIndex: displayedFileIDIndex
+                            )
+                        },
                         onOpen: {
                             appModel.selectedFileID = file.id
                             doubleClickBehavior.perform(on: file, using: appModel)
@@ -541,6 +571,8 @@ struct CategoriesView: View {
             appModel.updateCommandTargetFiles([])
             displayedFiles = []
             displayedFileIDs = []
+            displayedFileOrderedIDs = []
+            displayedFileIDIndex = [:]
             categoryFileCount = 0
             displayedSignature = nil
             isCategorySearching = false
@@ -587,7 +619,11 @@ struct CategoriesView: View {
         let computed = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
                 guard !cancellationFlag.isCancelled else {
-                    return (files: [IndexedFile](), visibleIDs: Set<String>())
+                    return (
+                        files: [IndexedFile](),
+                        visibleIDs: Set<String>(),
+                        orderedIDs: [String]()
+                    )
                 }
                 let files = CategoriesView.displayed(
                     categoryFiles,
@@ -597,7 +633,12 @@ struct CategoriesView: View {
                     sortOrder: order,
                     ascending: ascending
                 )
-                return (files: files, visibleIDs: Set(files.map(\.id)))
+                let orderedIDs = files.map(\.id)
+                return (
+                    files: files,
+                    visibleIDs: Set(orderedIDs),
+                    orderedIDs: orderedIDs
+                )
             }.value
         } onCancel: {
             cancellationFlag.cancel()
@@ -608,6 +649,12 @@ struct CategoriesView: View {
         categoryFileCount = categoryFiles.count
         displayedFiles = result
         displayedFileIDs = computed.visibleIDs
+        displayedFileOrderedIDs = computed.orderedIDs
+        displayedFileIDIndex = Dictionary(
+            uniqueKeysWithValues: computed.orderedIDs.enumerated().map {
+                ($0.element, $0.offset)
+            }
+        )
         displayedSignature = signature
         isCategorySearching = false
         appModel.updateCommandTargetFiles(result)

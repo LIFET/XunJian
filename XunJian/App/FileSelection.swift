@@ -56,12 +56,19 @@ struct FileSelection: Equatable, Sendable {
         _ fileID: String,
         in orderedIDs: [String],
         command: Bool,
-        shift: Bool
+        shift: Bool,
+        idIndex: [String: Int]? = nil
     ) {
+        func index(of candidate: String) -> Int? {
+            if let idIndex, let position = idIndex[candidate] {
+                return position
+            }
+            return orderedIDs.firstIndex(of: candidate)
+        }
         if shift {
             let anchor = anchorID ?? leadID ?? fileID
-            guard let from = orderedIDs.firstIndex(of: anchor),
-                  let to = orderedIDs.firstIndex(of: fileID) else {
+            guard let from = index(of: anchor),
+                  let to = index(of: fileID) else {
                 replace(with: fileID)
                 return
             }
@@ -95,11 +102,25 @@ struct FileSelection: Equatable, Sendable {
     }
 
     /// Arrow-key movement. Shift keeps the original anchor and grows the range.
-    mutating func moveLead(by offset: Int, in orderedIDs: [String], extending: Bool) {
+    mutating func moveLead(
+        by offset: Int,
+        in orderedIDs: [String],
+        extending: Bool,
+        idIndex: [String: Int]? = nil
+    ) {
         guard !orderedIDs.isEmpty else { return }
 
         let nextIndex: Int
-        if let leadID, let current = orderedIDs.firstIndex(of: leadID) {
+        if let leadID {
+            let current: Int
+            if let idIndex, let position = idIndex[leadID] {
+                current = position
+            } else if let position = orderedIDs.firstIndex(of: leadID) {
+                current = position
+            } else {
+                current = -1
+            }
+            guard current >= 0 else { return }
             nextIndex = min(max(current + offset, 0), orderedIDs.count - 1)
             if nextIndex == current && !extending {
                 return
@@ -112,7 +133,8 @@ struct FileSelection: Equatable, Sendable {
             orderedIDs[nextIndex],
             in: orderedIDs,
             command: false,
-            shift: extending
+            shift: extending,
+            idIndex: idIndex
         )
     }
 

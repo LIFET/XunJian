@@ -160,6 +160,9 @@ struct FileListKeyboardNavigation: ViewModifier {
 
     let files: [IndexedFile]
     var orderedIDs: [String]?
+    /// Optional id -> position map for the displayed list; skips O(n)
+    /// index scans per arrow key / shift-click on large grids.
+    var idIndex: [String: Int]? = nil
     var columnCount: Int = 1
     /// The main file table owns arrow-key row movement; keep Return / Space /
     /// Delete / ⌘C even when arrows are left to `Table`.
@@ -225,13 +228,15 @@ struct FileListKeyboardNavigation: ViewModifier {
             appModel.moveDisplayedSelection(
                 by: offset,
                 inIDs: orderedIDs,
-                extending: extending
+                extending: extending,
+                idIndex: idIndex
             )
         } else {
             appModel.moveDisplayedSelection(
                 by: offset,
                 in: files,
-                extending: extending
+                extending: extending,
+                idIndex: idIndex
             )
         }
         return .handled
@@ -252,12 +257,14 @@ extension View {
     func fileListKeyboardNavigation(
         files: [IndexedFile],
         orderedIDs: [String]? = nil,
+        idIndex: [String: Int]? = nil,
         columnCount: Int = 1,
         handlesArrowKeys: Bool = true
     ) -> some View {
         modifier(FileListKeyboardNavigation(
             files: files,
             orderedIDs: orderedIDs,
+            idIndex: idIndex,
             columnCount: columnCount,
             handlesArrowKeys: handlesArrowKeys
         ))

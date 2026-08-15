@@ -24,6 +24,9 @@ struct AllFilesView: View {
     private var tableColumnCustomization = TableColumnCustomization<IndexedFile>()
     @AppStorage("allFiles.listScrollPosition") private var listScrollPosition = ""
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
+    /// Live grid scroll identity; persisted to `gridScrollPosition`
+    /// debounced (see `gridScrollPositionBinding`).
+    @State private var liveGridScrollPosition: String?
     @State private var scrollPositionPersistenceTask: Task<Void, Never>?
 
     // Manual filters (N02): a size floor and a modified-since date, applied
@@ -699,11 +702,18 @@ struct AllFilesView: View {
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
-                        }
-                        ScrollView(.horizontal) {
+                            ScrollView(.horizontal) {
+                                fileTable(files: files)
+                            }
+                            .scrollIndicators(.automatic)
+                        } else {
+                            // Wide enough: the table scrolls vertically on
+                            // its own. Nesting it in a horizontal ScrollView
+                            // unconditionally risked losing the 100k-row
+                            // virtualization (SwiftUI Table is its own
+                            // vertical scroller).
                             fileTable(files: files)
                         }
-                        .scrollIndicators(.automatic)
                     }
                 }
                 .equatable()
@@ -940,7 +950,26 @@ struct AllFilesView: View {
     }
 
     private var gridScrollPositionBinding: Binding<String?> {
-        persistedScrollPositionBinding(for: $gridScrollPosition)
+        Binding(
+            get: { liveGridScrollPosition },
+            set: { newValue in
+                // Live position lives in @State; the @AppStorage copy is
+                // written debounced so scrolling the grid does not hammer
+                // UserDefaults (and its observers) per crossed row.
+                liveGridScrollPosition = newValue
+                scheduleGridScrollPersistence()
+            }
+        )
+    }
+
+    private func scheduleGridScrollPersistence() {
+        scrollPositionPersistenceTask?.cancel()
+        let value = liveGridScrollPosition
+        scrollPositionPersistenceTask = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            gridScrollPosition = value ?? ""
+        }
     }
 
     private func persistedScrollPositionBinding(
@@ -1169,7 +1198,7 @@ struct AllFilesView: View {
             .customizationID("name")
 
             TableColumn(AppLanguage.localized("分类", english: "Category")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     FileCategoryNamesLabel(fileID: file.id)
                 }
             }
@@ -1177,7 +1206,7 @@ struct AllFilesView: View {
             .customizationID("category")
 
             TableColumn(AppLanguage.localized("类型", english: "Kind")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     Text(file.kind.localizedTitle)
                         .lineLimit(1)
                 }
@@ -1186,7 +1215,7 @@ struct AllFilesView: View {
             .customizationID("type")
 
             TableColumn(AppLanguage.localized("大小", english: "Size")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     Text(ByteFormatting.string(forByteCount: file.size))
                         .lineLimit(1)
                 }
@@ -1195,7 +1224,7 @@ struct AllFilesView: View {
             .customizationID("size")
 
             TableColumn(AppLanguage.localized("修改时间", english: "Date Modified")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     if let modifiedAt = file.modifiedAt {
                         Text(finderDateFormatter.string(from: modifiedAt))
                     } else {
@@ -1210,7 +1239,7 @@ struct AllFilesView: View {
             // layout and its compression thresholds stay unchanged; users opt
             // in from the table header's context menu.
             TableColumn(AppLanguage.localized("创建时间", english: "Date Created")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     if let createdAt = file.createdAt {
                         Text(finderDateFormatter.string(from: createdAt))
                     } else {
@@ -1224,7 +1253,7 @@ struct AllFilesView: View {
 
             // Read-only Finder metadata (N17): shown here, never written back.
             TableColumn(AppLanguage.localized("标签", english: "Tags")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     FinderTagsLabel(file: file)
                 }
             }
@@ -1233,7 +1262,7 @@ struct AllFilesView: View {
             .defaultVisibility(.hidden)
 
             TableColumn(AppLanguage.localized("位置", english: "Where")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     Text(file.parentPath)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -1249,7 +1278,24 @@ struct AllFilesView: View {
         )
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
-        .fileListKeyboardNavigation(files: files, handlesArrowKeys: false)
+        .fileListKeyboardNavigation(
+            files: files,
+            orderedIDs: appModel.browseSnapshotIDs,
+            idIndex: appModel.browseSnapshotIDIndex,
+            handlesArrowKeys: false
+        )
+    }
+
+    /// Cell wrapper without per-cell interaction modifiers: the name column
+    /// carries tap/double-tap/context menu/drag; other columns stay plain so
+    /// a 100k-row table does not pay four interaction modifiers per cell per
+    /// column. Row selection still comes from the Table binding.
+    private func plainTableCell<Content: View>(
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
     }
 
     private func selectableTableCell<Content: View>(
@@ -1350,7 +1396,8 @@ struct AllFilesView: View {
                                 file.id,
                                 inIDs: appModel.browseSnapshotIDs,
                                 command: modifiers.contains(.command),
-                                shift: modifiers.contains(.shift)
+                                shift: modifiers.contains(.shift),
+                                idIndex: appModel.browseSnapshotIDIndex
                             )
                         },
                         onOpen: {
@@ -1372,6 +1419,7 @@ struct AllFilesView: View {
         .fileListKeyboardNavigation(
             files: files,
             orderedIDs: appModel.browseSnapshotIDs,
+            idIndex: appModel.browseSnapshotIDIndex,
             columnCount: FileGridCard.columnCount(forWidth: contentWidth)
         )
     }

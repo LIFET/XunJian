@@ -210,6 +210,9 @@ final class AppModel: ObservableObject {
     /// Ordered IDs for the cached snapshot. Grid selection uses this instead
     /// of rebuilding an O(n) ID array on every click.
     private(set) var browseSnapshotIDs: [String] = []
+    /// id -> position in `browseSnapshotIDs`, so grid/category selection and
+    /// arrow-key navigation skip O(n) index scans per click/keypress.
+    private(set) var browseSnapshotIDIndex: [String: Int] = [:]
     private(set) var browseSnapshotIDSet: Set<String> = []
     /// Identifies the inputs `browseSnapshot` was built from. `nil` means
     /// nothing has been prepared yet, which is the only case that warrants
@@ -228,6 +231,9 @@ final class AppModel: ObservableObject {
         userSignature: Int
     ) {
         browseSnapshotIDs = orderedIDs
+        browseSnapshotIDIndex = Dictionary(
+            uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) }
+        )
         browseSnapshotIDSet = visibleIDs
         browseSnapshotSignature = signature
         browseSnapshotUserSignature = userSignature
@@ -442,32 +448,47 @@ final class AppModel: ObservableObject {
         _ fileID: String,
         inIDs orderedIDs: [String],
         command: Bool,
-        shift: Bool
+        shift: Bool,
+        idIndex: [String: Int]? = nil
     ) {
         var next = fileSelection
-        next.select(fileID, in: orderedIDs, command: command, shift: shift)
+        next.select(
+            fileID,
+            in: orderedIDs,
+            command: command,
+            shift: shift,
+            idIndex: idIndex
+        )
         applyFileSelection(next)
     }
 
     func moveDisplayedSelection(
         by offset: Int,
         in files: [IndexedFile],
-        extending: Bool
+        extending: Bool,
+        idIndex: [String: Int]? = nil
     ) {
         moveDisplayedSelection(
             by: offset,
             inIDs: files.map(\.id),
-            extending: extending
+            extending: extending,
+            idIndex: idIndex
         )
     }
 
     func moveDisplayedSelection(
         by offset: Int,
         inIDs orderedIDs: [String],
-        extending: Bool
+        extending: Bool,
+        idIndex: [String: Int]? = nil
     ) {
         var next = fileSelection
-        next.moveLead(by: offset, in: orderedIDs, extending: extending)
+        next.moveLead(
+            by: offset,
+            in: orderedIDs,
+            extending: extending,
+            idIndex: idIndex
+        )
         applyFileSelection(next)
     }
 
