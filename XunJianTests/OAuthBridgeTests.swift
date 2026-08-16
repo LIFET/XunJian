@@ -1739,6 +1739,22 @@ final class OAuthBridgeTests: XCTestCase {
         )
         XCTAssertEqual(
             AppLanguage.localizedRuntimeMessage(
+                "Grok generation rejected [post.user.outer-meta]."
+            ),
+            "Grok 生成在安全检查阶段被拒绝（post.user.outer-meta）。"
+        )
+        XCTAssertEqual(
+            AppLanguage.localizedRuntimeMessage(
+                "Codex generation rejected [codex.model-unavailable]."
+            ),
+            "Codex 生成在安全检查阶段被拒绝（codex.model-unavailable）。"
+        )
+        XCTAssertEqual(
+            AppLanguage.localizedRuntimeMessage("AI generation timed out."),
+            "AI 生成超时，请稍后重试。"
+        )
+        XCTAssertEqual(
+            AppLanguage.localizedRuntimeMessage(
                 "Grok verification rejected [secret/token]."
             ),
             "OAuth 操作没有完成，请稍后重试。"
@@ -1787,6 +1803,18 @@ final class OAuthBridgeTests: XCTestCase {
                 "Grok verification rejected [post.user.outer-meta]."
             ),
             "Grok verification rejected [post.user.outer-meta]."
+        )
+        XCTAssertEqual(
+            AppLanguage.localizedRuntimeMessage(
+                "Grok generation rejected [post.user.outer-meta]."
+            ),
+            "Grok generation was rejected by a safety check (post.user.outer-meta)."
+        )
+        XCTAssertEqual(
+            AppLanguage.localizedRuntimeMessage(
+                "Codex generation rejected [codex.model-unavailable]."
+            ),
+            "Codex generation was rejected by a safety check (codex.model-unavailable)."
         )
         for malformedDiagnostic in [
             "Grok verification rejected [post.reply]. secret=hidden",

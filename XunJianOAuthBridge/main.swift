@@ -1225,8 +1225,9 @@ private actor OAuthBridgeCoordinator {
         } catch let failure as Failure {
             throw failure
         } catch {
-            throw VerificationRunError.rejected(
-                CodexGenerationDiagnostic.runtimeStart.rawValue
+            throw Failure.response(
+                .generationFailed,
+                "Codex generation rejected [\(CodexGenerationDiagnostic.runtimeStart.rawValue)]."
             )
         }
         let generationResult: Result<String, Error>
@@ -1263,7 +1264,7 @@ private actor OAuthBridgeCoordinator {
             // fail. An empty catalog keeps the previous behavior: the
             // pinned model attempt fails closed.
             let generationModel: String
-            if fallbackToFirstListedModel {
+            if fallbackToFirstListedModel || model == "gpt-5.6-sol" {
                 let listedModels: [CodexModel]
                 do {
                     listedModels = try await runtime.client.listModels()
@@ -1275,7 +1276,9 @@ private actor OAuthBridgeCoordinator {
                 if listedModels.contains(where: { $0.id == model }) {
                     generationModel = model
                 } else {
-                    generationModel = listedModels.first?.id ?? model
+                    generationModel = listedModels.first(where: \.isDefault)?.id
+                        ?? listedModels.first?.id
+                        ?? model
                 }
             } else {
                 generationModel = model
@@ -1300,7 +1303,10 @@ private actor OAuthBridgeCoordinator {
             cleanupSucceeded = false
         }
         if let generationDiagnostic {
-            throw VerificationRunError.rejected(generationDiagnostic.rawValue)
+            throw Failure.response(
+                .generationFailed,
+                "Codex generation rejected [\(generationDiagnostic.rawValue)]."
+            )
         }
         switch generationResult {
         case let .failure(error):
@@ -1310,8 +1316,9 @@ private actor OAuthBridgeCoordinator {
             guard cleanupSucceeded,
                   !isInvalidated,
                   OAuthBridgeGenerationPolicy.outputIsValid(text) else {
-                throw VerificationRunError.rejected(
-                    CodexGenerationDiagnostic.runtimeCleanup.rawValue
+                throw Failure.response(
+                    .generationFailed,
+                    "Codex generation rejected [\(CodexGenerationDiagnostic.runtimeCleanup.rawValue)]."
                 )
             }
             return text

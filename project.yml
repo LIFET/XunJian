@@ -20,6 +20,12 @@ settings:
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
     MARKETING_VERSION: 0.1.0
     CURRENT_PROJECT_VERSION: 1
+    XUNJIAN_UPDATE_FEED_URL: "https://lifet.github.io/XunJian/appcast.xml"
+    XUNJIAN_UPDATE_PUBLIC_ED_KEY: "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q="
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle.git
+    version: 2.9.5
 targets:
   XunJian:
     type: application
@@ -35,6 +41,7 @@ targets:
         PRODUCT_MODULE_NAME: XunJian
         CODE_SIGN_ENTITLEMENTS: XunJian/XunJian.entitlements
         GENERATE_INFOPLIST_FILE: NO
+        MACOSX_DEPLOYMENT_TARGET: 14.0
     info:
       path: XunJian/Info.plist
       properties:
@@ -46,14 +53,22 @@ targets:
             NSMessage: openPathsService
             NSSendTypes:
               - public.file-url
+        SUFeedURL: $(XUNJIAN_UPDATE_FEED_URL)
+        SUPublicEDKey: $(XUNJIAN_UPDATE_PUBLIC_ED_KEY)
+        SUEnableInstallerLauncherService: true
+        SUEnableAutomaticChecks: false
     entitlements:
       path: XunJian/XunJian.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-write: true
         com.apple.security.network.client: true
+        com.apple.security.temporary-exception.mach-lookup.global-name:
+          - $(PRODUCT_BUNDLE_IDENTIFIER)-spks
+          - $(PRODUCT_BUNDLE_IDENTIFIER)-spki
     dependencies:
       - target: XunJianOAuthBridge
+      - package: Sparkle
   XunJianOAuthBridge:
     type: xpc-service
     platform: macOS

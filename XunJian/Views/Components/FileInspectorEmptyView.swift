@@ -359,21 +359,46 @@ struct FileInspectorView: View {
             }
         }
         .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
-        .task(id: "\(file?.id ?? "")-\(previewRetry)") {
-            // N08: load text content on demand for the inline preview.
-            previewText = nil
+        .onAppear { restoreCachedInspectorContent() }
+        .onChange(of: file?.id) { _, _ in
+            restoreCachedInspectorContent()
+        }
+        .task(id: "\(previewCacheKey)-\(previewRetry)") {
+            guard appModel.selectedFileIDs.count <= 1, let file else { return }
+            guard file.kind.supportsTextExtraction else {
+                previewText = nil
+                previewFailed = false
+                isLoadingPreview = false
+                return
+            }
+
+            if previewRetry == 0,
+               let cached = InspectorPreviewCache.text(for: previewCacheKey) {
+                previewText = cached.text
+                previewFailed = cached.failed
+                previewLimit = 2_000
+                isLoadingPreview = false
+                return
+            }
+
             previewLimit = 2_000
             previewFailed = false
-            guard appModel.selectedFileIDs.count <= 1, let file else { return }
-
-            guard file.kind.supportsTextExtraction else { return }
             isLoadingPreview = true
             defer { isLoadingPreview = false }
             do {
                 let text = try await appModel.fetchTextContent(forFileID: file.id)
+                guard !Task.isCancelled, self.file?.id == file.id else { return }
                 let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                previewText = trimmed.isEmpty ? nil : text
+                let resolved = trimmed.isEmpty ? nil : text
+                previewText = resolved
+                previewFailed = false
+                InspectorPreviewCache.storeText(
+                    InspectorPreviewCache.CachedText(text: resolved, failed: false),
+                    for: previewCacheKey
+                )
             } catch {
+                guard !Task.isCancelled, self.file?.id == file.id else { return }
+                guard !InspectorPreviewCache.isCancellation(error) else { return }
                 previewFailed = true
             }
         }
@@ -381,6 +406,11 @@ struct FileInspectorView: View {
             guard appModel.selectedFileIDs.count <= 1, let file else {
                 finderTags = []
                 loadedFinderTagFileID = nil
+                return
+            }
+            if let cached = InspectorPreviewCache.tags(for: file.id) {
+                finderTags = cached
+                loadedFinderTagFileID = file.id
                 return
             }
             if FinderTagRefreshPolicy.shouldClearExistingTags(
@@ -399,6 +429,7 @@ struct FileInspectorView: View {
             guard !Task.isCancelled, self.file?.id == file.id else { return }
             finderTags = tagNames
             loadedFinderTagFileID = file.id
+            InspectorPreviewCache.storeTags(tagNames, for: file.id)
         }
         .onReceive(
             NotificationCenter.default.publisher(for: .xunJianFinderTagsDidChange)
@@ -406,6 +437,7 @@ struct FileInspectorView: View {
             guard let file,
                   let fileIDs = notification.object as? Set<String>,
                   fileIDs.contains(file.id) else { return }
+            InspectorPreviewCache.invalidateTags(for: file.id)
             finderTagRefreshRevision &+= 1
         }
     }
@@ -482,6 +514,38 @@ struct FileInspectorView: View {
         return FinderDateFormatting.formatter(for: locale).string(from: date)
     }
 
+    private func restoreCachedInspectorContent() {
+        guard let file else {
+            previewText = nil
+            previewFailed = false
+            finderTags = []
+            loadedFinderTagFileID = nil
+            return
+        }
+        if let cached = InspectorPreviewCache.text(for: previewCacheKey) {
+            previewText = cached.text
+            previewFailed = cached.failed
+            previewLimit = 2_000
+            isLoadingPreview = false
+        } else {
+            previewText = nil
+            previewFailed = false
+            previewLimit = 2_000
+        }
+        if let cachedTags = InspectorPreviewCache.tags(for: file.id) {
+            finderTags = cachedTags
+            loadedFinderTagFileID = file.id
+        } else {
+            finderTags = []
+            loadedFinderTagFileID = nil
+        }
+    }
+
+    private var previewCacheKey: String {
+        guard let file else { return "" }
+        return "\(file.id)|\(file.size)|\(file.modifiedAt?.timeIntervalSince1970 ?? 0)"
+    }
+
     private func categorySummary(for file: IndexedFile) -> String {
         if appModel.categories.isEmpty {
             return AppLanguage.localized("新建分类…", english: "New Category…")
@@ -491,5 +555,64 @@ struct FileInspectorView: View {
             return AppLanguage.localized("添加分类", english: "Add Category")
         }
         return names.joined(separator: AppLanguage.listSeparator)
+    }
+}
+
+/// Bounded inspector preview cache. Survives the inspector being dismissed
+/// so the same file can reopen without another disk / index read.
+@MainActor
+private enum InspectorPreviewCache {
+    struct CachedText {
+        var text: String?
+        var failed: Bool
+    }
+
+    private static let limit = 16
+    private static var order: [String] = []
+    private static var texts: [String: CachedText] = [:]
+    private static var tags: [String: [String]] = [:]
+
+    static func text(for fileID: String) -> CachedText? {
+        texts[fileID]
+    }
+
+    static func tags(for fileID: String) -> [String]? {
+        tags[fileID]
+    }
+
+    static func storeText(_ value: CachedText, for fileID: String) {
+        texts[fileID] = value
+        touch(fileID)
+    }
+
+    static func storeTags(_ value: [String], for fileID: String) {
+        tags[fileID] = value
+        touch(fileID)
+    }
+
+    static func invalidateTags(for fileID: String) {
+        tags.removeValue(forKey: fileID)
+    }
+
+    static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        let nsError = error as NSError
+        if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled {
+            return true
+        }
+        if nsError.domain == NSCocoaErrorDomain, nsError.code == NSUserCancelledError {
+            return true
+        }
+        return false
+    }
+
+    private static func touch(_ fileID: String) {
+        order.removeAll { $0 == fileID }
+        order.append(fileID)
+        while order.count > limit {
+            let evicted = order.removeFirst()
+            texts.removeValue(forKey: evicted)
+            tags.removeValue(forKey: evicted)
+        }
     }
 }

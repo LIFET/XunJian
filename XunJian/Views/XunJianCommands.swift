@@ -66,6 +66,19 @@ struct XunJianCommands: Commands {
             .keyboardShortcut(.downArrow, modifiers: .command)
             .disabled(!hasSelection)
 
+            Menu(AppLanguage.localized("打开最近使用的文件", english: "Open Recent")) {
+                if appModel.recentFiles.isEmpty {
+                    Text(AppLanguage.localized("没有最近文件", english: "No Recent Files"))
+                } else {
+                    ForEach(Array(appModel.recentFiles.prefix(8))) { file in
+                        Button(file.name) {
+                            appModel.open(file)
+                        }
+                    }
+                }
+            }
+            .disabled(appModel.recentFiles.isEmpty)
+
             Button(AppLanguage.localized("快速查看", english: "Quick Look")) {
                 selectedFile.map(appModel.quickLook)
             }

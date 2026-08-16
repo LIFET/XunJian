@@ -128,8 +128,20 @@ struct AIProviderSettingsRow: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation(
+                    XunJianUI.motion(.easeInOut(duration: 0.16), reduceMotion: reduceMotion)
+                ) {
+                    isExpanded.toggle()
+                }
+            }
             .accessibilityElement(children: .combine)
             .accessibilityLabel(providerAccessibilityLabel)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint(Text(verbatim: AppLanguage.localized(
+                isExpanded ? "收起设置" : "展开设置",
+                english: isExpanded ? "Collapse settings" : "Expand settings"
+            )))
         }
         .onAppear(perform: synchronizeFields)
         .onAppear {

@@ -65,10 +65,6 @@ struct CategoriesView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .navigationTitle(
-            selectedCategory?.localizedDisplayName
-                ?? AppLanguage.localized("分类", english: "Categories")
-        )
         .onAppear {
             if selectedCategory != nil {
                 appModel.highlightQuery = categoryQuery
@@ -151,71 +147,29 @@ struct CategoriesView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        Group {
             if selectedCategory != nil {
                 Button(action: showAllCategories) {
                     Label(
-                        AppLanguage.localized("全部分类", english: "All Categories"),
+                        AppLanguage.localized("返回全部分类", english: "Back to All Categories"),
                         systemImage: "chevron.left"
                     )
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack(alignment: .top, spacing: 12) {
-                    headerIdentity
+            } else {
+                HStack {
                     Spacer(minLength: 0)
-                    headerAction
-                }
-
-                VStack(alignment: .leading, spacing: 10) {
-                    headerIdentity
                     headerAction
                 }
             }
         }
     }
 
-    private var headerIdentity: some View {
-        PageHeader(
-            title: selectedCategory?.localizedDisplayName
-                ?? AppLanguage.localized("分类", english: "Categories"),
-            subtitle: AppLanguage.localized(
-                "用简单分类组织文件，一个文件可以属于多个分类。",
-                english: "Organize files with simple categories. A file can belong to more than one."
-            )
-        )
-    }
-
     @ViewBuilder
     private var headerAction: some View {
-        if let selectedCategory {
-            Menu {
-                Button(AppLanguage.localized("修改名称…", english: "Rename…")) {
-                    categoryToRename = selectedCategory
-                }
-                Divider()
-                Button(
-                    AppLanguage.localized("删除分类", english: "Delete Category"),
-                    role: .destructive
-                ) {
-                    categoryToDelete = selectedCategory
-                }
-            } label: {
-                Label {
-                    Text(verbatim: AppLanguage.localized(
-                        "管理分类",
-                        english: "Manage Category"
-                    ))
-                } icon: {
-                    Image(systemName: "ellipsis.circle")
-                }
-            }
-            .menuStyle(.borderlessButton)
-            .fixedSize()
-        } else {
+        if selectedCategory == nil {
             Button {
                 showsNewCategory = true
             } label: {
@@ -449,9 +403,10 @@ struct CategoriesView: View {
     private func categoryFileGrid(_ files: [IndexedFile]) -> some View {
         LazyVGrid(columns: FileGridCard.gridColumns, spacing: 14) {
             ForEach(files) { file in
-                FileGridCard(
+                FileGridSelectableCard(
                     file: file,
                     isSelected: appModel.selectedFileIDs.contains(file.id),
+                    selectedIDs: appModel.$selectedFileIDs,
                     onSelect: {
                         let modifiers = NSEvent.modifierFlags
                         appModel.selectDisplayedFile(
@@ -682,7 +637,13 @@ private struct CategoryFileRow: View {
     @State private var isHovered = false
 
     var body: some View {
-        Button(action: onSelect) {
+        Button {
+            if (NSApplication.shared.currentEvent?.clickCount ?? 1) >= 2 {
+                onOpen()
+            } else {
+                onSelect()
+            }
+        } label: {
             HStack(spacing: 12) {
                 FileThumbnail(file: file, size: 34)
                 VStack(alignment: .leading, spacing: 3) {
@@ -715,9 +676,6 @@ private struct CategoryFileRow: View {
         }
         .buttonStyle(.plain)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .simultaneousGesture(
-            TapGesture(count: 2).onEnded(onOpen)
-        )
         .onHover { isHovered = $0 }
     }
 }

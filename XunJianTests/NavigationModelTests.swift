@@ -4,6 +4,66 @@ import XCTest
 @testable import XunJian
 
 final class NavigationModelTests: XCTestCase {
+    func testUpdateConfigurationRequiresHTTPSFeedAndSigningKey() {
+        XCTAssertNil(AppUpdateConfiguration.validated(
+            feed: "http://updates.example.com/appcast.xml",
+            publicEDKey: "public-key"
+        ))
+        XCTAssertNil(AppUpdateConfiguration.validated(
+            feed: "https://updates.example.com/appcast.xml",
+            publicEDKey: ""
+        ))
+        XCTAssertEqual(
+            AppUpdateConfiguration.validated(
+                feed: "https://updates.example.com/appcast.xml",
+                publicEDKey: "public-key"
+            )?.feedURL.absoluteString,
+            "https://updates.example.com/appcast.xml"
+        )
+    }
+
+    func testWholeMacCheckpointResumesOnlyUnfinishedScopes() {
+        XCTAssertEqual(
+            FileIndexCoordinator.pendingWholeMacScopePaths(
+                allScopePaths: ["/Applications", "/Users", "/Volumes"],
+                completedScopePaths: ["/Applications", "/Users"]
+            ),
+            ["/Volumes"]
+        )
+    }
+
+    func testScanModeUsesOnlyTheActiveSourceSet() {
+        let folderA = FileSource(
+            id: UUID(), displayName: "A", path: "/A", bookmark: Data(),
+            enabled: true, createdAt: Date()
+        )
+        let folderB = FileSource(
+            id: UUID(), displayName: "B", path: "/B", bookmark: Data(),
+            enabled: true, createdAt: Date()
+        )
+        let wholeMac = FileSource(
+            id: UUID(), displayName: "Mac", path: "/", bookmark: Data(),
+            enabled: true, createdAt: Date()
+        )
+
+        XCTAssertEqual(
+            FileIndexCoordinator.activeSourceIDs(
+                mode: .selectedFolders,
+                wholeMacSourceID: wholeMac.id,
+                sources: [folderA, folderB, wholeMac]
+            ),
+            [folderA.id, folderB.id]
+        )
+        XCTAssertEqual(
+            FileIndexCoordinator.activeSourceIDs(
+                mode: .wholeMac,
+                wholeMacSourceID: wholeMac.id,
+                sources: [folderA, folderB, wholeMac]
+            ),
+            [wholeMac.id]
+        )
+    }
+
     func testFullScanRefreshesTextOnlyForNewOrContentChangedFiles() {
         let sourceID = UUID()
         let modifiedAt = Date(timeIntervalSince1970: 100)
@@ -1296,6 +1356,54 @@ final class FileOperationServiceTests: XCTestCase {
 }
 
 final class FileIndexDatabaseTests: XCTestCase {
+    func testSearchPageRestrictsResultsAndTotalToActiveSources() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let firstSource = try await database.upsertSource(
+            displayName: "手动目录", path: "/manual", bookmark: Data([1])
+        )
+        let wholeMacSource = try await database.upsertSource(
+            displayName: "整台 Mac", path: "/", bookmark: Data([2])
+        )
+        let first = IndexedFile(
+            id: "manual", sourceID: firstSource.id, name: "合同.txt", path: "/manual/合同.txt",
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(), textContent: "范围命中"
+        )
+        let second = IndexedFile(
+            id: "whole", sourceID: wholeMacSource.id, name: "合同.txt", path: "/manual/合同.txt",
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(), textContent: "范围命中"
+        )
+        try await database.replaceFiles(for: firstSource.id, with: [first])
+        try await database.replaceFiles(for: wholeMacSource.id, with: [second])
+        let category = try await database.createCategory(name: "范围测试", symbolName: "doc")
+        try await database.setCategory(category.id, assigned: true, toFile: first.id)
+        try await database.setCategory(category.id, assigned: true, toFile: second.id)
+
+        let manualPage = try await database.searchFilesPage(
+            matching: "范围命中", limit: 10, sourceIDs: [firstSource.id]
+        )
+        let wholeMacPage = try await database.searchFilesPage(
+            matching: "范围命中", limit: 10, sourceIDs: [wholeMacSource.id]
+        )
+
+        XCTAssertEqual(manualPage.files.map(\.id), [first.id])
+        XCTAssertEqual(manualPage.totalCount, 1)
+        XCTAssertEqual(wholeMacPage.files.map(\.id), [second.id])
+        XCTAssertEqual(wholeMacPage.totalCount, 1)
+        let manualCategoryMatches = try await database.searchFileIDs(
+            matching: "范围命中",
+            inCategory: category.id,
+            limit: 10,
+            sourceIDs: [firstSource.id]
+        )
+        XCTAssertEqual(manualCategoryMatches, [first.id])
+    }
+
     func testSearchPageReportsTotalAndCanLoadEveryMatch() async throws {
         let container = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -2763,7 +2871,7 @@ final class PhaseSixAITests: XCTestCase {
             createdAt: nil, modifiedAt: nil, indexedAt: Date(), textContent: nil
         )
         let provider = ScriptedAIProvider(
-            response: #"{"suggestions":[{"token":"F1","categoryNames":["工作","不存在"]}]}"#
+            response: "{\"suggestions\":[{\"token\":\"F1\",\"categoryIDs\":[\"\(work.id.uuidString)\",\"00000000-0000-0000-0000-000000000000\"],\"confidence\":0.9,\"reason\":\"合同内容\"}]}"
         )
 
         let suggestions = try await AIService(provider: provider)
@@ -2773,8 +2881,70 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertEqual(suggestions[0].fileID, file.id)
         XCTAssertEqual(suggestions[0].categoryIDs, [work.id])
         XCTAssertEqual(suggestions[0].categoryNames, ["工作"])
+        XCTAssertEqual(suggestions[0].confidence, 0.9)
+        XCTAssertEqual(suggestions[0].reason, "合同内容")
         let messages = await provider.lastMessages()
         XCTAssertFalse(messages.map(\.content).joined().contains("/private"))
+    }
+
+    func testAIClassificationFilenameOnlyModeDoesNotSendExtractedContent() async throws {
+        let work = FileCategory(id: UUID(), name: "工作", symbolName: "briefcase")
+        let file = IndexedFile(
+            id: "binary", sourceID: UUID(), name: "预算.xlsx", path: "/private/预算.xlsx",
+            fileExtension: "xlsx", kind: .document, size: 100,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(), textContent: "不得发送的正文"
+        )
+        let provider = ScriptedAIProvider(response: #"{"suggestions":[]}"#)
+
+        _ = try await AIService(provider: provider).classify(
+            files: [file],
+            categories: [work],
+            includesFileContent: false
+        )
+
+        let sent = await provider.lastMessages().map(\.content).joined(separator: "\n")
+        XCTAssertTrue(sent.contains("预算.xlsx"))
+        XCTAssertFalse(sent.contains("不得发送的正文"))
+        XCTAssertFalse(sent.contains("/private"))
+    }
+
+    func testOAuthSizedFileContextCapsChineseByUTF8Bytes() throws {
+        let file = IndexedFile(
+            id: "large", sourceID: UUID(), name: "长文.md", path: "/private/长文.md",
+            fileExtension: "md", kind: .document, size: 100,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: String(repeating: "汉", count: 40_000)
+        )
+
+        let context = try AIFileContext(
+            file: file,
+            maximumCharacterCount: 40_000,
+            maximumUTF8Bytes: OAuthBridgeGenerationPolicy.maximumPromptSegmentBytes
+        )
+
+        XCTAssertLessThanOrEqual(
+            context.promptText.utf8.count,
+            OAuthBridgeGenerationPolicy.maximumPromptSegmentBytes
+        )
+        XCTAssertTrue(context.isTruncated)
+    }
+
+    func testAIQuestionRetrievesRelevantLateExcerptInsteadOfPrefixOnly() async throws {
+        let file = IndexedFile(
+            id: "late", sourceID: UUID(), name: "合同.md", path: "/private/合同.md",
+            fileExtension: "md", kind: .document, size: 100,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: String(repeating: "普通条款。\n", count: 2_000)
+                + "\n到期日期是 2031 年 6 月 30 日。"
+        )
+        let provider = ScriptedAIProvider(response: "2031 年 6 月 30 日。[Excerpt 2]")
+
+        _ = try await AIService(provider: provider)
+            .answer(question: "合同到期日期是什么？", about: file)
+
+        let sent = await provider.lastMessages().map(\.content).joined(separator: "\n")
+        XCTAssertTrue(sent.contains("2031 年 6 月 30 日"))
+        XCTAssertTrue(sent.contains("Excerpt"))
     }
 
     func testAIClassificationRejectsMissingCategoriesBeforeProviderCall() async throws {

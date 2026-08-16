@@ -34,5 +34,13 @@
 			</array>
 		</dict>
 	</array>
+	<key>SUEnableAutomaticChecks</key>
+	<false/>
+	<key>SUEnableInstallerLauncherService</key>
+	<true/>
+	<key>SUFeedURL</key>
+	<string>$(XUNJIAN_UPDATE_FEED_URL)</string>
+	<key>SUPublicEDKey</key>
+	<string>$(XUNJIAN_UPDATE_PUBLIC_ED_KEY)</string>
 </dict>
 </plist>

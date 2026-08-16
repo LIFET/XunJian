@@ -767,16 +767,36 @@ final class AppModel: ObservableObject {
         )
     }
 
-    func classifyWithAI(_ files: [IndexedFile]) async throws -> [AIClassificationSuggestion] {
+    func classifyWithAI(
+        _ files: [IndexedFile],
+        includesFileContent: Bool = true
+    ) async throws -> [AIClassificationSuggestion] {
         guard !index.categories.isEmpty else { throw AIServiceError.noCategories }
         var filesWithText: [IndexedFile] = []
         filesWithText.reserveCapacity(files.count)
         for file in files {
-            filesWithText.append(try await fileWithText(file))
+            if includesFileContent {
+                filesWithText.append(try await fileWithText(file))
+            } else {
+                filesWithText.append(IndexedFile(
+                    id: file.id,
+                    sourceID: file.sourceID,
+                    name: file.name,
+                    path: file.path,
+                    fileExtension: file.fileExtension,
+                    kind: file.kind,
+                    size: file.size,
+                    createdAt: file.createdAt,
+                    modifiedAt: file.modifiedAt,
+                    indexedAt: file.indexedAt,
+                    textContent: nil
+                ))
+            }
         }
         return try await ai.currentService().classify(
             files: filesWithText,
-            categories: index.categories
+            categories: index.categories,
+            includesFileContent: includesFileContent
         )
     }
 
@@ -918,6 +938,9 @@ final class AppModel: ObservableObject {
         forward(index.$searchResultTotalCount)
         forward(index.$isDatabaseAvailable)
         forward(index.$includesHiddenFiles)
+        forward(index.$scanScopeMode)
+        forward(index.$wholeMacSourceID)
+        forward(index.$isWholeMacScanPaused)
         forward(index.$isScanning)
         forward(index.$isUpdatingContentIndex)
     }
@@ -925,6 +948,10 @@ final class AppModel: ObservableObject {
     // MARK: - File index forwarding
 
     var sources: [FileSource] { index.sources }
+    var selectedFolderSources: [FileSource] { index.selectedFolderSources }
+    var wholeMacSource: FileSource? { index.wholeMacSource }
+    var scanScopeMode: FileScanScopeMode { index.scanScopeMode }
+    var isWholeMacScanPaused: Bool { index.isWholeMacScanPaused }
     var files: [IndexedFile] { index.files }
     var categories: [FileCategory] { index.categories }
     var fileCategoryLinks: [String: Set<UUID>] { index.fileCategoryLinks }
@@ -982,6 +1009,26 @@ final class AppModel: ObservableObject {
 
     func chooseFolder(startingAt directoryURL: URL? = nil) {
         index.chooseFolder(startingAt: directoryURL)
+    }
+
+    func chooseWholeMacScope() {
+        index.chooseWholeMacScope()
+    }
+
+    func setScanScopeMode(_ mode: FileScanScopeMode) {
+        index.setScanScopeMode(mode)
+    }
+
+    func openFullDiskAccessSettings() {
+        index.openFullDiskAccessSettings()
+    }
+
+    func pauseWholeMacScan() {
+        index.pauseWholeMacScan()
+    }
+
+    func resumeWholeMacScan() {
+        index.resumeWholeMacScan()
     }
 
     func reauthorizeSource(_ source: FileSource) {

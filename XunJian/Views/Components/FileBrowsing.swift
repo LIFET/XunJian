@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// Shared file-browsing chrome (N05).
@@ -38,12 +39,14 @@ enum FileActivationBehavior: String, CaseIterable, Identifiable {
 
 /// Which file-table columns fit the current content width.
 ///
-/// The table keeps a readable 640pt canvas. A narrower content area scrolls
-/// horizontally instead of compressing columns below their readable minima.
+/// The table keeps a readable 640pt canvas. A narrower content area clips
+/// from the trailing edge instead of rebuilding a different scroll container
+/// or compressing columns below their readable minima.
 enum FileTableLayout {
     static let readableMinimumWidth: CGFloat = 640
     static let categoryVisibleWidth: CGFloat = 640
     static let locationVisibleWidth: CGFloat = 720
+    static let wideLayoutWidth: CGFloat = 1_020
 
     static func showsCategory(contentWidth: CGFloat) -> Bool {
         contentWidth >= categoryVisibleWidth
@@ -59,6 +62,23 @@ enum FileTableLayout {
 
     static func needsHorizontalScroll(contentWidth: CGFloat) -> Bool {
         contentWidth < readableMinimumWidth
+    }
+
+    /// Coarse layout identity for snapshot equality. Inspector animation
+    /// must not rebuild the table or grid on every pixel of width change.
+    @MainActor
+    static func snapshotLayoutToken(
+        contentWidth: CGFloat,
+        viewMode: FileBrowseViewMode
+    ) -> Int {
+        switch viewMode {
+        case .list:
+            if contentWidth < readableMinimumWidth { return 0 }
+            if contentWidth < wideLayoutWidth { return 1 }
+            return 2
+        case .grid:
+            return 10 + FileGridCard.columnCount(forWidth: contentWidth)
+        }
     }
 }
 
@@ -145,6 +165,58 @@ struct FileGridCard: View, Equatable {
     /// navigation moves a whole row rather than one item.
     static func columnCount(forWidth width: CGFloat) -> Int {
         max(Int(width / (minimumItemWidth + gridSpacing)), 1)
+    }
+}
+
+/// Click / binding publication rules shared by the table and grid.
+enum FileBrowseSelection {
+    static func shouldPublishSelectionChange(
+        fileID: String,
+        selectedIDs: Set<String>,
+        command: Bool,
+        shift: Bool
+    ) -> Bool {
+        if command || shift { return true }
+        return selectedIDs != [fileID]
+    }
+}
+
+/// Each materialized lazy-grid card observes only whether its own ID is in the
+/// selection. This avoids rebuilding the whole grid and avoids retaining one
+/// observable object for every indexed file.
+struct FileGridSelectableCard: View {
+    let file: IndexedFile
+    let selectedIDs: Published<Set<String>>.Publisher
+    let onSelect: () -> Void
+    let onOpen: () -> Void
+    @State private var isSelected: Bool
+
+    init(
+        file: IndexedFile,
+        isSelected: Bool,
+        selectedIDs: Published<Set<String>>.Publisher,
+        onSelect: @escaping () -> Void,
+        onOpen: @escaping () -> Void
+    ) {
+        self.file = file
+        self.selectedIDs = selectedIDs
+        self.onSelect = onSelect
+        self.onOpen = onOpen
+        _isSelected = State(initialValue: isSelected)
+    }
+
+    var body: some View {
+        FileGridCard(
+            file: file,
+            isSelected: isSelected,
+            onSelect: onSelect,
+            onOpen: onOpen
+        )
+            .onReceive(selectedIDs) { ids in
+                let next = ids.contains(file.id)
+                guard next != isSelected else { return }
+                isSelected = next
+            }
     }
 }
 

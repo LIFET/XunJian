@@ -63,6 +63,52 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     static func localizedRuntimeMessage(_ message: String) -> String {
+        let codexGenerationPrefix = "Codex generation rejected ["
+        if message.hasPrefix(codexGenerationPrefix), message.hasSuffix("].") {
+            let code = String(message.dropFirst(codexGenerationPrefix.count).dropLast(2))
+            guard codexVerificationDiagnosticCodes.contains(code) else {
+                return localized(
+                    "Codex 生成失败，请稍后重试。",
+                    english: "Codex generation failed. Try again later."
+                )
+            }
+            return localized(
+                "Codex 生成在安全检查阶段被拒绝（\(code)）。",
+                english: "Codex generation was rejected by a safety check (\(code))."
+            )
+        }
+        let grokGenerationPrefix = "Grok generation rejected ["
+        if message.hasPrefix(grokGenerationPrefix), message.hasSuffix("].") {
+            let code = String(message.dropFirst(grokGenerationPrefix.count).dropLast(2))
+            guard grokVerificationDiagnosticCodes.contains(code) else {
+                return localized(
+                    "Grok 生成失败，请稍后重试。",
+                    english: "Grok generation failed. Try again later."
+                )
+            }
+            return localized(
+                "Grok 生成在安全检查阶段被拒绝（\(code)）。",
+                english: "Grok generation was rejected by a safety check (\(code))."
+            )
+        }
+        switch message {
+        case "AI generation timed out.":
+            return localized("AI 生成超时，请稍后重试。", english: "AI generation timed out. Try again later.")
+        case "AI generation failed.":
+            return localized("AI 生成失败，请稍后重试。", english: "AI generation failed. Try again later.")
+        case "Grok generation runtime cleanup failed.":
+            return localized(
+                "Grok 已完成回复，但运行环境未能安全清理，结果未采用。请重试。",
+                english: "Grok replied, but its runtime could not be cleaned up safely. The result was discarded. Try again."
+            )
+        case "The selected Grok model is unsupported.":
+            return localized("当前 Grok 模型不受支持，请在设置中恢复默认模型。", english: "The selected Grok model is unsupported. Restore the default model in Settings.")
+        case "ChatGPT authentication is required.":
+            return localized("请先在设置中登录 ChatGPT。", english: "Sign in to ChatGPT in Settings first.")
+        default:
+            break
+        }
+
         let codexDiagnosticPrefix = "Codex verification rejected ["
         if message.hasPrefix(codexDiagnosticPrefix), message.hasSuffix("].") {
             let code = String(message.dropFirst(codexDiagnosticPrefix.count).dropLast(2))
@@ -677,6 +723,7 @@ struct XunJianApp: App {
     @NSApplicationDelegateAdaptor(XunJianAppDelegate.self)
     private var appDelegate
     @StateObject private var appModel = AppModel()
+    @StateObject private var updateCoordinator = AppUpdateCoordinator()
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
@@ -697,6 +744,7 @@ struct XunJianApp: App {
                 .environmentObject(appModel.oauth)
                 .environmentObject(appModel.ai)
                 .environmentObject(appModel.index.categoryIndexStore)
+                .environmentObject(updateCoordinator)
                 .preferredColorScheme(
                     AppAppearance(rawValue: appearance)?.colorScheme
                 )
@@ -724,6 +772,7 @@ struct XunJianApp: App {
             // `XunJianCommands` supplies its own `.newItem` group; replacing it
             // here as well would drop those items.
             XunJianCommands(appModel: appModel, undo: appModel.undo)
+            AppUpdateCommands(coordinator: updateCoordinator)
             CommandGroup(replacing: .appSettings) {
                 Button(AppLanguage.localized("设置…", english: "Settings…")) {
                     NotificationCenter.default.post(

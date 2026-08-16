@@ -28,13 +28,6 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
-                    PageHeader(
-                        title: AppLanguage.localized("我的文件", english: "My Files"),
-                        subtitle: AppLanguage.localized(
-                            "统一查看、查找和理解 Mac 上的重要文件。",
-                            english: "Browse, find, and understand important files on your Mac."
-                        )
-                    )
                     SearchField(
                         text: $homeQuery,
                         onHistorySelect: { query in
@@ -54,7 +47,6 @@ struct HomeView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .navigationTitle(AppLanguage.localized("首页", english: "Home"))
         .onAppear {
             appModel.highlightQuery = ""
             appModel.updateCommandTargetFiles(appModel.recentFiles)
@@ -257,12 +249,12 @@ struct HomeView: View {
                                 HStack(spacing: 12) {
                                     sourceIdentity(source)
                                     Spacer(minLength: 0)
-                                    sourceActions(source, compact: false)
+                                    sourceActions(source)
                                 }
 
                                 VStack(alignment: .leading, spacing: 8) {
                                     sourceIdentity(source)
-                                    sourceActions(source, compact: true)
+                                    sourceActions(source)
                                 }
                             }
                             .padding(.vertical, 8)
@@ -314,7 +306,7 @@ struct HomeView: View {
     }
 
     @ViewBuilder
-    private func sourceActions(_ source: FileSource, compact: Bool) -> some View {
+    private func sourceActions(_ source: FileSource) -> some View {
         HStack(spacing: 8) {
             if source.accessState != .available {
                 Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
@@ -350,33 +342,14 @@ struct HomeView: View {
                 )
             )
             .disabled(!appModel.isDatabaseAvailable)
-            if compact {
-                Menu {
-                    Button(
-                        AppLanguage.localized("移除…", english: "Remove…"),
-                        role: .destructive
-                    ) {
-                        sourcePendingRemoval = source
-                    }
-                } label: {
-                    Label(
-                        AppLanguage.localized("更多", english: "More"),
-                        systemImage: "ellipsis.circle"
-                    )
-                    .contentShape(Rectangle())
-                }
-                .menuStyle(.borderlessButton)
-                .disabled(!appModel.isDatabaseAvailable)
-            } else {
-                Button(
-                    AppLanguage.localized("移除…", english: "Remove…"),
-                    role: .destructive
-                ) {
-                    sourcePendingRemoval = source
-                }
-                .controlSize(.small)
-                .disabled(!appModel.isDatabaseAvailable)
+            Button(
+                AppLanguage.localized("移除…", english: "Remove…"),
+                role: .destructive
+            ) {
+                sourcePendingRemoval = source
             }
+            .controlSize(.small)
+            .disabled(!appModel.isDatabaseAvailable)
         }
     }
 

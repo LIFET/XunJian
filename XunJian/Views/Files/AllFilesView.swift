@@ -265,13 +265,11 @@ struct AllFilesView: View {
     }
 
     private func headerSummary(resultCount: Int) -> some View {
-        PageHeader(
-            title: AppLanguage.localized("所有文件", english: "All Files"),
-            subtitle: usesCompactHeader
-                ? AppLanguage.fileCount(resultCount)
-                : resultDescription(resultCount: resultCount),
-            compactSubtitle: true
-        )
+        Text(verbatim: resultDescription(resultCount: resultCount))
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .accessibilityLabel(Text(verbatim: resultDescription(resultCount: resultCount)))
     }
 
     @ViewBuilder
@@ -366,10 +364,6 @@ struct AllFilesView: View {
         )
         .fixedSize()
         .accessibilityLabel(AppLanguage.localized("AI 功能", english: "AI Actions"))
-    }
-
-    private var usesCompactHeader: Bool {
-        contentWidth < XunJianUI.Breakpoint.compactPage
     }
 
     private var responsiveFileToolbar: some View {
@@ -691,38 +685,25 @@ struct AllFilesView: View {
                 EquatableSnapshotList(
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
-                    contentWidth: contentWidth
+                    layoutToken: FileTableLayout.snapshotLayoutToken(
+                        contentWidth: inspectorIndependentLayoutWidth,
+                        viewMode: viewMode
+                    )
                 ) {
-                    VStack(alignment: .leading, spacing: 6) {
-                        if FileTableLayout.needsHorizontalScroll(contentWidth: contentWidth) {
-                            Text(verbatim: AppLanguage.localized(
-                                "窗口较窄，可左右滑动查看全部列。",
-                                english: "Window is narrow — swipe sideways to see every column."
-                            ))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
-                            ScrollView(.horizontal) {
-                                fileTable(files: files)
-                            }
-                            .scrollIndicators(.automatic)
-                        } else {
-                            // Wide enough: the table scrolls vertically on
-                            // its own. Nesting it in a horizontal ScrollView
-                            // unconditionally risked losing the 100k-row
-                            // virtualization (SwiftUI Table is its own
-                            // vertical scroller).
-                            fileTable(files: files)
-                        }
-                    }
+                    // One stable Table tree. Narrow widths keep the 640pt
+                    // readable canvas and clip from the trailing edge
+                    // instead of swapping in a horizontal ScrollView.
+                    fileTable(files: files)
                 }
                 .equatable()
             } else if viewMode == .grid, !files.isEmpty {
                 EquatableSnapshotList(
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
-                    contentWidth: contentWidth,
-                    selectionToken: appModel.fileSelectionRevision
+                    layoutToken: FileTableLayout.snapshotLayoutToken(
+                        contentWidth: inspectorIndependentLayoutWidth,
+                        viewMode: viewMode
+                    )
                 ) {
                     fileGrid(files: files)
                 }
@@ -1176,7 +1157,7 @@ struct AllFilesView: View {
     private func fileTable(files: [IndexedFile]) -> some View {
         Table(
             files,
-            selection: $appModel.selectedFileIDs,
+            selection: tableSelection,
             columnCustomization: $tableColumnCustomization
         ) {
             TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
@@ -1276,6 +1257,8 @@ struct AllFilesView: View {
             minWidth: FileTableLayout.minimumWidth(contentWidth: contentWidth),
             alignment: .leading
         )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .clipped()
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
         .fileListKeyboardNavigation(
@@ -1287,7 +1270,7 @@ struct AllFilesView: View {
     }
 
     /// Cell wrapper without per-cell interaction modifiers: the name column
-    /// carries tap/double-tap/context menu/drag; other columns stay plain so
+    /// carries double-tap/context menu/drag; other columns stay plain so
     /// a 100k-row table does not pay four interaction modifiers per cell per
     /// column. Row selection still comes from the Table binding.
     private func plainTableCell<Content: View>(
@@ -1302,31 +1285,55 @@ struct AllFilesView: View {
         file: IndexedFile,
         @ViewBuilder content: () -> Content
     ) -> some View {
-        content()
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                // Plain clicks select immediately (no double-click wait), but
-                // ⌘/⇧ clicks must fall through to the table's own range and
-                // toggle selection — otherwise multi-select is impossible.
-                let modifiers = NSEvent.modifierFlags
-                guard !modifiers.contains(.command), !modifiers.contains(.shift) else {
-                    return
-                }
-                appModel.selectedFileID = file.id
-            }
-            .simultaneousGesture(
-                TapGesture(count: 2).onEnded {
+        Button {
+            let clickCount = NSApplication.shared.currentEvent?.clickCount ?? 1
+            if clickCount >= 2 {
+                if !appModel.selectedFileIDs.contains(file.id) {
                     appModel.selectedFileID = file.id
-                    doubleClickBehavior.perform(on: file, using: appModel)
                 }
+                doubleClickBehavior.perform(on: file, using: appModel)
+                return
+            }
+            let modifiers = NSEvent.modifierFlags
+            let command = modifiers.contains(.command)
+            let shift = modifiers.contains(.shift)
+            guard FileBrowseSelection.shouldPublishSelectionChange(
+                fileID: file.id,
+                selectedIDs: appModel.selectedFileIDs,
+                command: command,
+                shift: shift
+            ) else { return }
+            appModel.selectDisplayedFile(
+                file.id,
+                inIDs: appModel.browseSnapshotIDs,
+                command: command,
+                shift: shift,
+                idIndex: appModel.browseSnapshotIDIndex
             )
+        } label: {
+            content()
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
             .contextMenu {
                 FileContextMenu(file: file)
             }
             // Drag out to Finder or another app (F06): the URL item provider
             // lets macOS move/copy the real file on drop.
             .draggable(file.url)
+    }
+
+    /// Table's native selection is the only click path. Same-set writes are
+    /// dropped so `@Published` does not fire twice for one click.
+    private var tableSelection: Binding<Set<String>> {
+        Binding(
+            get: { appModel.selectedFileIDs },
+            set: { newValue in
+                guard newValue != appModel.selectedFileIDs else { return }
+                appModel.selectedFileIDs = newValue
+            }
+        )
     }
 
     /// Spoken summary of a table row: name, kind, size, and modification date.
@@ -1387,25 +1394,13 @@ struct AllFilesView: View {
                 spacing: FileGridCard.gridSpacing
             ) {
                 ForEach(files) { file in
-                    FileGridCard(
+                    FileGridSelectableCard(
                         file: file,
                         isSelected: appModel.selectedFileIDs.contains(file.id),
-                        onSelect: {
-                            let modifiers = NSEvent.modifierFlags
-                            appModel.selectDisplayedFile(
-                                file.id,
-                                inIDs: appModel.browseSnapshotIDs,
-                                command: modifiers.contains(.command),
-                                shift: modifiers.contains(.shift),
-                                idIndex: appModel.browseSnapshotIDIndex
-                            )
-                        },
-                        onOpen: {
-                            appModel.selectedFileID = file.id
-                            doubleClickBehavior.perform(on: file, using: appModel)
-                        }
+                        selectedIDs: appModel.$selectedFileIDs,
+                        onSelect: { selectGridFile(file) },
+                        onOpen: { openGridFile(file) }
                     )
-                    .equatable()
                     .contextMenu {
                         FileContextMenu(file: file)
                     }
@@ -1422,6 +1417,45 @@ struct AllFilesView: View {
             idIndex: appModel.browseSnapshotIDIndex,
             columnCount: FileGridCard.columnCount(forWidth: contentWidth)
         )
+    }
+
+    private func selectGridFile(_ file: IndexedFile) {
+        let modifiers = NSEvent.modifierFlags
+        let command = modifiers.contains(.command)
+        let shift = modifiers.contains(.shift)
+        guard FileBrowseSelection.shouldPublishSelectionChange(
+            fileID: file.id,
+            selectedIDs: appModel.selectedFileIDs,
+            command: command,
+            shift: shift
+        ) else { return }
+        appModel.selectDisplayedFile(
+            file.id,
+            inIDs: appModel.browseSnapshotIDs,
+            command: command,
+            shift: shift,
+            idIndex: appModel.browseSnapshotIDIndex
+        )
+    }
+
+    /// The Inspector changes only the detail column width. Using a width
+    /// derived from the whole window keeps the large snapshot identity stable
+    /// when that panel opens or closes, while real window resizing can still
+    /// cross the coarse responsive tiers.
+    private var inspectorIndependentLayoutWidth: CGFloat {
+        max(0, windowWidth - 220)
+    }
+
+    private func openGridFile(_ file: IndexedFile) {
+        if FileBrowseSelection.shouldPublishSelectionChange(
+            fileID: file.id,
+            selectedIDs: appModel.selectedFileIDs,
+            command: false,
+            shift: false
+        ) {
+            appModel.selectedFileID = file.id
+        }
+        doubleClickBehavior.perform(on: file, using: appModel)
     }
 }
 
@@ -1502,29 +1536,25 @@ enum DisplayedFilesRefreshPolicy {
 private struct EquatableSnapshotList<Content: View>: View, Equatable {
     let signature: Int?
     let viewMode: FileBrowseViewMode
-    let contentWidth: CGFloat
-    let selectionToken: UInt64?
+    let layoutToken: Int
     let content: () -> Content
 
     init(
         signature: Int?,
         viewMode: FileBrowseViewMode,
-        contentWidth: CGFloat,
-        selectionToken: UInt64? = nil,
+        layoutToken: Int,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature
         self.viewMode = viewMode
-        self.contentWidth = contentWidth
-        self.selectionToken = selectionToken
+        self.layoutToken = layoutToken
         self.content = content
     }
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.signature == rhs.signature
             && lhs.viewMode == rhs.viewMode
-            && lhs.contentWidth == rhs.contentWidth
-            && lhs.selectionToken == rhs.selectionToken
+            && lhs.layoutToken == rhs.layoutToken
     }
 
     var body: some View {

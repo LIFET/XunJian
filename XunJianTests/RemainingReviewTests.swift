@@ -45,7 +45,7 @@ final class RemainingReviewTests: XCTestCase {
             .deletingLastPathComponent()
             .appending(path: "XunJian/Views/Components/FileInspectorEmptyView.swift")
         let source = try String(contentsOf: sourceURL, encoding: .utf8)
-        XCTAssertTrue(source.contains(#".task(id: "\(file?.id ?? "")-\(previewRetry)")"#))
+        XCTAssertTrue(source.contains(#".task(id: "\(previewCacheKey)-\(previewRetry)")"#))
         XCTAssertFalse(source.contains(#"previewRetry)-\(finderTagRefreshRevision)"#))
     }
 

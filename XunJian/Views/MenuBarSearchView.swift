@@ -38,7 +38,17 @@ struct MenuBarSearchView: View {
                     .padding(.horizontal, 14)
                     .padding(.vertical, 16)
             } else {
-                resultList
+                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Text(AppLanguage.localized("最近文件", english: "Recent Files"))
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 8)
+                }
+                ScrollView {
+                    resultList
+                }
+                .frame(maxHeight: 280)
                 if remainingCount > 0 {
                     Button {
                         revealRemainingInAllFiles()
@@ -176,12 +186,20 @@ struct MenuBarSearchView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
+            Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
+                revealHighlighted()
+            }
+            .disabled(!displayedResults.indices.contains(highlightedIndex))
+
+            Button(AppLanguage.localized("打开文件", english: "Open File")) {
+                openHighlightedFile()
+            }
+            .disabled(!displayedResults.indices.contains(highlightedIndex))
+
+            Spacer(minLength: 0)
+
             Button(AppLanguage.localized("打开寻简", english: "Open XunJian")) {
                 activateMainWindow()
-            }
-            Spacer(minLength: 0)
-            Button(AppLanguage.localized("退出", english: "Quit")) {
-                NSApplication.shared.terminate(nil)
             }
         }
         .buttonStyle(.link)
@@ -211,10 +229,17 @@ struct MenuBarSearchView: View {
         reveal(displayedResults[highlightedIndex])
     }
 
+    private func openHighlightedFile() {
+        guard displayedResults.indices.contains(highlightedIndex) else { return }
+        appModel.open(displayedResults[highlightedIndex])
+        NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
+        query = ""
+        highlightedIndex = 0
+    }
+
     private func reveal(_ file: IndexedFile) {
         appModel.revealInAllFiles(file)
         activateMainWindow()
-        NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
         query = ""
         highlightedIndex = 0
     }
@@ -223,7 +248,6 @@ struct MenuBarSearchView: View {
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         appModel.searchAllFiles(query: trimmed)
         activateMainWindow()
-        NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
         query = ""
         highlightedIndex = 0
     }
@@ -276,10 +300,21 @@ struct MenuBarSearchView: View {
     /// Brings the existing main window forward rather than creating another
     /// one; the app is single-window by design.
     private func activateMainWindow() {
-        NSApplication.shared.activate(ignoringOtherApps: true)
-        for window in NSApplication.shared.windows where window.canBecomeMain {
-            window.makeKeyAndOrderFront(nil)
-            return
+        // Close the status-item popover first. Activating while its transient
+        // window is still key made the loop below select the popover itself;
+        // closing it then left no main window in front.
+        NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
+        DispatchQueue.main.async {
+            NSApplication.shared.activate(ignoringOtherApps: true)
+            let candidates = NSApplication.shared.windows.filter {
+                $0.canBecomeMain && $0.level == .normal && !($0 is NSPanel)
+            }
+            let mainWindow = candidates.first(where: {
+                $0.identifier?.rawValue == "main"
+            }) ?? candidates.first(where: {
+                $0.title == AppLanguage.localized("寻简", english: "XunJian")
+            }) ?? candidates.first
+            mainWindow?.makeKeyAndOrderFront(nil)
         }
     }
 }
