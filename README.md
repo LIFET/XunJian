@@ -18,7 +18,7 @@
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载 `寻简-0.1.0-macOS.dmg`。发布包为 Universal App，支持 Apple silicon 与 Intel Mac，要求 macOS 14 或更高版本。
+前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载 `XunJian-0.1.0-macOS.dmg`。发布包为 Universal App，支持 Apple silicon 与 Intel Mac，要求 macOS 14 或更高版本。
 
 ## 为什么做寻简
 

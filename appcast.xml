@@ -23,7 +23,7 @@
 - 指定文件夹与整台 Mac 高级扫描模式。
 - Sparkle 在线更新、性能优化、无障碍与窄窗口适配。
 ]]></description>
-            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.0/%E5%AF%BB%E7%AE%80-0.1.0-macOS.dmg" length="277154101" type="application/octet-stream" sparkle:edSignature="60LpwNVK/79qnsfycj1+gUv+AdHODpVczyV2oKYUneirMJd30OnW3XesMI13UEYg5H6j5GG+Y9m0rW1qFsVcBw=="/>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.0/XunJian-0.1.0-macOS.dmg" length="277154101" type="application/octet-stream" sparkle:edSignature="60LpwNVK/79qnsfycj1+gUv+AdHODpVczyV2oKYUneirMJd30OnW3XesMI13UEYg5H6j5GG+Y9m0rW1qFsVcBw=="/>
         </item>
     </channel>
 </rss>
