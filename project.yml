@@ -12,6 +12,7 @@ settings:
     DEVELOPMENT_TEAM: ""
     CODE_SIGN_STYLE: Automatic
     ENABLE_HARDENED_RUNTIME: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
     SWIFT_EMIT_LOC_STRINGS: YES
     LOCALIZATION_PREFERS_STRING_CATALOGS: YES
     GENERATE_INFOPLIST_FILE: YES
@@ -78,6 +79,12 @@ targets:
       - name: Verify Bundled OAuth Runtimes
         script: |
           /bin/zsh "$SRCROOT/scripts/verify-bundled-oauth-runtimes.sh"
+        inputFiles:
+          - $(SRCROOT)/scripts/verify-bundled-oauth-runtimes.sh
+          - $(SRCROOT)/XunJianOAuthBridge/Resources/CodexAppServer/arm64/codex-app-server
+          - $(SRCROOT)/XunJianOAuthBridge/Resources/CodexAppServer/x86_64/codex-app-server
+          - $(SRCROOT)/XunJianOAuthBridge/Resources/GrokRuntime/arm64/grok
+          - $(SRCROOT)/XunJianOAuthBridge/Resources/GrokRuntime/x86_64/grok
         basedOnDependencyAnalysis: false
     sources:
       - path: XunJianOAuthBridge
