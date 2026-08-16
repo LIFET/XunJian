@@ -228,38 +228,41 @@ struct StorageInsightsView: View {
     }
 
     private var summary: some View {
-        HStack(spacing: 12) {
-            summaryTile(
-                value: AppLanguage.fileCount(snapshot.fileCount),
-                label: AppLanguage.localized("已索引文件", english: "Indexed Files")
-            )
-            summaryTile(
-                value: Self.sizeText(snapshot.totalSize),
-                label: AppLanguage.localized("总体积", english: "Total Size")
-            )
-            summaryTile(
-                value: "\(snapshot.sources.count)",
-                label: AppLanguage.localized("授权位置", english: "Locations")
-            )
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) { summaryItems }
+            VStack(spacing: 8) { summaryItems }
         }
     }
 
+    @ViewBuilder
+    private var summaryItems: some View {
+        summaryTile(
+            value: AppLanguage.fileCount(snapshot.fileCount),
+            label: AppLanguage.localized("已索引文件", english: "Indexed Files")
+        )
+        summaryTile(
+            value: Self.sizeText(snapshot.totalSize),
+            label: AppLanguage.localized("总体积", english: "Total Size")
+        )
+        summaryTile(
+            value: "\(snapshot.sources.count)",
+            label: AppLanguage.localized("授权位置", english: "Locations")
+        )
+    }
+
     private func summaryTile(value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(verbatim: value)
-                .font(.title3.weight(.semibold))
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-            Text(verbatim: label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        GroupBox {
+            LabeledContent {
+                Text(verbatim: value)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            } label: {
+                Text(verbatim: label)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-        )
         .accessibilityElement(children: .combine)
     }
 
@@ -329,16 +332,8 @@ struct StorageInsightsView: View {
                     .foregroundStyle(.secondary)
             }
 
-            GeometryReader { geometry in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(XunJianUI.Fill.control)
-                    Capsule()
-                        .fill(Color.accentColor.opacity(0.55))
-                        .frame(width: max(geometry.size.width * fraction, 2))
-                }
-            }
-            .frame(height: 5)
+            ProgressView(value: fraction)
+                .progressViewStyle(.linear)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(Text(verbatim: AppLanguage.joinedForAccessibility([
@@ -581,50 +576,43 @@ struct StorageInsightsView: View {
         _ files: [IndexedFile],
         trailing: @escaping (IndexedFile) -> String
     ) -> some View {
-        GroupedSurface(padding: 4) {
-            VStack(spacing: 0) {
-                ForEach(files) { file in
-                    Button {
-                        reveal(file)
-                    } label: {
-                        HStack(spacing: 10) {
-                            FileThumbnail(file: file, size: 24)
-                            VStack(alignment: .leading, spacing: 1) {
-                                Text(verbatim: file.name)
-                                    .lineLimit(1)
-                                Text(verbatim: file.path)
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            Spacer(minLength: 8)
-                            Text(verbatim: trailing(file))
-                                .font(.caption)
-                                .foregroundStyle(.tertiary)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .contentShape(Rectangle())
+        List(files) { file in
+            Button {
+                reveal(file)
+            } label: {
+                HStack(spacing: 10) {
+                    FileThumbnail(file: file, size: 24)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: file.name)
+                            .lineLimit(1)
+                        Text(verbatim: file.path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                    .buttonStyle(.plain)
-                    .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
-                    .contextMenu {
-                        Button(AppLanguage.localized("在列表中显示", english: "Show in List")) {
-                            reveal(file)
-                        }
-                        Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
-                            appModel.showInFinder(file)
-                        }
-                        FileContextMenu(file: file)
-                    }
-
-                    if file.id != files.last?.id {
-                        Divider().padding(.leading, 44)
-                    }
+                    Spacer(minLength: 8)
+                    Text(verbatim: trailing(file))
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
+            .contextMenu {
+                Button(AppLanguage.localized("在列表中显示", english: "Show in List")) {
+                    reveal(file)
+                }
+                Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
+                    appModel.showInFinder(file)
+                }
+                FileContextMenu(file: file)
             }
         }
+        .listStyle(.inset)
+        .scrollDisabled(true)
+        .frame(height: CGFloat(max(files.count, 1)) * 48 + 8)
     }
 
     static func sizeText(_ size: Int64) -> String {

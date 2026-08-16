@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct AppShellView: View {
+    static let minimumInspectorWindowWidth: CGFloat = 720
+
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -100,8 +102,16 @@ struct AppShellView: View {
                         AppLanguage.localized("文件详情", english: "File Details"),
                         systemImage: "sidebar.right"
                     )
+                    .symbolVariant(showsInspector ? .fill : .none)
                 }
                 .disabled(!supportsInspector)
+                .accessibilityValue(
+                    AppLanguage.localized(
+                        showsInspector ? "已显示" : "已隐藏",
+                        english: showsInspector ? "Shown" : "Hidden"
+                    )
+                )
+                .accessibilityAddTraits(showsInspector ? .isSelected : [])
                 .help(
                     AppLanguage.localized(
                         showsInspector ? "隐藏文件详情" : "显示文件详情",
@@ -110,16 +120,20 @@ struct AppShellView: View {
                 )
             }
         }
+        .focusedSceneValue(\.xunJianSupportsInspector, supportsInspector)
         return navigation
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRevealInAllFiles)) { _ in
                 selection = .allFiles
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearch)) { _ in
-                // Category detail already has its own field; jumping to All
-                // Files made ⌘F feel like it abandoned the page.
-                if case .category = selection {
+                // Home and category detail already own search fields; ⌘F
+                // should focus the visible field instead of changing pages.
+                switch selection ?? .home {
+                case .home, .category:
                     NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
                     return
+                case .allFiles, .categories, .settings:
+                    break
                 }
                 selection = .allFiles
                 Task { @MainActor in
@@ -317,11 +331,22 @@ struct AppShellView: View {
     }
 
     private var supportsInspector: Bool {
-        switch selection ?? .home {
+        Self.supportsInspector(
+            for: selection ?? .home,
+            windowWidth: windowWidth
+        )
+    }
+
+    static func supportsInspector(
+        for destination: NavigationDestination,
+        windowWidth: CGFloat
+    ) -> Bool {
+        guard windowWidth >= minimumInspectorWindowWidth else { return false }
+        switch destination {
         case .allFiles, .category:
-            true
+            return true
         case .home, .categories, .settings:
-            false
+            return false
         }
     }
 
@@ -349,6 +374,15 @@ struct AppShellView: View {
         guard hasMeasuredWindow else {
             windowWidth = newWidth
             hasMeasuredWindow = true
+            if newWidth < Self.minimumInspectorWindowWidth, showsInspector {
+                showsInspector = false
+                inspectorWasAutoCollapsed = true
+            }
+            if newWidth < XunJianUI.Breakpoint.sidebarAutoCollapse,
+               columnVisibility != .detailOnly {
+                columnVisibility = .detailOnly
+                sidebarWasAutoCollapsed = true
+            }
             return
         }
 
@@ -357,7 +391,11 @@ struct AppShellView: View {
 
         let animation = XunJianUI.motion(reduceMotion: reduceMotion)
 
-        if previousWidth >= XunJianUI.Breakpoint.inspectorAutoCollapse,
+        if newWidth < Self.minimumInspectorWindowWidth,
+           showsInspector {
+            showsInspector = false
+            inspectorWasAutoCollapsed = true
+        } else if previousWidth >= XunJianUI.Breakpoint.inspectorAutoCollapse,
            newWidth < XunJianUI.Breakpoint.inspectorAutoCollapse,
            showsInspector {
             showsInspector = false
@@ -481,7 +519,10 @@ private struct FileExportProgressBanner: View {
             }
             .padding(.horizontal, XunJianUI.Spacing.page)
             .padding(.vertical, 8)
-            .background(XunJianUI.Fill.accentWash)
+            .background(.bar)
+            .overlay(alignment: .bottom) {
+                Divider()
+            }
         }
     }
 }
@@ -624,6 +665,8 @@ private struct TrashUndoBanner: View {
                         .controlSize(.small)
                     Button(action: onDismiss) {
                         Image(systemName: "xmark")
+                            .frame(width: 28, height: 28)
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.borderless)
                     .accessibilityLabel(AppLanguage.localized("关闭", english: "Dismiss"))
@@ -632,7 +675,10 @@ private struct TrashUndoBanner: View {
                 .padding(.horizontal, XunJianUI.Spacing.page)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(XunJianUI.Fill.accentWash)
+                .background(.bar)
+                .overlay(alignment: .bottom) {
+                    Divider()
+                }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -673,6 +719,10 @@ private struct DatabaseUnavailableBanner: View {
                 .padding(.horizontal, XunJianUI.Spacing.page)
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
+                .overlay(alignment: .bottom) {
+                    Divider()
+                }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
@@ -700,9 +750,9 @@ private struct ScanStatusView: View {
         }
         .padding(.horizontal, XunJianUI.Spacing.page)
         .padding(.vertical, 8)
-        .background(XunJianUI.Fill.accentWash)
+        .background(.bar)
         .overlay(alignment: .bottom) {
-            Divider().opacity(0.5)
+            Divider()
         }
     }
 

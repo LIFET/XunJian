@@ -1130,6 +1130,72 @@ final class OAuthProtocolClientTests: XCTestCase {
         await peer.close()
     }
 
+    func testPeerBuffersMoreThanLegacyNotificationCountWithinByteBudget() async throws {
+        let transport = ScriptedLineTransport()
+        let peer = JSONLineRPCPeer(
+            transport: transport,
+            dialect: .jsonRPC2,
+            allowedNotifications: ["stream/chunk"]
+        )
+        let request = Task {
+            try await peer.requestAndDrainQueuedNotifications(method: "prompt")
+        }
+        let requestObject = try await transport.nextClientObject().objectValue!
+
+        for index in 0..<300 {
+            try await transport.sendServerObject(.object([
+                "jsonrpc": .string("2.0"),
+                "method": .string("stream/chunk"),
+                "params": .object(["index": .integer(Int64(index))])
+            ]))
+        }
+        try await transport.sendServerObject(.object([
+            "jsonrpc": .string("2.0"),
+            "id": requestObject["id"]!,
+            "result": .object([:])
+        ]))
+
+        let completion = try await request.value
+        XCTAssertEqual(completion.queuedNotifications.count, 300)
+        XCTAssertEqual(
+            completion.queuedNotifications.last?.params?.objectValue?["index"],
+            .integer(299)
+        )
+        await peer.close()
+    }
+
+    func testPeerStillRejectsNotificationFloodOverByteBudget() async throws {
+        let transport = ScriptedLineTransport()
+        let peer = JSONLineRPCPeer(
+            transport: transport,
+            dialect: .jsonRPC2,
+            allowedNotifications: ["stream/chunk"]
+        )
+        let request = Task { try await peer.request(method: "prompt") }
+        _ = try await transport.nextClientObject()
+
+        let oversizedChunk = String(repeating: "x", count: 900_000)
+        for index in 0..<5 {
+            try await transport.sendServerObject(.object([
+                "jsonrpc": .string("2.0"),
+                "method": .string("stream/chunk"),
+                "params": .object([
+                    "index": .integer(Int64(index)),
+                    "text": .string(oversizedChunk)
+                ])
+            ]))
+        }
+
+        do {
+            _ = try await request.value
+            XCTFail("Expected bounded notification queue rejection")
+        } catch let error as JSONLineRPCError {
+            XCTAssertEqual(error, .notificationOverflow)
+        }
+        let transportClosed = await transport.isClosed
+        XCTAssertTrue(transportClosed)
+    }
+
     func testPeerRejectsServerInitiatedRequestAndCloses() async throws {
         let transport = ScriptedLineTransport()
         let peer = JSONLineRPCPeer(

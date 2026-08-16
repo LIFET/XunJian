@@ -174,9 +174,9 @@ final class LagIsolationTests: XCTestCase {
         )
     }
 
-    func testTableThumbnailsRequestIconsInsteadOfFullPreviews() {
-        XCTAssertEqual(FileThumbnail.representationTypes(for: 24), .icon)
-        XCTAssertEqual(FileThumbnail.representationTypes(for: 32), .icon)
+    func testTableThumbnailsRequestFinderLikePreviews() {
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 24), .thumbnail)
+        XCTAssertEqual(FileThumbnail.representationTypes(for: 32), .thumbnail)
         XCTAssertEqual(FileThumbnail.representationTypes(for: 72), .thumbnail)
         XCTAssertEqual(FileThumbnail.representationTypes(for: 150), .thumbnail)
     }

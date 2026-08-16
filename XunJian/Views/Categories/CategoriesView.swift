@@ -19,6 +19,7 @@ struct CategoriesView: View {
     /// navigation do not pay O(n) index scans per click/keypress.
     @State private var displayedFileOrderedIDs: [String] = []
     @State private var displayedFileIDIndex: [String: Int] = [:]
+    @State private var tableSelectedIDs: Set<String> = []
     @State private var categoryFileCount = 0
     @State private var displayedSignature: Int?
     @State private var isCategorySearching = false
@@ -51,24 +52,29 @@ struct CategoriesView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
+            if let selectedCategory {
                 VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
                     header
-
-                    if let selectedCategory {
-                        categoryFiles(selectedCategory, contentWidth: geometry.size.width)
-                    } else {
-                        categoryOverview
-                    }
+                    categoryFiles(selectedCategory, contentWidth: geometry.size.width)
                 }
                 .padding(XunJianUI.pagePadding(for: geometry.size.width))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
+                        header
+                        categoryOverview
+                    }
+                    .padding(XunJianUI.pagePadding(for: geometry.size.width))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
         .onAppear {
             if selectedCategory != nil {
                 appModel.highlightQuery = categoryQuery
             }
+            tableSelectedIDs = appModel.selectedFileIDs
             clearSelectionIfHidden()
         }
         .task(id: categoryFilesRefreshKey) {
@@ -93,9 +99,6 @@ struct CategoriesView: View {
                   let mode = FileBrowseViewMode(rawValue: raw) else { return }
             viewMode = mode
         }
-        .onChange(of: selectedKind) { _, _ in
-            isCategorySearching = true
-        }
         .onChange(of: categoryQuery) { _, query in
             if selectedCategory != nil {
                 appModel.highlightQuery = query
@@ -103,6 +106,10 @@ struct CategoriesView: View {
             isCategorySearching = !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         .onChange(of: appModel.files.count) { _, _ in clearSelectionIfHidden() }
+        .onChange(of: appModel.selectedFileIDs) { _, selectedIDs in
+            guard tableSelectedIDs != selectedIDs else { return }
+            tableSelectedIDs = selectedIDs
+        }
         .sheet(isPresented: $showsNewCategory) {
             CategoryEditorSheet(
                 title: AppLanguage.localized("新建分类", english: "New Category")
@@ -148,16 +155,45 @@ struct CategoriesView: View {
 
     private var header: some View {
         Group {
-            if selectedCategory != nil {
-                Button(action: showAllCategories) {
-                    Label(
-                        AppLanguage.localized("返回全部分类", english: "Back to All Categories"),
-                        systemImage: "chevron.left"
-                    )
-                    .contentShape(Rectangle())
+            if let selectedCategory {
+                HStack(spacing: 10) {
+                    Button(action: showAllCategories) {
+                        Label(
+                            AppLanguage.localized("全部分类", english: "All Categories"),
+                            systemImage: "chevron.left"
+                        )
+                    }
+                    .buttonStyle(.bordered)
+
+                    Spacer(minLength: 0)
+
+                    Menu {
+                        Button {
+                            categoryToRename = selectedCategory
+                        } label: {
+                            Label(
+                                AppLanguage.localized("修改名称…", english: "Rename…"),
+                                systemImage: "pencil"
+                            )
+                        }
+                        Divider()
+                        Button(role: .destructive) {
+                            categoryToDelete = selectedCategory
+                        } label: {
+                            Label(
+                                AppLanguage.localized("删除分类…", english: "Delete Category…"),
+                                systemImage: "trash"
+                            )
+                        }
+                    } label: {
+                        Label(
+                            AppLanguage.localized("编辑分类", english: "Edit Category"),
+                            systemImage: "pencil"
+                        )
+                    }
+                    .buttonStyle(.bordered)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
+                .controlSize(.regular)
             } else {
                 HStack {
                     Spacer(minLength: 0)
@@ -345,28 +381,32 @@ struct CategoriesView: View {
                     )
                 }
 
-                if isCategorySearching {
+                if files.isEmpty, isCategorySearching {
                     ProgressView(AppLanguage.localized("正在搜索…", english: "Searching…"))
                         .frame(maxWidth: .infinity, minHeight: 180)
                 } else if files.isEmpty {
                     kindFilterEmptyState
                 } else if viewMode == .grid {
-                    categoryFileGrid(files)
-                        .fileListKeyboardNavigation(
-                            files: files,
-                            orderedIDs: displayedFileOrderedIDs,
-                            idIndex: displayedFileIDIndex,
-                            columnCount: FileGridCard.columnCount(forWidth: contentWidth)
-                        )
+                    ScrollView {
+                        categoryFileGrid(files)
+                            .fileListKeyboardNavigation(
+                                files: files,
+                                orderedIDs: displayedFileOrderedIDs,
+                                idIndex: displayedFileIDIndex,
+                                columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+                            )
+                    }
                 } else {
                     categoryFileList(files)
                         .fileListKeyboardNavigation(
                             files: files,
                             orderedIDs: displayedFileOrderedIDs,
-                            idIndex: displayedFileIDIndex
+                            idIndex: displayedFileIDIndex,
+                            handlesArrowKeys: false
                         )
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .xunjianAnimation(value: viewMode)
         }
     }
@@ -431,39 +471,107 @@ struct CategoriesView: View {
     }
 
     private func categoryFileList(_ files: [IndexedFile]) -> some View {
-        GroupedSurface(padding: 4) {
-            LazyVStack(spacing: 0) {
-                ForEach(files) { file in
-                    CategoryFileRow(
-                        file: file,
-                        isSelected: appModel.selectedFileIDs.contains(file.id),
-                        onSelect: {
-                            let modifiers = NSEvent.modifierFlags
-                            appModel.selectDisplayedFile(
-                                file.id,
-                                inIDs: displayedFileOrderedIDs,
-                                command: modifiers.contains(.command),
-                                shift: modifiers.contains(.shift),
-                                idIndex: displayedFileIDIndex
-                            )
-                        },
-                        onOpen: {
-                            appModel.selectedFileID = file.id
-                            doubleClickBehavior.perform(on: file, using: appModel)
-                        }
-                    )
-                    .contextMenu {
-                        FileContextMenu(file: file)
+        Table(of: IndexedFile.self, selection: categoryTableSelection) {
+            TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
+                categoryTableCell {
+                    HStack(spacing: 8) {
+                        FileThumbnail(file: file, size: 24)
+                            .accessibilityHidden(true)
+                        Text(verbatim: file.name)
+                            .lineLimit(1)
                     }
-                    .draggable(file.url)
-
-                    if file.id != files.last?.id {
-                        Divider()
-                            .padding(.leading, 56)
-                    }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(Text(verbatim: categoryRowAccessibilityLabel(file)))
                 }
             }
+            .width(min: 160, ideal: 300, max: 460)
+
+            TableColumn(AppLanguage.localized("类型", english: "Kind")) { file in
+                categoryTableCell(accessibilityHidden: true) {
+                    Text(verbatim: file.kind.localizedTitle)
+                        .lineLimit(1)
+                }
+            }
+            .width(min: 70, ideal: 100, max: 140)
+
+            TableColumn(AppLanguage.localized("大小", english: "Size")) { file in
+                categoryTableCell(accessibilityHidden: true) {
+                    Text(verbatim: FileGridCard.sizeText(file))
+                        .lineLimit(1)
+                }
+            }
+            .width(min: 60, ideal: 90, max: 120)
+
+            TableColumn(AppLanguage.localized("位置", english: "Where")) { file in
+                categoryTableCell(accessibilityHidden: true) {
+                    Text(verbatim: file.parentPath)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .width(min: 100, ideal: 240, max: 420)
+        } rows: {
+            ForEach(files) { file in
+                TableRow(file)
+                    .draggable(file.url)
+            }
         }
+        .contextMenu(forSelectionType: String.self) { selection in
+            if let file = categoryTableFile(for: selection) {
+                FileContextMenu(file: file)
+            }
+        } primaryAction: { selection in
+            guard let file = categoryTableFile(for: selection) else { return }
+            doubleClickBehavior.perform(on: file, using: appModel)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private func categoryTableCell<Content: View>(
+        accessibilityHidden: Bool = false,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .accessibilityHidden(accessibilityHidden)
+    }
+
+    private var categoryTableSelection: Binding<Set<String>> {
+        Binding(
+            get: { tableSelectedIDs },
+            set: { newValue in
+                guard newValue != tableSelectedIDs else { return }
+                tableSelectedIDs = newValue
+                let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+                appModel.applyNativeTableSelection(
+                    newValue,
+                    orderedIDs: displayedFileOrderedIDs,
+                    idIndex: displayedFileIDIndex,
+                    command: modifiers.contains(.command),
+                    shift: modifiers.contains(.shift)
+                )
+            }
+        )
+    }
+
+    private func categoryTableFile(for selection: Set<String>) -> IndexedFile? {
+        if let selectedID = appModel.selectedFileID,
+           selection.contains(selectedID),
+           let file = appModel.index.file(id: selectedID) {
+            return file
+        }
+        guard let fileID = selection.first else { return nil }
+        return appModel.index.file(id: fileID)
+    }
+
+    private func categoryRowAccessibilityLabel(_ file: IndexedFile) -> String {
+        AppLanguage.joinedForAccessibility([
+            file.name,
+            file.kind.localizedTitle,
+            FileGridCard.sizeText(file),
+            file.parentPath
+        ])
     }
 
     /// Applies the page's type filter and sort order.
@@ -577,7 +685,8 @@ struct CategoriesView: View {
                     return (
                         files: [IndexedFile](),
                         visibleIDs: Set<String>(),
-                        orderedIDs: [String]()
+                        orderedIDs: [String](),
+                        idIndex: [String: Int]()
                     )
                 }
                 let files = CategoriesView.displayed(
@@ -592,7 +701,12 @@ struct CategoriesView: View {
                 return (
                     files: files,
                     visibleIDs: Set(orderedIDs),
-                    orderedIDs: orderedIDs
+                    orderedIDs: orderedIDs,
+                    idIndex: Dictionary(
+                        uniqueKeysWithValues: orderedIDs.enumerated().map {
+                            ($0.element, $0.offset)
+                        }
+                    )
                 )
             }.value
         } onCancel: {
@@ -605,11 +719,7 @@ struct CategoriesView: View {
         displayedFiles = result
         displayedFileIDs = computed.visibleIDs
         displayedFileOrderedIDs = computed.orderedIDs
-        displayedFileIDIndex = Dictionary(
-            uniqueKeysWithValues: computed.orderedIDs.enumerated().map {
-                ($0.element, $0.offset)
-            }
-        )
+        displayedFileIDIndex = computed.idIndex
         displayedSignature = signature
         isCategorySearching = false
         appModel.updateCommandTargetFiles(result)
@@ -623,60 +733,6 @@ struct CategoriesView: View {
             "只会删除“\(name)”及其分类关系，不会删除任何真实文件。",
             english: "Only “\(name)” and its category relationships will be deleted. No files will be deleted."
         )
-    }
-}
-
-/// One file row in the category detail list. Hover state is local so mouse
-/// movement repaints only this row instead of invalidating the whole page.
-private struct CategoryFileRow: View {
-    let file: IndexedFile
-    let isSelected: Bool
-    let onSelect: () -> Void
-    let onOpen: () -> Void
-
-    @State private var isHovered = false
-
-    var body: some View {
-        Button {
-            if (NSApplication.shared.currentEvent?.clickCount ?? 1) >= 2 {
-                onOpen()
-            } else {
-                onSelect()
-            }
-        } label: {
-            HStack(spacing: 12) {
-                FileThumbnail(file: file, size: 34)
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: file.name)
-                        .lineLimit(1)
-                    Text(verbatim: file.parentPath)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: 0)
-                Text(verbatim: FileGridCard.sizeText(file))
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 9)
-            .background(
-                isSelected
-                    ? XunJianUI.Fill.selectedSoft
-                    : (isHovered ? XunJianUI.Fill.hover : .clear),
-                in: RoundedRectangle(
-                    cornerRadius: XunJianUI.Radius.row,
-                    style: .continuous
-                )
-            )
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onHover { isHovered = $0 }
     }
 }
 
@@ -713,9 +769,6 @@ struct CategoryEditorSheet: View {
     @State private var isSaving = false
     @State private var failure: String?
     @FocusState private var isNameFocused: Bool
-
-    @ScaledMetric(relativeTo: .body) private var symbolPickerIconSize: CGFloat = 14
-    @ScaledMetric(relativeTo: .body) private var symbolPickerItemSide: CGFloat = 36
 
     private let symbols = [
         "folder", "briefcase", "doc.text", "paintbrush", "books.vertical",
@@ -754,41 +807,19 @@ struct CategoryEditorSheet: View {
             }
 
             if allowsSymbolEditing {
-                Text(AppLanguage.localized("图标", english: "Icon"))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 40))], spacing: 8) {
+                Picker(
+                    AppLanguage.localized("图标", english: "Icon"),
+                    selection: $symbolName
+                ) {
                     ForEach(symbols, id: \.self) { symbol in
-                        Button {
-                            symbolName = symbol
-                        } label: {
-                            Image(systemName: symbol)
-                                .font(.system(size: symbolPickerIconSize, weight: .medium))
-                                .frame(width: symbolPickerItemSide, height: symbolPickerItemSide)
-                                .foregroundStyle(symbolName == symbol ? Color.accentColor : .primary)
-                                .background {
-                                    RoundedRectangle(
-                                        cornerRadius: XunJianUI.Radius.chip,
-                                        style: .continuous
-                                    )
-                                    .fill(
-                                        symbolName == symbol
-                                            ? XunJianUI.Fill.selected
-                                            : XunJianUI.Fill.quiet
-                                    )
-                                }
-                        }
-                        .buttonStyle(.plain)
+                        Image(systemName: symbol)
+                            .tag(symbol)
                         .accessibilityLabel(
                             symbolAccessibilityLabel(symbol)
                         )
-                        .accessibilityValue(
-                            symbolName == symbol
-                                ? AppLanguage.localized("已选择", english: "Selected")
-                                : ""
-                        )
                     }
                 }
+                .pickerStyle(.palette)
             }
 
             HStack {

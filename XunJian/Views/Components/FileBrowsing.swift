@@ -37,45 +37,19 @@ enum FileActivationBehavior: String, CaseIterable, Identifiable {
     }
 }
 
-/// Which file-table columns fit the current content width.
+/// Coarse layout identity for the file browser.
 ///
-/// The table keeps a readable 640pt canvas. A narrower content area clips
-/// from the trailing edge instead of rebuilding a different scroll container
-/// or compressing columns below their readable minima.
+/// A macOS `Table` already owns column compression and horizontal scrolling.
+/// Keep one stable identity for list mode so showing the Inspector never
+/// rebuilds a large table merely because the detail width changed.
 enum FileTableLayout {
-    static let readableMinimumWidth: CGFloat = 640
-    static let categoryVisibleWidth: CGFloat = 640
-    static let locationVisibleWidth: CGFloat = 720
-    static let wideLayoutWidth: CGFloat = 1_020
-
-    static func showsCategory(contentWidth: CGFloat) -> Bool {
-        contentWidth >= categoryVisibleWidth
-    }
-
-    static func showsLocation(contentWidth: CGFloat) -> Bool {
-        contentWidth >= locationVisibleWidth
-    }
-
-    static func minimumWidth(contentWidth: CGFloat) -> CGFloat {
-        max(contentWidth, readableMinimumWidth)
-    }
-
-    static func needsHorizontalScroll(contentWidth: CGFloat) -> Bool {
-        contentWidth < readableMinimumWidth
-    }
-
-    /// Coarse layout identity for snapshot equality. Inspector animation
-    /// must not rebuild the table or grid on every pixel of width change.
     @MainActor
     static func snapshotLayoutToken(
         contentWidth: CGFloat,
         viewMode: FileBrowseViewMode
     ) -> Int {
         switch viewMode {
-        case .list:
-            if contentWidth < readableMinimumWidth { return 0 }
-            if contentWidth < wideLayoutWidth { return 1 }
-            return 2
+        case .list: return 0
         case .grid:
             return 10 + FileGridCard.columnCount(forWidth: contentWidth)
         }
@@ -151,6 +125,12 @@ struct FileGridCard: View, Equatable {
             Self.sizeText(file)
         ])))
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+        .accessibilityAction(named: Text(verbatim: AppLanguage.localized(
+            "打开",
+            english: "Open"
+        ))) {
+            onOpen()
+        }
     }
 
     static func sizeText(_ file: IndexedFile) -> String {
@@ -357,9 +337,6 @@ struct FileBrowseToolbar: View {
     @Binding var sortAscending: Bool
     @Binding var viewMode: FileBrowseViewMode
 
-    @ScaledMetric(relativeTo: .body)
-    private var controlHeight = FileToolbarMetrics.controlHeight
-
     /// Relevance only makes sense while a search is scoring results.
     private var sortOrders: [FileSortOrder] {
         FileSortOrder.allCases.filter { $0 != .relevance }
@@ -381,7 +358,67 @@ struct FileBrowseToolbar: View {
                     viewModePicker
                 }
             }
+
+            compactBrowseMenu
         }
+    }
+
+    private var compactBrowseMenu: some View {
+        Menu {
+            Picker(
+                AppLanguage.localized("文件类型", english: "File Type"),
+                selection: $selectedKind
+            ) {
+                Text(AppLanguage.localized("所有类型", english: "All Types"))
+                    .tag(FileKind?.none)
+                ForEach(FileKind.allCases) { kind in
+                    Text(verbatim: kind.localizedTitle).tag(Optional(kind))
+                }
+            }
+
+            Picker(
+                AppLanguage.localized("排序", english: "Sort By"),
+                selection: Binding(
+                    get: { sortOrder },
+                    set: { order in
+                        guard sortOrder != order else { return }
+                        sortOrder = order
+                        sortAscending = order == .name || order == .kind
+                    }
+                )
+            ) {
+                ForEach(sortOrders) { order in
+                    Text(verbatim: order.localizedTitle).tag(order)
+                }
+            }
+
+            Button {
+                sortAscending.toggle()
+            } label: {
+                Label(
+                    sortAscending
+                        ? AppLanguage.localized("升序", english: "Ascending")
+                        : AppLanguage.localized("降序", english: "Descending"),
+                    systemImage: sortAscending ? "arrow.up" : "arrow.down"
+                )
+            }
+
+            Picker(
+                AppLanguage.localized("显示方式", english: "View"),
+                selection: $viewMode
+            ) {
+                ForEach(FileBrowseViewMode.allCases) { mode in
+                    Label(mode.localizedTitle, systemImage: mode.symbolName).tag(mode)
+                }
+            }
+        } label: {
+            Label(
+                AppLanguage.localized("浏览选项", english: "Browse Options"),
+                systemImage: "ellipsis.circle"
+            )
+        }
+        .menuStyle(.button)
+        .fixedSize()
     }
 
     @ViewBuilder
@@ -394,40 +431,20 @@ struct FileBrowseToolbar: View {
     }
 
     private var kindMenu: some View {
-        Menu {
-            Button {
-                selectedKind = nil
-            } label: {
-                if selectedKind == nil {
-                    Label(
-                        AppLanguage.localized("所有类型", english: "All Types"),
-                        systemImage: "checkmark"
-                    )
-                } else {
-                    Text(verbatim: AppLanguage.localized("所有类型", english: "All Types"))
-                }
-            }
-            Divider()
+        Picker(
+            AppLanguage.localized("文件类型", english: "File Type"),
+            selection: $selectedKind
+        ) {
+            Text(AppLanguage.localized("所有类型", english: "All Types"))
+                .tag(FileKind?.none)
             ForEach(FileKind.allCases) { kind in
-                Button {
-                    selectedKind = kind
-                } label: {
-                    if selectedKind == kind {
-                        Label(kind.localizedTitle, systemImage: "checkmark")
-                    } else {
-                        Text(verbatim: kind.localizedTitle)
-                    }
-                }
+                Text(verbatim: kind.localizedTitle)
+                    .tag(Optional(kind))
             }
-        } label: {
-            FileToolbarPopupLabel(
-                title: selectedKind?.localizedTitle
-                    ?? AppLanguage.localized("所有类型", english: "All Types"),
-                width: FileToolbarMetrics.fileTypeWidth
-            )
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.fileTypeWidth)
         .fixedSize()
         .accessibilityLabel(Text(verbatim: AppLanguage.localized(
             "文件类型",
@@ -436,29 +453,25 @@ struct FileBrowseToolbar: View {
     }
 
     private var sortMenu: some View {
-        Menu {
-            ForEach(sortOrders) { order in
-                Button {
+        Picker(
+            AppLanguage.localized("排序", english: "Sort By"),
+            selection: Binding(
+                get: { sortOrder },
+                set: { order in
+                    guard sortOrder != order else { return }
                     sortOrder = order
-                    // Names and types read naturally A→Z; dates and sizes are
-                    // most useful largest/newest first.
                     sortAscending = order == .name || order == .kind
-                } label: {
-                    if sortOrder == order {
-                        Label(order.localizedTitle, systemImage: "checkmark")
-                    } else {
-                        Text(verbatim: order.localizedTitle)
-                    }
                 }
-            }
-        } label: {
-            FileToolbarPopupLabel(
-                title: sortOrder.localizedTitle,
-                width: FileToolbarMetrics.sortWidth(for: sortOrder)
             )
+        ) {
+            ForEach(sortOrders) { order in
+                Text(verbatim: order.localizedTitle)
+                    .tag(order)
+            }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.sortWidth(for: sortOrder))
         .fixedSize()
         .accessibilityLabel(Text(verbatim: AppLanguage.localized("排序", english: "Sort By")))
     }
@@ -467,47 +480,28 @@ struct FileBrowseToolbar: View {
         Button {
             sortAscending.toggle()
         } label: {
-            FileToolbarIconLabel(systemName: sortAscending ? "arrow.up" : "arrow.down")
+            Image(systemName: sortAscending ? "arrow.up" : "arrow.down")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
         .accessibilityLabel(Text(verbatim: sortAscending
             ? AppLanguage.localized("升序", english: "Ascending")
             : AppLanguage.localized("降序", english: "Descending")))
     }
 
     private var viewModePicker: some View {
-        HStack(spacing: 0) {
+        Picker(
+            AppLanguage.localized("显示方式", english: "View"),
+            selection: $viewMode
+        ) {
             ForEach(FileBrowseViewMode.allCases) { mode in
-                Button {
-                    viewMode = mode
-                } label: {
-                    Image(systemName: mode.symbolName)
-                        .font(.system(size: FileToolbarMetrics.symbolSize, weight: .medium))
-                        .frame(
-                            width: FileToolbarMetrics.viewModeItemWidth,
-                            height: controlHeight - 2
-                        )
-                        .background {
-                            RoundedRectangle(
-                                cornerRadius: FileToolbarMetrics.innerCornerRadius,
-                                style: .continuous
-                            )
-                            .fill(viewMode == mode ? Color.accentColor : Color.clear)
-                        }
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(viewMode == mode ? Color.white : Color.primary)
-                .accessibilityLabel(Text(verbatim: mode.localizedTitle))
-                .accessibilityAddTraits(viewMode == mode ? [.isButton, .isSelected] : .isButton)
+                Label(mode.localizedTitle, systemImage: mode.symbolName)
+                    .tag(mode)
             }
         }
-        .padding(1)
-        .frame(
-            width: FileToolbarMetrics.viewModeWidth,
-            height: controlHeight
-        )
-        .fileToolbarSurface()
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.viewModeWidth)
         .fixedSize()
     }
 }
@@ -519,74 +513,128 @@ struct FileBatchActionBar: View {
     var removalCategory: FileCategory? = nil
 
     var body: some View {
-        HStack(spacing: 8) {
-            Label(
-                AppLanguage.localized(
-                    "已选择 \(appModel.selectedFileIDs.count) 项",
-                    english: "\(appModel.selectedFileIDs.count) selected"
-                ),
-                systemImage: "checkmark.circle.fill"
-            )
-            Spacer(minLength: 8)
-            Menu {
-                if appModel.categories.isEmpty {
-                    Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
-                } else {
-                    ForEach(appModel.categories) { category in
-                        Button {
-                            appModel.assignSelectedFiles(to: category)
-                        } label: {
-                            Label(category.localizedDisplayName, systemImage: category.symbolName)
+        GroupBox {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    selectionLabel
+                    Spacer(minLength: 8)
+                    ControlGroup {
+                        categoryMenu
+                        if let removalCategory {
+                            removeFromCategoryButton(removalCategory)
                         }
+                        trashButton
+                        clearSelectionButton
                     }
                 }
+
+                HStack(spacing: 8) {
+                    selectionLabel
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    overflowMenu
+                }
+            }
+        }
+        .font(.caption)
+        .controlSize(.small)
+        .padding(.horizontal, contentWidth.map { XunJianUI.pagePadding(for: $0) } ?? 0)
+        .padding(.bottom, 10)
+        .xunjianAnimation(value: appModel.selectedFileIDs.count > 1)
+    }
+
+    private var selectionLabel: some View {
+        Label(
+            AppLanguage.localized(
+                "已选择 \(appModel.selectedFileIDs.count) 项",
+                english: "\(appModel.selectedFileIDs.count) selected"
+            ),
+            systemImage: "checkmark.circle.fill"
+        )
+    }
+
+    private var categoryMenu: some View {
+        Menu {
+            categoryMenuItems
+        } label: {
+            Label(
+                AppLanguage.localized("批量加分类", english: "Add to Category"),
+                systemImage: "folder.badge.plus"
+            )
+        }
+        .fixedSize()
+    }
+
+    @ViewBuilder
+    private var categoryMenuItems: some View {
+        if appModel.categories.isEmpty {
+            Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
+        } else {
+            ForEach(appModel.categories) { category in
+                Button {
+                    appModel.assignSelectedFiles(to: category)
+                } label: {
+                    Label(category.localizedDisplayName, systemImage: category.symbolName)
+                }
+            }
+        }
+    }
+
+    private func removeFromCategoryButton(_ category: FileCategory) -> some View {
+        Button {
+            appModel.removeSelectedFiles(from: category)
+        } label: {
+            Label(
+                AppLanguage.localized("从此分类移除", english: "Remove from Category"),
+                systemImage: "folder.badge.minus"
+            )
+        }
+        .fixedSize()
+    }
+
+    private var trashButton: some View {
+        Button(role: .destructive) {
+            appModel.requestBatchTrash()
+        } label: {
+            Label(
+                AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
+                systemImage: "trash"
+            )
+        }
+    }
+
+    private var clearSelectionButton: some View {
+        Button {
+            appModel.selectedFileIDs = []
+        } label: {
+            Label(
+                AppLanguage.localized("取消选择", english: "Clear Selection"),
+                systemImage: "xmark"
+            )
+        }
+    }
+
+    private var overflowMenu: some View {
+        Menu {
+            Menu {
+                categoryMenuItems
             } label: {
                 Label(
                     AppLanguage.localized("批量加分类", english: "Add to Category"),
                     systemImage: "folder.badge.plus"
                 )
             }
-            .fixedSize()
             if let removalCategory {
-                Button {
-                    appModel.removeSelectedFiles(from: removalCategory)
-                } label: {
-                    Label(
-                        AppLanguage.localized(
-                            "从此分类移除",
-                            english: "Remove from Category"
-                        ),
-                        systemImage: "folder.badge.minus"
-                    )
-                }
-                .fixedSize()
+                removeFromCategoryButton(removalCategory)
             }
-            Button(role: .destructive) {
-                appModel.requestBatchTrash()
-            } label: {
-                Label(
-                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
-                    systemImage: "trash"
-                )
-            }
-            Button {
-                appModel.selectedFileIDs = []
-            } label: {
-                Label(
-                    AppLanguage.localized("取消选择", english: "Clear Selection"),
-                    systemImage: "xmark"
-                )
-            }
+            trashButton
+            clearSelectionButton
+        } label: {
+            Label(
+                AppLanguage.localized("更多操作", english: "More Actions"),
+                systemImage: "ellipsis.circle"
+            )
         }
-        .font(.caption)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(
-            XunJianUI.Fill.selectedSoft,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.chip, style: .continuous)
-        )
-        .padding(.horizontal, contentWidth.map { XunJianUI.pagePadding(for: $0) } ?? 0)
-        .padding(.bottom, 10)
-        .xunjianAnimation(value: appModel.selectedFileIDs.count > 1)
+        .fixedSize()
     }
 }

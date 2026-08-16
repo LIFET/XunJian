@@ -61,6 +61,7 @@ struct CommandPaletteView: View {
                 .ignoresSafeArea()
                 .contentShape(Rectangle())
                 .onTapGesture { dismiss() }
+                .accessibilityHidden(true)
 
             panel
                 .frame(maxWidth: 560)
@@ -118,6 +119,7 @@ struct CommandPaletteView: View {
             "命令面板",
             english: "Command Palette"
         )))
+        .accessibilityAddTraits(.isModal)
     }
 
     private var queryField: some View {
@@ -161,71 +163,75 @@ struct CommandPaletteView: View {
     }
 
     private func resultList(_ visibleCommands: [PaletteCommand]) -> some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 2) {
-                    ForEach(Array(visibleCommands.enumerated()), id: \.element.id) { index, command in
-                        if shouldShowGroupHeader(at: index, in: visibleCommands) {
-                            Text(verbatim: command.group.localizedTitle)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
-                                .padding(.horizontal, 14)
-                                .padding(.top, index == 0 ? 8 : 12)
-                                .padding(.bottom, 2)
-                                .accessibilityAddTraits(.isHeader)
+        List(selection: commandSelection) {
+            ForEach(Array(commandGroups.enumerated()), id: \.offset) { _, group in
+                let commands = visibleCommands.filter { $0.group == group }
+                if !commands.isEmpty {
+                    Section {
+                        ForEach(commands) { command in
+                            Button {
+                                run(command)
+                            } label: {
+                                commandRow(command)
+                            }
+                            .buttonStyle(.plain)
+                                .tag(command.id)
                         }
-
-                        commandRow(command, isHighlighted: index == highlightedIndex)
-                            .id(index)
+                    } header: {
+                        Text(verbatim: group.localizedTitle)
                     }
                 }
-                .padding(.vertical, 6)
-            }
-            .frame(maxHeight: 340)
-            .onChange(of: highlightedIndex) { _, index in
-                proxy.scrollTo(index, anchor: .center)
             }
         }
+        .listStyle(.inset)
+        .frame(maxHeight: 340)
     }
 
-    private func commandRow(_ command: PaletteCommand, isHighlighted: Bool) -> some View {
-        Button {
-            run(command)
-        } label: {
-            HStack(spacing: 10) {
-                Image(systemName: command.symbolName)
-                    .font(.system(size: rowIconSize, weight: .medium))
-                    .foregroundStyle(isHighlighted ? Color.accentColor : .secondary)
-                    .frame(width: 20)
+    private var commandGroups: [PaletteCommand.Group] {
+        [.navigation, .action, .file]
+    }
 
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(verbatim: command.title)
-                        .lineLimit(1)
-                    if let subtitle = command.subtitle, !subtitle.isEmpty {
-                        Text(verbatim: subtitle)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
+    private var commandSelection: Binding<String?> {
+        Binding(
+            get: {
+                guard displayedCommands.indices.contains(highlightedIndex) else { return nil }
+                return displayedCommands[highlightedIndex].id
+            },
+            set: { commandID in
+                guard let commandID,
+                      let index = displayedCommands.firstIndex(where: { $0.id == commandID }) else {
+                    return
                 }
-                Spacer(minLength: 0)
+                highlightedIndex = index
             }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 7)
-            .background(
-                isHighlighted ? XunJianUI.Fill.selected : .clear,
-                in: RoundedRectangle(cornerRadius: XunJianUI.Radius.row, style: .continuous)
-            )
-            .xunjianAnimation(XunJianUI.feedbackAnimation, value: isHighlighted)
-            .contentShape(Rectangle())
+        )
+    }
+
+    private func commandRow(_ command: PaletteCommand) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: command.symbolName)
+                .font(.system(size: rowIconSize, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(verbatim: command.title)
+                    .lineLimit(1)
+                if let subtitle = command.subtitle, !subtitle.isEmpty {
+                    Text(verbatim: subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer(minLength: 0)
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 6)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
         .accessibilityLabel(Text(verbatim: command.subtitle.map {
             AppLanguage.joinedForAccessibility([command.title, $0])
         } ?? command.title))
-        .accessibilityAddTraits(isHighlighted ? [.isButton, .isSelected] : .isButton)
     }
 
     // MARK: - Commands
@@ -445,14 +451,6 @@ struct CommandPaletteView: View {
     }
 
     // MARK: - Behaviour
-
-    private func shouldShowGroupHeader(
-        at index: Int,
-        in visibleCommands: [PaletteCommand]
-    ) -> Bool {
-        guard index > 0 else { return true }
-        return visibleCommands[index].group != visibleCommands[index - 1].group
-    }
 
     private func moveHighlight(by offset: Int) {
         guard !displayedCommands.isEmpty else { return }

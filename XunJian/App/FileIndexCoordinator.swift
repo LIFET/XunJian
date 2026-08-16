@@ -17,6 +17,7 @@ import UserNotifications
 final class FileIndexCoordinator: ObservableObject {
     private struct FileDerivedIndexes: Sendable {
         let kindCounts: [FileKind: Int]
+        let filesByKind: [FileKind: [IndexedFile]]
         let byID: [String: IndexedFile]
         let orderByID: [String: Int]
         let idByPath: [String: String]
@@ -770,6 +771,17 @@ final class FileIndexCoordinator: ObservableObject {
         return try await database.fetchTextContent(forFileID: fileID)
     }
 
+    func textContentPrefix(
+        forFileID fileID: String,
+        maximumCharacters: Int
+    ) async throws -> String? {
+        guard let database else { throw FileIndexError.databaseUnavailable }
+        return try await database.fetchTextContentPrefix(
+            forFileID: fileID,
+            maximumCharacters: maximumCharacters
+        )
+    }
+
     // MARK: - Saved searches (N07)
 
     func saveSearch(
@@ -866,6 +878,12 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    func totalSize(of ids: Set<String>) -> Int64 {
+        ids.reduce(into: Int64(0)) { total, id in
+            total += filesByID[id]?.size ?? 0
+        }
+    }
+
     func fileCount(in category: FileCategory) -> Int {
         fileCountsByCategoryID[category.id] ?? 0
     }
@@ -877,6 +895,9 @@ final class FileIndexCoordinator: ObservableObject {
     /// F12: O(1) per-kind counts instead of scanning `files` once per kind on
     /// the home page (7 scans of up to 100k files each).
     private var fileCountsByKind: [FileKind: Int] = [:]
+    /// Pre-grouped once per index mutation so changing the visible file type
+    /// does not scan the complete library again.
+    private var filesByKind: [FileKind: [IndexedFile]] = [:]
     /// Same idea for categories: the overview draws one card per category, and
     /// counting by scanning `files` per card was O(categories × files).
     private var fileCountsByCategoryID: [UUID: Int] = [:]
@@ -887,6 +908,10 @@ final class FileIndexCoordinator: ObservableObject {
 
     func fileCount(for kind: FileKind) -> Int {
         fileCountsByKind[kind] ?? 0
+    }
+
+    func files(for kind: FileKind) -> [IndexedFile] {
+        filesByKind[kind] ?? []
     }
 
     /// Separate revisions keep a category-only edit from invalidating every
@@ -902,6 +927,7 @@ final class FileIndexCoordinator: ObservableObject {
         _ files: [IndexedFile]
     ) -> FileDerivedIndexes {
         var kindCounts: [FileKind: Int] = [:]
+        var groupedByKind: [FileKind: [IndexedFile]] = [:]
         var byID: [String: IndexedFile] = [:]
         var orderByID: [String: Int] = [:]
         var idByPath: [String: String] = [:]
@@ -913,6 +939,7 @@ final class FileIndexCoordinator: ObservableObject {
 
         for (index, file) in files.enumerated() {
             kindCounts[file.kind, default: 0] += 1
+            groupedByKind[file.kind, default: []].append(file)
             byID[file.id] = file
             orderByID[file.id] = index
             // `file.path` is already the canonical form: the scanner and
@@ -932,6 +959,7 @@ final class FileIndexCoordinator: ObservableObject {
         }
         return FileDerivedIndexes(
             kindCounts: kindCounts,
+            filesByKind: groupedByKind,
             byID: byID,
             orderByID: orderByID,
             idByPath: idByPath,
@@ -942,6 +970,7 @@ final class FileIndexCoordinator: ObservableObject {
     private func apply(_ derived: FileDerivedIndexes) {
         filesRevision &+= 1
         fileCountsByKind = derived.kindCounts
+        filesByKind = derived.filesByKind
         filesByID = derived.byID
         fileOrderByID = derived.orderByID
         fileIDByCanonicalPath = derived.idByPath
@@ -2762,7 +2791,8 @@ final class FileIndexCoordinator: ObservableObject {
                 upsertedFileIDs: scannedFiles.map(\.id),
                 removedFileIDs: removedSourceIDs
             )
-            guard scanGeneration == generation else { return }
+            try Task.checkCancellation()
+            guard scanGeneration == generation else { throw CancellationError() }
 
             if indexesFileContents && (forcesFullTextExtraction || !filesRequiringTextRefresh.isEmpty) {
                 hasStagedTextContents = true
@@ -2912,6 +2942,11 @@ final class FileIndexCoordinator: ObservableObject {
                     preservedUnscannedFileIDs: []
                 )
                 await refreshFiles(upsertedFileIDs: files.map(\.id), removedFileIDs: [])
+                try Task.checkCancellation()
+                guard scanGeneration == generation,
+                      scanningSourceIDs.contains(source.id) else {
+                    throw CancellationError()
+                }
                 successfulScopeCount += 1
                 wholeMacCompletedScopePaths.insert(FilePathCanonicalizer.path(scopeURL))
                 persistWholeMacScanCheckpoint()
@@ -2998,10 +3033,24 @@ final class FileIndexCoordinator: ObservableObject {
         includesHiddenFiles: Bool,
         excludedDirectoryNames: Set<String>
     ) -> Bool {
+        shouldPreserveUnscannedPath(
+            file.path,
+            canonicalSourceRootPath: canonicalSourceRootPath,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedDirectoryNames: excludedDirectoryNames
+        )
+    }
+
+    nonisolated static func shouldPreserveUnscannedPath(
+        _ filePath: String,
+        canonicalSourceRootPath: String,
+        includesHiddenFiles: Bool,
+        excludedDirectoryNames: Set<String>
+    ) -> Bool {
         let rootComponents = URL(
             fileURLWithPath: canonicalSourceRootPath
         ).pathComponents
-        let fileComponents = URL(fileURLWithPath: file.path).pathComponents
+        let fileComponents = URL(fileURLWithPath: filePath).pathComponents
         guard fileComponents.count > rootComponents.count,
               fileComponents.prefix(rootComponents.count).elementsEqual(rootComponents) else {
             return false
@@ -3241,10 +3290,23 @@ final class FileIndexCoordinator: ObservableObject {
             }
             var removedFileIDs = Set<String>()
             if !snapshot.scopes.isEmpty {
+                let canonicalRootPath = FilePathCanonicalizer.path(restored.url)
+                let includesHiddenFiles = self.includesHiddenFiles
+                let excludedDirectoryNames = ScanExclusions.builtIn.union(
+                    ScanExclusions.current()
+                )
                 removedFileIDs = try await database.reconcileFiles(
                     for: source.id,
                     scopes: snapshot.scopes,
-                    with: snapshot.files
+                    with: snapshot.files,
+                    preservesUnscannedPath: { path in
+                        Self.shouldPreserveUnscannedPath(
+                            path,
+                            canonicalSourceRootPath: canonicalRootPath,
+                            includesHiddenFiles: includesHiddenFiles,
+                            excludedDirectoryNames: excludedDirectoryNames
+                        )
+                    }
                 )
             }
             guard !snapshot.scopes.isEmpty

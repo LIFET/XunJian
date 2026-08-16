@@ -229,29 +229,10 @@ struct SettingsView: View {
                             ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            HStack(spacing: 10) {
-                                sourcePrimaryAction(source)
-                                if appModel.isScanning {
-                                    Button(AppLanguage.localized(
-                                        "暂停扫描",
-                                        english: "Pause Scan"
-                                    )) {
-                                        appModel.pauseWholeMacScan()
-                                    }
-                                } else if appModel.isWholeMacScanPaused {
-                                    Button(AppLanguage.localized(
-                                        "继续扫描",
-                                        english: "Resume Scan"
-                                    )) {
-                                        appModel.resumeWholeMacScan()
-                                    }
-                                    .buttonStyle(.borderedProminent)
-                                }
-                                Button(AppLanguage.localized(
-                                    "完全磁盘访问设置…",
-                                    english: "Full Disk Access Settings…"
-                                )) {
-                                    appModel.openFullDiskAccessSettings()
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 10) { wholeMacAuthorizedActions(source) }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    wholeMacAuthorizedActions(source)
                                 }
                             }
                         } else {
@@ -261,19 +242,10 @@ struct SettingsView: View {
                             ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
-                            HStack(spacing: 10) {
-                                Button(AppLanguage.localized(
-                                    "授权整台 Mac…",
-                                    english: "Authorize Entire Mac…"
-                                )) {
-                                    appModel.chooseWholeMacScope()
-                                }
-                                .buttonStyle(.borderedProminent)
-                                Button(AppLanguage.localized(
-                                    "打开完全磁盘访问设置…",
-                                    english: "Open Full Disk Access Settings…"
-                                )) {
-                                    appModel.openFullDiskAccessSettings()
+                            ViewThatFits(in: .horizontal) {
+                                HStack(spacing: 10) { wholeMacAuthorizationActions }
+                                VStack(alignment: .leading, spacing: 8) {
+                                    wholeMacAuthorizationActions
                                 }
                             }
                         }
@@ -361,6 +333,7 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .disabled(!appModel.isDatabaseAvailable)
+                            .accessibilityLabel(Text(verbatim: sourceToggleAccessibilityLabel(source)))
                             Button(
                                 AppLanguage.localized("移除…", english: "Remove…"),
                                 role: .destructive
@@ -385,6 +358,7 @@ struct SettingsView: View {
                             .toggleStyle(.switch)
                             .controlSize(.small)
                             .disabled(!appModel.isDatabaseAvailable)
+                            .accessibilityLabel(Text(verbatim: sourceToggleAccessibilityLabel(source)))
                             HStack(spacing: 8) {
                                 sourcePrimaryAction(source)
                                 Button(
@@ -515,15 +489,26 @@ struct SettingsView: View {
                             isRebuildingSearchIndex = false
                         }
                     } label: {
-                        if isRebuildingSearchIndex {
-                            ProgressView().controlSize(.small)
-                        } else {
+                        HStack(spacing: 6) {
+                            if isRebuildingSearchIndex {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .accessibilityHidden(true)
+                            }
                             Text(verbatim: AppLanguage.localized(
-                                "重建搜索索引",
-                                english: "Rebuild Search Index"
+                                isRebuildingSearchIndex ? "正在重建搜索索引…" : "重建搜索索引",
+                                english: isRebuildingSearchIndex
+                                    ? "Rebuilding Search Index…"
+                                    : "Rebuild Search Index"
                             ))
                         }
                     }
+                    .accessibilityLabel(AppLanguage.localized(
+                        isRebuildingSearchIndex ? "正在重建搜索索引" : "重建搜索索引",
+                        english: isRebuildingSearchIndex
+                            ? "Rebuilding Search Index"
+                            : "Rebuild Search Index"
+                    ))
                     .disabled(isRebuildingSearchIndex || !appModel.isDatabaseAvailable)
 
                     Text(verbatim: AppLanguage.localized(
@@ -708,6 +693,55 @@ struct SettingsView: View {
         customExclusions = normalized
         ScanExclusions.save(normalized)
         appModel.refreshAllSources()
+    }
+
+    @ViewBuilder
+    private func wholeMacAuthorizedActions(_ source: FileSource) -> some View {
+        sourcePrimaryAction(source)
+        if appModel.isScanning {
+            Button(AppLanguage.localized("暂停扫描", english: "Pause Scan")) {
+                appModel.pauseWholeMacScan()
+            }
+        } else if appModel.isWholeMacScanPaused {
+            Button(AppLanguage.localized("继续扫描", english: "Resume Scan")) {
+                appModel.resumeWholeMacScan()
+            }
+            .buttonStyle(.borderedProminent)
+        }
+        Button(AppLanguage.localized(
+            "完全磁盘访问设置…",
+            english: "Full Disk Access Settings…"
+        )) {
+            appModel.openFullDiskAccessSettings()
+        }
+    }
+
+    @ViewBuilder
+    private var wholeMacAuthorizationActions: some View {
+        Button(AppLanguage.localized(
+            "授权整台 Mac…",
+            english: "Authorize Entire Mac…"
+        )) {
+            appModel.chooseWholeMacScope()
+        }
+        .buttonStyle(.borderedProminent)
+        Button(AppLanguage.localized(
+            "打开完全磁盘访问设置…",
+            english: "Open Full Disk Access Settings…"
+        )) {
+            appModel.openFullDiskAccessSettings()
+        }
+    }
+
+    private func sourceToggleAccessibilityLabel(_ source: FileSource) -> String {
+        AppLanguage.localized(
+            source.enabled
+                ? "暂停索引“\(source.displayName)”"
+                : "恢复索引“\(source.displayName)”",
+            english: source.enabled
+                ? "Pause indexing “\(source.displayName)”"
+                : "Resume indexing “\(source.displayName)”"
+        )
     }
 
     private func sourceIdentity(_ source: FileSource) -> some View {

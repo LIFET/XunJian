@@ -24,9 +24,15 @@ struct AllFilesView: View {
     private var tableColumnCustomization = TableColumnCustomization<IndexedFile>()
     @AppStorage("allFiles.listScrollPosition") private var listScrollPosition = ""
     @AppStorage("allFiles.gridScrollPosition") private var gridScrollPosition = ""
-    /// Live grid scroll identity; persisted to `gridScrollPosition`
-    /// debounced (see `gridScrollPositionBinding`).
+    /// Live scroll identities stay in view state. Persisting every crossed row
+    /// wakes UserDefaults observers and is measurable on very large libraries,
+    /// so both modes write their settled position after a short debounce.
+    @State private var liveListScrollPosition: String?
     @State private var liveGridScrollPosition: String?
+    @State private var tableSelectedIDs: Set<String> = []
+    /// Only external/programmatic selection changes need to pierce the
+    /// equatable table shell. Native row clicks already update Table itself.
+    @State private var tableSelectionEpoch: UInt64 = 0
     @State private var scrollPositionPersistenceTask: Task<Void, Never>?
 
     // Manual filters (N02): a size floor and a modified-since date, applied
@@ -38,7 +44,6 @@ struct AllFilesView: View {
     // F03: toolbar rows grow with the text size setting instead of clipping
     // at a fixed 32pt.
     @ScaledMetric(relativeTo: .body) private var toolbarControlHeight = FileToolbarMetrics.controlHeight
-    @ScaledMetric(relativeTo: .body) private var overflowButtonSide = FileToolbarMetrics.iconButtonSide
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
@@ -66,6 +71,13 @@ struct AllFilesView: View {
         .onAppear {
             guard isVisible else { return }
             appModel.highlightQuery = appModel.searchText
+            if liveListScrollPosition == nil, !listScrollPosition.isEmpty {
+                liveListScrollPosition = listScrollPosition
+            }
+            if liveGridScrollPosition == nil, !gridScrollPosition.isEmpty {
+                liveGridScrollPosition = gridScrollPosition
+            }
+            tableSelectedIDs = appModel.selectedFileIDs
         }
         .onChange(of: isVisible) { _, visible in
             guard visible else { return }
@@ -81,20 +93,17 @@ struct AllFilesView: View {
         }
         .onChange(of: appModel.selectedFileID) { _, id in
             guard isVisible, let id else { return }
-            // Coalesce: arrow-key navigation changes the selection many
-            // times per second, and each @AppStorage write wakes the
-            // UserDefaults observers. Persist the settled position once.
-            scrollPositionPersistenceTask?.cancel()
-            let isListView = viewMode == .list
-            scrollPositionPersistenceTask = Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(500))
-                guard !Task.isCancelled else { return }
-                if isListView {
-                    listScrollPosition = id
-                } else {
-                    gridScrollPosition = id
-                }
+            if viewMode == .list {
+                liveListScrollPosition = id
+            } else {
+                liveGridScrollPosition = id
             }
+            scheduleScrollPositionPersistence(id, mode: viewMode)
+        }
+        .onChange(of: appModel.selectedFileIDs) { _, ids in
+            guard tableSelectedIDs != ids else { return }
+            tableSelectedIDs = ids
+            tableSelectionEpoch &+= 1
         }
         .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
             guard isVisible,
@@ -165,10 +174,11 @@ struct AllFilesView: View {
         Button {
             showsFilterPopover.toggle()
         } label: {
-            FileToolbarIconLabel(systemName: "line.3.horizontal.decrease.circle")
+            Image(systemName: "line.3.horizontal.decrease.circle")
                 .foregroundStyle(hasActiveManualFilter ? Color.accentColor : .primary)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
         .help(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
         .accessibilityLabel(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
         .popover(isPresented: $showsFilterPopover, arrowEdge: .bottom) {
@@ -347,21 +357,17 @@ struct AllFilesView: View {
             .disabled(!hasAIProvider || appModel.files.isEmpty || appModel.categories.isEmpty)
         } label: {
             if compact {
-                FileToolbarIconLabel(systemName: "sparkles")
+                Image(systemName: "sparkles")
             } else {
-                FileToolbarMenuLabel(
-                    title: appModel.activeAIProviderKind?.title
+                Label(
+                    appModel.activeAIProviderKind?.title
                         ?? AppLanguage.localized("AI", english: "AI"),
-                    systemName: "sparkles"
+                    systemImage: "sparkles"
                 )
             }
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
-        .frame(
-            width: compact ? FileToolbarMetrics.iconButtonSide : nil,
-            height: toolbarControlHeight
-        )
+        .menuStyle(.button)
+        .controlSize(.regular)
         .fixedSize()
         .accessibilityLabel(AppLanguage.localized("AI 功能", english: "AI Actions"))
     }
@@ -452,110 +458,51 @@ struct AllFilesView: View {
     }
 
     private var fileTypeMenu: some View {
-        Menu {
-            Button {
-                appModel.selectedKind = nil
-            } label: {
-                if appModel.selectedKind == nil {
-                    Label(
-                        AppLanguage.localized("所有类型", english: "All Types"),
-                        systemImage: "checkmark"
-                    )
-                } else {
-                    Text(AppLanguage.localized("所有类型", english: "All Types"))
-                }
-            }
-
-            ForEach(FileKind.allCases) { kind in
-                Button {
-                    appModel.selectedKind = kind
-                } label: {
-                    if appModel.selectedKind == kind {
-                        Label(kind.localizedTitle, systemImage: "checkmark")
-                    } else {
-                        Text(kind.localizedTitle)
-                    }
-                }
-            }
-        } label: {
-            FileToolbarPopupLabel(
-                title: appModel.selectedKind?.localizedTitle
-                    ?? AppLanguage.localized("所有类型", english: "All Types"),
-                width: FileToolbarMetrics.fileTypeWidth
-            )
+        Picker(
+            AppLanguage.localized("文件类型", english: "File Type"),
+            selection: $appModel.selectedKind
+        ) {
+            fileTypeChoices
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.fileTypeWidth)
         .fixedSize()
         .accessibilityLabel(AppLanguage.localized("文件类型", english: "File Type"))
     }
 
     private var sortMenu: some View {
-        Menu {
-            ForEach(availableSortOrders) { order in
-                Button {
-                    selectSortOrder(order)
-                } label: {
-                    if activeSortOrder == order {
-                        Label(order.localizedTitle, systemImage: "checkmark")
-                    } else {
-                        Text(order.localizedTitle)
-                    }
-                }
-            }
-        } label: {
-            FileToolbarPopupLabel(
-                title: activeSortOrder.localizedTitle,
-                width: FileToolbarMetrics.sortWidth(for: activeSortOrder)
-            )
+        Picker(
+            AppLanguage.localized("排序", english: "Sort"),
+            selection: activeSortOrderBinding
+        ) {
+            sortChoices
         }
-        .menuStyle(.borderlessButton)
-        .menuIndicator(.hidden)
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.sortWidth(for: activeSortOrder))
         .fixedSize()
         .accessibilityLabel(AppLanguage.localized("排序", english: "Sort"))
     }
 
     private var viewModeControl: some View {
-        HStack(spacing: 0) {
+        Picker(
+            AppLanguage.localized("显示方式", english: "View"),
+            selection: $viewMode
+        ) {
             ForEach(ViewMode.allCases) { mode in
-                Button {
-                    viewMode = mode
-                } label: {
-                    Image(systemName: mode.symbolName)
-                        .font(.system(size: FileToolbarMetrics.symbolSize, weight: .medium))
-                        .frame(
-                            width: FileToolbarMetrics.viewModeItemWidth,
-                            height: toolbarControlHeight - 2
-                        )
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(viewMode == mode ? Color.white : Color.primary)
-                .background {
-                    RoundedRectangle(
-                        cornerRadius: FileToolbarMetrics.innerCornerRadius,
-                        style: .continuous
-                    )
-                        .fill(
-                            viewMode == mode
-                                ? Color.accentColor
-                                : Color.clear
-                        )
-                }
-                .accessibilityLabel(
+                Label(
                     mode == .list
                         ? AppLanguage.localized("列表", english: "List")
-                        : AppLanguage.localized("图标", english: "Icons")
+                        : AppLanguage.localized("图标", english: "Icons"),
+                    systemImage: mode.symbolName
                 )
-                .accessibilityAddTraits(viewMode == mode ? .isSelected : [])
+                .tag(mode)
             }
         }
-        .padding(1)
-        .frame(
-            width: FileToolbarMetrics.viewModeWidth,
-            height: toolbarControlHeight
-        )
-        .fileToolbarSurface()
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: FileToolbarMetrics.viewModeWidth)
         .fixedSize()
     }
 
@@ -578,15 +525,10 @@ struct AllFilesView: View {
         Button {
             activeSortAscending.toggle()
         } label: {
-            FileToolbarIconLabel(
-                systemName: activeSortAscending ? "arrow.up" : "arrow.down"
-            )
+            Image(systemName: activeSortAscending ? "arrow.up" : "arrow.down")
         }
-        .buttonStyle(.plain)
-        .frame(
-            width: FileToolbarMetrics.iconButtonSide,
-            height: FileToolbarMetrics.iconButtonSide
-        )
+        .buttonStyle(.bordered)
+        .controlSize(.regular)
         .help(
             AppLanguage.localized(
                 activeSortAscending ? "升序" : "降序",
@@ -654,16 +596,16 @@ struct AllFilesView: View {
                 }
             }
         } label: {
-            FileToolbarIconLabel(systemName: "ellipsis")
+            Label(
+                AppLanguage.localized("更多工具", english: "More Tools"),
+                systemImage: "ellipsis"
+            )
         }
-        .menuStyle(.borderlessButton)
-        .frame(
-            width: overflowButtonSide,
-            height: overflowButtonSide
-        )
+        .menuStyle(.button)
+        .controlSize(.regular)
+        .labelStyle(.iconOnly)
         .help(AppLanguage.localized("更多工具", english: "More Tools"))
         .accessibilityLabel(AppLanguage.localized("更多工具", english: "More Tools"))
-        .menuIndicator(.hidden)
     }
 
     private func emptyState(files: [IndexedFile]) -> some View {
@@ -685,14 +627,12 @@ struct AllFilesView: View {
                 EquatableSnapshotList(
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
+                    selectionEpoch: tableSelectionEpoch,
                     layoutToken: FileTableLayout.snapshotLayoutToken(
-                        contentWidth: inspectorIndependentLayoutWidth,
+                        contentWidth: contentWidth,
                         viewMode: viewMode
                     )
                 ) {
-                    // One stable Table tree. Narrow widths keep the 640pt
-                    // readable canvas and clip from the trailing edge
-                    // instead of swapping in a horizontal ScrollView.
                     fileTable(files: files)
                 }
                 .equatable()
@@ -700,8 +640,9 @@ struct AllFilesView: View {
                 EquatableSnapshotList(
                     signature: appModel.browseSnapshotSignature,
                     viewMode: viewMode,
+                    selectionEpoch: 0,
                     layoutToken: FileTableLayout.snapshotLayoutToken(
-                        contentWidth: inspectorIndependentLayoutWidth,
+                        contentWidth: contentWidth,
                         viewMode: viewMode
                     )
                 ) {
@@ -927,7 +868,13 @@ struct AllFilesView: View {
     }
 
     private var listScrollPositionBinding: Binding<String?> {
-        persistedScrollPositionBinding(for: $listScrollPosition)
+        Binding(
+            get: { liveListScrollPosition },
+            set: { newValue in
+                liveListScrollPosition = newValue
+                scheduleScrollPositionPersistence(newValue, mode: .list)
+            }
+        )
     }
 
     private var gridScrollPositionBinding: Binding<String?> {
@@ -938,28 +885,25 @@ struct AllFilesView: View {
                 // written debounced so scrolling the grid does not hammer
                 // UserDefaults (and its observers) per crossed row.
                 liveGridScrollPosition = newValue
-                scheduleGridScrollPersistence()
+                scheduleScrollPositionPersistence(newValue, mode: .grid)
             }
         )
     }
 
-    private func scheduleGridScrollPersistence() {
+    private func scheduleScrollPositionPersistence(
+        _ value: String?,
+        mode: ViewMode
+    ) {
         scrollPositionPersistenceTask?.cancel()
-        let value = liveGridScrollPosition
         scrollPositionPersistenceTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            gridScrollPosition = value ?? ""
+            if mode == .list {
+                listScrollPosition = value ?? ""
+            } else {
+                gridScrollPosition = value ?? ""
+            }
         }
-    }
-
-    private func persistedScrollPositionBinding(
-        for storedValue: Binding<String>
-    ) -> Binding<String?> {
-        Binding(
-            get: { storedValue.wrappedValue.isEmpty ? nil : storedValue.wrappedValue },
-            set: { storedValue.wrappedValue = $0 ?? "" }
-        )
     }
 
     private var hasActiveSearch: Bool {
@@ -1054,7 +998,7 @@ struct AllFilesView: View {
         // filter/sort result is computed. Clear only the command target so a
         // delayed Select All or destructive action cannot act on those stale
         // rows during that short transition.
-        appModel.updateCommandTargetFiles([])
+        appModel.clearCommandTargetFilesKeepingPagination()
 
         // Burst settle: when only the file index moved (not query, search
         // results, sort, or filters), wait out FSEvents / iCloud metadata
@@ -1072,11 +1016,12 @@ struct AllFilesView: View {
                   displayedFilesRefreshKey.signature == signature else { return }
         }
 
-        let indexedFiles = appModel.files
+        let selectedKind = appModel.selectedKind
+        let indexedFiles = selectedKind.map(appModel.files(for:)) ?? appModel.files
+        let indexedFilesAreKindFiltered = selectedKind != nil
         let aiSearchResults = appModel.aiSearchResults
         let searchResults = appModel.searchResults
         let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let selectedKind = appModel.selectedKind
         let requestedSortOrder = activeSortOrder
         let requestedAscending = activeSortAscending
         let minSize = minimumSizeBytes
@@ -1089,7 +1034,9 @@ struct AllFilesView: View {
         let computed = await withTaskCancellationHandler {
             await Task.detached(priority: .userInitiated) {
                 let sourceFiles: [IndexedFile]
+                let sourceIsKindFiltered: Bool
                 if let aiSearchResults {
+                    sourceIsKindFiltered = false
                     if query.isEmpty {
                         sourceFiles = aiSearchResults
                     } else {
@@ -1100,22 +1047,33 @@ struct AllFilesView: View {
                     }
                 } else if query.isEmpty {
                     sourceFiles = indexedFiles
+                    sourceIsKindFiltered = indexedFilesAreKindFiltered
                 } else {
                     sourceFiles = searchResults ?? []
+                    sourceIsKindFiltered = false
                 }
-                let filteredFiles = sourceFiles.filter { file in
-                    guard selectedKind.map({ file.kind == $0 }) ?? true else { return false }
-                    if minSize > 0, file.size < minSize { return false }
-                    if let minDate {
-                        guard let modifiedAt = file.modifiedAt,
-                              modifiedAt >= minDate else { return false }
+                let needsFiltering = (!sourceIsKindFiltered && selectedKind != nil)
+                    || minSize > 0
+                    || minDate != nil
+                let filteredFiles = needsFiltering
+                    ? sourceFiles.filter { file in
+                        guard sourceIsKindFiltered
+                                || selectedKind.map({ file.kind == $0 }) ?? true else {
+                            return false
+                        }
+                        if minSize > 0, file.size < minSize { return false }
+                        if let minDate {
+                            guard let modifiedAt = file.modifiedAt,
+                                  modifiedAt >= minDate else { return false }
+                        }
+                        return true
                     }
-                    return true
-                }
+                    : sourceFiles
                 guard !cancellationFlag.isCancelled else {
                     return (
                         files: [IndexedFile](),
                         orderedIDs: [String](),
+                        idIndex: [String: Int](),
                         visibleIDs: Set<String>()
                     )
                 }
@@ -1129,6 +1087,11 @@ struct AllFilesView: View {
                 return (
                     files: sorted,
                     orderedIDs: orderedIDs,
+                    idIndex: Dictionary(
+                        uniqueKeysWithValues: orderedIDs.enumerated().map {
+                            ($0.element, $0.offset)
+                        }
+                    ),
                     visibleIDs: Set(orderedIDs)
                 )
             }.value
@@ -1142,6 +1105,7 @@ struct AllFilesView: View {
         appModel.publishBrowseSnapshot(
             result,
             orderedIDs: computed.orderedIDs,
+            idIndex: computed.idIndex,
             visibleIDs: computed.visibleIDs,
             signature: signature,
             userSignature: userSignature
@@ -1156,12 +1120,12 @@ struct AllFilesView: View {
 
     private func fileTable(files: [IndexedFile]) -> some View {
         Table(
-            files,
+            of: IndexedFile.self,
             selection: tableSelection,
             columnCustomization: $tableColumnCustomization
         ) {
             TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
-                selectableTableCell(file: file) {
+                plainTableCell {
                     HStack(spacing: 8) {
                         FileThumbnail(file: file, size: 24)
                             .accessibilityHidden(true)
@@ -1175,37 +1139,37 @@ struct AllFilesView: View {
                     .accessibilityLabel(Text(verbatim: rowAccessibilityLabel(for: file)))
                 }
             }
-            .width(min: 150, ideal: nameColumnWidth, max: nameColumnWidth)
+            .width(min: 150, ideal: 280, max: 420)
             .customizationID("name")
 
             TableColumn(AppLanguage.localized("分类", english: "Category")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     FileCategoryNamesLabel(fileID: file.id)
                 }
             }
-            .width(min: 45, ideal: categoryColumnWidth, max: categoryColumnWidth)
+            .width(min: 45, ideal: 90, max: 160)
             .customizationID("category")
 
             TableColumn(AppLanguage.localized("类型", english: "Kind")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     Text(file.kind.localizedTitle)
                         .lineLimit(1)
                 }
             }
-            .width(min: 45, ideal: typeColumnWidth, max: typeColumnWidth)
+            .width(min: 45, ideal: 75, max: 120)
             .customizationID("type")
 
             TableColumn(AppLanguage.localized("大小", english: "Size")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     Text(ByteFormatting.string(forByteCount: file.size))
                         .lineLimit(1)
                 }
             }
-            .width(min: 50, ideal: sizeColumnWidth, max: sizeColumnWidth)
+            .width(min: 50, ideal: 75, max: 110)
             .customizationID("size")
 
             TableColumn(AppLanguage.localized("修改时间", english: "Date Modified")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     if let modifiedAt = file.modifiedAt {
                         Text(finderDateFormatter.string(from: modifiedAt))
                     } else {
@@ -1213,14 +1177,14 @@ struct AllFilesView: View {
                     }
                 }
             }
-            .width(min: 90, ideal: modifiedColumnWidth, max: modifiedColumnWidth)
+            .width(min: 90, ideal: 135, max: 180)
             .customizationID("modified")
 
             // Optional columns (N18). Hidden by default so the six-column
             // layout and its compression thresholds stay unchanged; users opt
             // in from the table header's context menu.
             TableColumn(AppLanguage.localized("创建时间", english: "Date Created")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     if let createdAt = file.createdAt {
                         Text(finderDateFormatter.string(from: createdAt))
                     } else {
@@ -1228,37 +1192,48 @@ struct AllFilesView: View {
                     }
                 }
             }
-            .width(min: 90, ideal: modifiedColumnWidth, max: modifiedColumnWidth)
+            .width(min: 90, ideal: 135, max: 180)
             .customizationID("created")
             .defaultVisibility(.hidden)
 
             // Read-only Finder metadata (N17): shown here, never written back.
             TableColumn(AppLanguage.localized("标签", english: "Tags")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     FinderTagsLabel(file: file)
                 }
             }
-            .width(min: 60, ideal: categoryColumnWidth, max: categoryColumnWidth)
+            .width(min: 60, ideal: 90, max: 160)
             .customizationID("finderTags")
             .defaultVisibility(.hidden)
 
             TableColumn(AppLanguage.localized("位置", english: "Where")) { file in
-                plainTableCell {
+                plainTableCell(accessibilityHidden: true) {
                     Text(file.parentPath)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
             }
-            .width(min: 80, ideal: locationColumnWidth, max: locationColumnWidth)
+            .width(min: 80, ideal: 200, max: 360)
             .customizationID("location")
+        } rows: {
+            ForEach(files) { file in
+                // Keep drag support at the native table-row layer. Putting
+                // gestures on the name cell creates a SwiftUI hit-testing
+                // surface that prevents NSTableView from receiving clicks.
+                TableRow(file)
+                    .draggable(file.url)
+            }
+        }
+        .contextMenu(forSelectionType: String.self) { selection in
+            if let file = tableFile(for: selection) {
+                FileContextMenu(file: file)
+            }
+        } primaryAction: { selection in
+            guard let file = tableFile(for: selection) else { return }
+            doubleClickBehavior.perform(on: file, using: appModel)
         }
         .scrollPosition(id: listScrollPositionBinding)
-        .frame(
-            minWidth: FileTableLayout.minimumWidth(contentWidth: contentWidth),
-            alignment: .leading
-        )
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-        .clipped()
+        .frame(maxHeight: .infinity, alignment: .leading)
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
         .fileListKeyboardNavigation(
@@ -1269,69 +1244,46 @@ struct AllFilesView: View {
         )
     }
 
-    /// Cell wrapper without per-cell interaction modifiers: the name column
-    /// carries double-tap/context menu/drag; other columns stay plain so
-    /// a 100k-row table does not pay four interaction modifiers per cell per
-    /// column. Row selection still comes from the Table binding.
+    /// Cell wrapper without per-cell interaction modifiers. Selection and
+    /// row actions stay at the native Table/TableRow layers so a 100k-row
+    /// table does not pay extra gesture modifiers per cell and the full name
+    /// column remains clickable.
     private func plainTableCell<Content: View>(
+        accessibilityHidden: Bool = false,
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
+            .accessibilityHidden(accessibilityHidden)
     }
 
-    private func selectableTableCell<Content: View>(
-        file: IndexedFile,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        Button {
-            let clickCount = NSApplication.shared.currentEvent?.clickCount ?? 1
-            if clickCount >= 2 {
-                if !appModel.selectedFileIDs.contains(file.id) {
-                    appModel.selectedFileID = file.id
-                }
-                doubleClickBehavior.perform(on: file, using: appModel)
-                return
-            }
-            let modifiers = NSEvent.modifierFlags
-            let command = modifiers.contains(.command)
-            let shift = modifiers.contains(.shift)
-            guard FileBrowseSelection.shouldPublishSelectionChange(
-                fileID: file.id,
-                selectedIDs: appModel.selectedFileIDs,
-                command: command,
-                shift: shift
-            ) else { return }
-            appModel.selectDisplayedFile(
-                file.id,
-                inIDs: appModel.browseSnapshotIDs,
-                command: command,
-                shift: shift,
-                idIndex: appModel.browseSnapshotIDIndex
-            )
-        } label: {
-            content()
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
+    private func tableFile(for selection: Set<String>) -> IndexedFile? {
+        if let selectedFileID = appModel.selectedFileID,
+           selection.contains(selectedFileID),
+           let selectedFile = appModel.index.file(id: selectedFileID) {
+            return selectedFile
         }
-        .buttonStyle(.plain)
-            .contextMenu {
-                FileContextMenu(file: file)
-            }
-            // Drag out to Finder or another app (F06): the URL item provider
-            // lets macOS move/copy the real file on drop.
-            .draggable(file.url)
+        guard let fileID = selection.first else { return nil }
+        return appModel.index.file(id: fileID)
     }
 
     /// Table's native selection is the only click path. Same-set writes are
     /// dropped so `@Published` does not fire twice for one click.
     private var tableSelection: Binding<Set<String>> {
         Binding(
-            get: { appModel.selectedFileIDs },
+            get: { tableSelectedIDs },
             set: { newValue in
-                guard newValue != appModel.selectedFileIDs else { return }
-                appModel.selectedFileIDs = newValue
+                guard newValue != tableSelectedIDs else { return }
+                tableSelectedIDs = newValue
+                let modifiers = NSApp.currentEvent?.modifierFlags ?? []
+                appModel.applyNativeTableSelection(
+                    newValue,
+                    orderedIDs: appModel.browseSnapshotIDs,
+                    idIndex: appModel.browseSnapshotIDIndex,
+                    command: modifiers.contains(.command),
+                    shift: modifiers.contains(.shift)
+                )
             }
         )
     }
@@ -1351,40 +1303,6 @@ struct AllFilesView: View {
             parts.append(categoryNames.joined(separator: AppLanguage.listSeparator))
         }
         return AppLanguage.joinedForAccessibility(parts)
-    }
-
-    private var tableColumnCompression: CGFloat {
-        let start = XunJianUI.Breakpoint.tableCompressionStart
-        let end = XunJianUI.Breakpoint.tableCompressionEnd
-        return min(max((contentWidth - start) / (end - start), 0), 1)
-    }
-
-    private func compressedColumnWidth(minimum: CGFloat, ideal: CGFloat) -> CGFloat {
-        minimum + ((ideal - minimum) * tableColumnCompression)
-    }
-
-    private var nameColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 180, ideal: 280)
-    }
-
-    private var categoryColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 55, ideal: 90)
-    }
-
-    private var typeColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 55, ideal: 75)
-    }
-
-    private var sizeColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 60, ideal: 75)
-    }
-
-    private var modifiedColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 105, ideal: 135)
-    }
-
-    private var locationColumnWidth: CGFloat {
-        compressedColumnWidth(minimum: 110, ideal: 200)
     }
 
     private func fileGrid(files: [IndexedFile]) -> some View {
@@ -1436,14 +1354,6 @@ struct AllFilesView: View {
             shift: shift,
             idIndex: appModel.browseSnapshotIDIndex
         )
-    }
-
-    /// The Inspector changes only the detail column width. Using a width
-    /// derived from the whole window keeps the large snapshot identity stable
-    /// when that panel opens or closes, while real window resizing can still
-    /// cross the coarse responsive tiers.
-    private var inspectorIndependentLayoutWidth: CGFloat {
-        max(0, windowWidth - 220)
     }
 
     private func openGridFile(_ file: IndexedFile) {
@@ -1536,17 +1446,20 @@ enum DisplayedFilesRefreshPolicy {
 private struct EquatableSnapshotList<Content: View>: View, Equatable {
     let signature: Int?
     let viewMode: FileBrowseViewMode
+    let selectionEpoch: UInt64
     let layoutToken: Int
     let content: () -> Content
 
     init(
         signature: Int?,
         viewMode: FileBrowseViewMode,
+        selectionEpoch: UInt64,
         layoutToken: Int,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature
         self.viewMode = viewMode
+        self.selectionEpoch = selectionEpoch
         self.layoutToken = layoutToken
         self.content = content
     }
@@ -1554,6 +1467,7 @@ private struct EquatableSnapshotList<Content: View>: View, Equatable {
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.signature == rhs.signature
             && lhs.viewMode == rhs.viewMode
+            && lhs.selectionEpoch == rhs.selectionEpoch
             && lhs.layoutToken == rhs.layoutToken
     }
 

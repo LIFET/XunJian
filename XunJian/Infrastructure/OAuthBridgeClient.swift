@@ -52,11 +52,17 @@ enum OAuthBridgeClientError: LocalizedError, Equatable, Sendable {
 actor OAuthBridgeClient: OAuthBridgeServicing {
     static let shared = OAuthBridgeClient()
 
+    enum ConnectionLane: Hashable, Sendable {
+        case shared
+        case codex
+        case grok
+    }
+
     private let serviceName: String
     private let codeSigningRequirementOverride: String?
     private let helperURLOverride: URL?
-    private var connection: NSXPCConnection?
-    private var connectionGeneration: UUID?
+    private var connections: [ConnectionLane: NSXPCConnection] = [:]
+    private var connectionGenerations: [ConnectionLane: UUID] = [:]
 
     init(
         serviceName: String = OAuthBridgeConstants.serviceName,
@@ -211,25 +217,26 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
             arguments: arguments,
             protocolVersion: protocolVersion
         )
+        let lane = Self.connectionLane(for: request)
         let response: OAuthBridgeResponse
         do {
-            response = try await send(request)
+            response = try await send(request, lane: lane)
         } catch {
-            invalidate()
+            invalidate(lane)
             throw error
         }
 
         guard response.protocolVersion == OAuthBridgeConstants.protocolVersion else {
-            invalidate()
+            invalidate(lane)
             throw OAuthBridgeClientError.protocolMismatch
         }
         guard response.requestID == request.requestID else {
-            invalidate()
+            invalidate(lane)
             throw OAuthBridgeClientError.requestMismatch
         }
         if let error = response.error, response.result == nil {
             guard Self.isValidServiceError(error) else {
-                invalidate()
+                invalidate(lane)
                 throw OAuthBridgeClientError.invalidResponse
             }
             throw OAuthBridgeClientError.service(error)
@@ -237,16 +244,31 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
         guard response.error == nil,
               let result = response.result,
               Self.resultIsValid(result, for: request) else {
-            invalidate()
+            invalidate(lane)
             throw OAuthBridgeClientError.invalidResponse
         }
         return result
     }
 
     func invalidate() {
+        let activeConnections = Array(connections.values)
+        connections.removeAll()
+        connectionGenerations.removeAll()
+        activeConnections.forEach { $0.invalidate() }
+    }
+
+    static func connectionLane(for request: OAuthBridgeRequest) -> ConnectionLane {
+        switch request.arguments?.provider {
+        case .codex: .codex
+        case .grok: .grok
+        case nil: .shared
+        }
+    }
+
+    private func invalidate(_ lane: ConnectionLane) {
+        let connection = connections.removeValue(forKey: lane)
+        connectionGenerations.removeValue(forKey: lane)
         connection?.invalidate()
-        connection = nil
-        connectionGeneration = nil
     }
 
     static func argumentsAreValid(
@@ -467,10 +489,13 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
             && !error.message.contains("\r")
     }
 
-    private func send(_ request: OAuthBridgeRequest) async throws -> OAuthBridgeResponse {
+    private func send(
+        _ request: OAuthBridgeRequest,
+        lane: ConnectionLane
+    ) async throws -> OAuthBridgeResponse {
         let requestData = try OAuthBridgeCodec.encode(request)
-        let connection = try connection ?? makeConnection()
-        self.connection = connection
+        let connection = try connections[lane] ?? makeConnection(lane: lane)
+        connections[lane] = connection
 
         let gate = OAuthBridgeReplyGate()
         let responseData: Data
@@ -510,9 +535,9 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
             // handler is delivered asynchronously; without this synchronous
             // detach, a request started immediately after an alert closes can
             // reuse the already-invalid connection and fail at its first RPC.
-            if self.connection === connection {
-                self.connection = nil
-                connectionGeneration = nil
+            if connections[lane] === connection {
+                connections.removeValue(forKey: lane)
+                connectionGenerations.removeValue(forKey: lane)
             }
             connection.invalidate()
             throw error
@@ -525,7 +550,7 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
         }
     }
 
-    private func makeConnection() throws -> NSXPCConnection {
+    private func makeConnection(lane: ConnectionLane) throws -> NSXPCConnection {
         let applicationURL = Bundle.main.bundleURL
         let helperURL = helperURLOverride ?? applicationURL
             .appending(
@@ -542,23 +567,23 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
 
         let connection = NSXPCConnection(serviceName: serviceName)
         let generation = UUID()
-        connectionGeneration = generation
+        connectionGenerations[lane] = generation
         connection.remoteObjectInterface = NSXPCInterface(with: OAuthBridgeXPCProtocol.self)
         connection.setCodeSigningRequirement(requirement)
         connection.interruptionHandler = { [weak self] in
-            Task { await self?.dropConnection(generation: generation) }
+            Task { await self?.dropConnection(lane: lane, generation: generation) }
         }
         connection.invalidationHandler = { [weak self] in
-            Task { await self?.dropConnection(generation: generation) }
+            Task { await self?.dropConnection(lane: lane, generation: generation) }
         }
         connection.activate()
         return connection
     }
 
-    private func dropConnection(generation: UUID) {
-        guard connectionGeneration == generation else { return }
-        connection = nil
-        connectionGeneration = nil
+    private func dropConnection(lane: ConnectionLane, generation: UUID) {
+        guard connectionGenerations[lane] == generation else { return }
+        connections.removeValue(forKey: lane)
+        connectionGenerations.removeValue(forKey: lane)
     }
 }
 

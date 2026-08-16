@@ -14,7 +14,11 @@
   <img alt="License" src="https://img.shields.io/badge/License-MIT-2ea44f">
 </p>
 
-> **项目状态：积极开发中。** 当前代码适合本地构建和测试，尚未发布正式签名安装包。请勿把 Debug 构建当作稳定版本分发。
+> **项目状态：公开预览。** 当前仍在积极开发；请优先使用经过 Developer ID 签名和 Apple 公证的发布包，不要分发 Debug 构建。
+
+## 下载
+
+前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载 `寻简-0.1.0-macOS.dmg`。发布包为 Universal App，支持 Apple silicon 与 Intel Mac，要求 macOS 14 或更高版本。
 
 ## 为什么做寻简
 

@@ -61,30 +61,27 @@ struct FileInspectorView: View {
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.borderedProminent)
-                            Button {
-                                appModel.quickLook(file)
-                            } label: {
-                                Image(systemName: "eye")
-                                    .frame(width: actionIconSide, height: actionIconSide)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.bordered)
-                            .help(AppLanguage.localized("预览", english: "Preview"))
-                            .accessibilityLabel(AppLanguage.localized("预览", english: "Preview"))
-                            Button {
-                                appModel.showInFinder(file)
-                            } label: {
-                                Image(systemName: "finder")
-                                    .frame(width: actionIconSide, height: actionIconSide)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.bordered)
-                            .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
-                            .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
+                            ControlGroup {
+                                Button {
+                                    appModel.quickLook(file)
+                                } label: {
+                                    Image(systemName: "eye")
+                                        .frame(width: actionIconSide, height: actionIconSide)
+                                        .contentShape(Rectangle())
+                                }
+                                .help(AppLanguage.localized("预览", english: "Preview"))
+                                .accessibilityLabel(AppLanguage.localized("预览", english: "Preview"))
+                                Button {
+                                    appModel.showInFinder(file)
+                                } label: {
+                                    Image(systemName: "finder")
+                                        .frame(width: actionIconSide, height: actionIconSide)
+                                        .contentShape(Rectangle())
+                                }
+                                .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
+                                .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
 
-                            // Keep secondary AI actions in one stable control
-                            // so the inspector's 260 pt minimum width never
-                            // forces the primary action row to overflow.
+                            }
                             if appModel.activeAIProviderKind != nil {
                                 Menu {
                                     Button {
@@ -108,7 +105,6 @@ struct FileInspectorView: View {
                                 } label: {
                                     Image(systemName: "sparkles")
                                         .frame(width: actionIconSide, height: actionIconSide)
-                                        .contentShape(Rectangle())
                                 }
                                 .menuStyle(.borderlessButton)
                                 .menuIndicator(.hidden)
@@ -206,10 +202,8 @@ struct FileInspectorView: View {
 
                         Divider()
 
-                        VStack(alignment: .leading, spacing: 14) {
-                            Text(AppLanguage.localized("信息", english: "Information"))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
+                        GroupBox {
+                            VStack(alignment: .leading, spacing: 14) {
                             detail(
                                 AppLanguage.localized("类型", english: "Kind"),
                                 value: file.kind.localizedTitle
@@ -240,32 +234,22 @@ struct FileInspectorView: View {
                                     value: finderTags.joined(separator: AppLanguage.listSeparator)
                                 )
                             }
-                        }
-                        .padding(14)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(
-                            XunJianUI.Fill.quiet,
-                            in: RoundedRectangle(
-                                cornerRadius: XunJianUI.Radius.card,
-                                style: .continuous
+                            }
+                        } label: {
+                            Label(
+                                AppLanguage.localized("信息", english: "Information"),
+                                systemImage: "info.circle"
                             )
-                        )
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
 
                         // N08: inline text preview with search-term
                         // highlighting, so the user can confirm a match
                         // without leaving the app.
                         if file.kind.supportsTextExtraction {
                             Divider()
-                            VStack(alignment: .leading, spacing: 10) {
-                                Text(
-                                    AppLanguage.localized(
-                                        "内容预览",
-                                        english: "Content Preview"
-                                    )
-                                )
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.secondary)
-
+                            GroupBox {
+                                VStack(alignment: .leading, spacing: 10) {
                                 if isLoadingPreview {
                                     ProgressView()
                                         .controlSize(.small)
@@ -331,16 +315,14 @@ struct FileInspectorView: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                 }
-                            }
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(
-                                XunJianUI.Fill.quiet,
-                                in: RoundedRectangle(
-                                    cornerRadius: XunJianUI.Radius.card,
-                                    style: .continuous
+                                }
+                            } label: {
+                                Label(
+                                    AppLanguage.localized("内容预览", english: "Content Preview"),
+                                    systemImage: "doc.text.magnifyingglass"
                                 )
-                            )
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
                     .padding(20)
@@ -386,7 +368,10 @@ struct FileInspectorView: View {
             isLoadingPreview = true
             defer { isLoadingPreview = false }
             do {
-                let text = try await appModel.fetchTextContent(forFileID: file.id)
+                let text = try await appModel.fetchInspectorPreviewText(
+                    forFileID: file.id,
+                    maximumCharacters: Self.maximumInlinePreviewCharacters
+                )
                 guard !Task.isCancelled, self.file?.id == file.id else { return }
                 let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let resolved = trimmed.isEmpty ? nil : text
@@ -443,13 +428,13 @@ struct FileInspectorView: View {
     }
 
     private var multiSelectInspector: some View {
-        let files = appModel.selectedFiles
-        let totalSize = files.reduce(Int64(0)) { $0 + $1.size }
+        let fileCount = appModel.selectedFileIDs.count
+        let totalSize = appModel.selectedFileTotalSize
         return ContentUnavailableView {
             Label(
                 AppLanguage.localized(
-                    "已选择 \(files.count) 项",
-                    english: "\(files.count) Selected"
+                    "已选择 \(fileCount) 项",
+                    english: "\(fileCount) Selected"
                 ),
                 systemImage: "checkmark.circle"
             )
@@ -490,10 +475,7 @@ struct FileInspectorView: View {
         lineLimit: Int? = nil,
         help: String? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(verbatim: title)
-                .font(.caption)
-                .foregroundStyle(.secondary)
+        LabeledContent {
             Group {
                 if let help {
                     Text(verbatim: value)
@@ -506,6 +488,10 @@ struct FileInspectorView: View {
                 .lineLimit(lineLimit)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
+        } label: {
+            Text(verbatim: title)
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

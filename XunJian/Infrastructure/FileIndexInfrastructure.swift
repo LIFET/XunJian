@@ -1235,7 +1235,8 @@ actor FileIndexDatabase {
     func reconcileFiles(
         for sourceID: UUID,
         scopes: [FileIndexScope],
-        with files: [IndexedFile]
+        with files: [IndexedFile],
+        preservesUnscannedPath: (@Sendable (String) -> Bool)? = nil
     ) throws -> Set<String> {
         guard !scopes.isEmpty else { return [] }
         guard files.allSatisfy({ $0.sourceID == sourceID }) else {
@@ -1244,16 +1245,16 @@ actor FileIndexDatabase {
 
         var removedFileIDs = Set<String>()
         try transaction {
-            var existingFileIDs: Set<String> = []
+            var existingFilePaths: [String: String] = [:]
             // Two hoisted, index-seekable statements instead of one prepared
             // per scope with an OR (which defeats the range seek and scans
             // every source row per scope).
             let exactStatement = try prepare(
-                "SELECT id FROM files WHERE source_id = ? AND path = ?;"
+                "SELECT id, path FROM files WHERE source_id = ? AND path = ?;"
             )
             defer { sqlite3_finalize(exactStatement) }
             let prefixStatement = try prepare(
-                "SELECT id FROM files WHERE source_id = ? AND path LIKE ? ESCAPE '\\';"
+                "SELECT id, path FROM files WHERE source_id = ? AND path LIKE ? ESCAPE '\\';"
             )
             defer { sqlite3_finalize(prefixStatement) }
 
@@ -1263,7 +1264,8 @@ actor FileIndexDatabase {
                 try bind(sourceID.uuidString, at: 1, to: exactStatement)
                 try bind(scope.path, at: 2, to: exactStatement)
                 while sqlite3_step(exactStatement) == SQLITE_ROW {
-                    existingFileIDs.insert(text(exactStatement, column: 0))
+                    existingFilePaths[text(exactStatement, column: 0)] =
+                        text(exactStatement, column: 1)
                 }
 
                 if scope.includesDescendants {
@@ -1279,14 +1281,18 @@ actor FileIndexDatabase {
                         to: prefixStatement
                     )
                     while sqlite3_step(prefixStatement) == SQLITE_ROW {
-                        existingFileIDs.insert(text(prefixStatement, column: 0))
+                        existingFilePaths[text(prefixStatement, column: 0)] =
+                            text(prefixStatement, column: 1)
                     }
                 }
             }
 
             let filesByID = Dictionary(files.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
             let incomingFileIDs = Set(filesByID.keys)
-            let staleFileIDs = existingFileIDs.subtracting(incomingFileIDs)
+            let staleFileIDs = Set(existingFilePaths.keys).subtracting(incomingFileIDs).filter {
+                guard let path = existingFilePaths[$0] else { return true }
+                return preservesUnscannedPath?(path) != true
+            }
 
             let deleteSearchStatement = try prepare(
                 "DELETE FROM file_search WHERE file_id = ?;"
@@ -1529,6 +1535,27 @@ actor FileIndexDatabase {
         guard sqlite3_column_type(statement, 0) != SQLITE_NULL else {
             return nil
         }
+        return text(statement, column: 0)
+    }
+
+    func fetchTextContentPrefix(
+        forFileID fileID: String,
+        maximumCharacters: Int
+    ) throws -> String? {
+        guard maximumCharacters > 0 else { return nil }
+        let statement = try prepare(
+            "SELECT substr(text_content, 1, ?) FROM files WHERE id = ? LIMIT 1;"
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(Int64(maximumCharacters), at: 1, to: statement)
+        try bind(fileID, at: 2, to: statement)
+
+        let result = sqlite3_step(statement)
+        if result == SQLITE_DONE { return nil }
+        guard result == SQLITE_ROW else {
+            throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
+        }
+        guard sqlite3_column_type(statement, 0) != SQLITE_NULL else { return nil }
         return text(statement, column: 0)
     }
 

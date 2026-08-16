@@ -100,6 +100,22 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(result.map(\.id), [visible.id])
     }
 
+    @MainActor
+    func testClearingCommandTargetDuringRefreshKeepsPaginationOwnership() {
+        let model = AppModel()
+        let file = makeFile(name: "page.pdf", path: "/docs/page.pdf")
+        model.updateCommandTargetFiles(
+            [file],
+            usesGlobalSearchPagination: true
+        )
+
+        model.clearCommandTargetFilesKeepingPagination()
+
+        XCTAssertTrue(model.hasPublishedCommandTarget)
+        XCTAssertTrue(model.commandTargetUsesGlobalSearchPagination)
+        XCTAssertTrue(model.commandTargetFiles.isEmpty)
+    }
+
     func testModifiedDateLowerBoundExcludesFilesWithoutModifiedDate() {
         let missingDate = makeFile(
             name: "unknown.pdf",
@@ -329,13 +345,16 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(DuplicateCleanup.filesToTrash(keepingNewestIn: [left, right]).map(\.path), ["/z/copy.pdf"])
     }
 
-    func testFileTableKeepsReadableCanvasAtNarrowWidths() {
-        XCTAssertEqual(FileTableLayout.minimumWidth(contentWidth: 360), 640)
-        XCTAssertEqual(FileTableLayout.minimumWidth(contentWidth: 640), 640)
-        XCTAssertEqual(FileTableLayout.minimumWidth(contentWidth: 1_000), 1_000)
-        XCTAssertTrue(FileTableLayout.needsHorizontalScroll(contentWidth: 360))
-        XCTAssertFalse(FileTableLayout.needsHorizontalScroll(contentWidth: 640))
-        XCTAssertFalse(FileTableLayout.needsHorizontalScroll(contentWidth: 1_000))
+    @MainActor
+    func testFileTableKeepsStableIdentityAcrossInspectorWidthChanges() {
+        XCTAssertEqual(
+            FileTableLayout.snapshotLayoutToken(contentWidth: 360, viewMode: .list),
+            FileTableLayout.snapshotLayoutToken(contentWidth: 1_200, viewMode: .list)
+        )
+        XCTAssertNotEqual(
+            FileTableLayout.snapshotLayoutToken(contentWidth: 360, viewMode: .grid),
+            FileTableLayout.snapshotLayoutToken(contentWidth: 1_200, viewMode: .grid)
+        )
     }
 
     func testSavedSearchMatchesCurrentFilters() {
@@ -519,7 +538,7 @@ final class RemainingReviewTests: XCTestCase {
             createdAt: nil, modifiedAt: nil, indexedAt: Date()
         )
         try await database.replaceFiles(for: source.id, with: [visible, excluded])
-        let category = try await database.createCategory(name: "Keep", symbolName: "folder")
+        let category = try await database.createCategory(name: "保留", symbolName: "folder")
         try await database.setCategory(category.id, assigned: true, toFile: excluded.id)
 
         try await database.replaceFiles(

@@ -127,21 +127,6 @@ struct AIProviderSettingsRow: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
-            .onTapGesture {
-                withAnimation(
-                    XunJianUI.motion(.easeInOut(duration: 0.16), reduceMotion: reduceMotion)
-                ) {
-                    isExpanded.toggle()
-                }
-            }
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(providerAccessibilityLabel)
-            .accessibilityAddTraits(.isButton)
-            .accessibilityHint(Text(verbatim: AppLanguage.localized(
-                isExpanded ? "收起设置" : "展开设置",
-                english: isExpanded ? "Collapse settings" : "Expand settings"
-            )))
         }
         .onAppear(perform: synchronizeFields)
         .onAppear {
@@ -276,70 +261,46 @@ struct AIProviderSettingsRow: View {
 
     @ViewBuilder
     private var oauthAccountSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
-                    Label {
-                        Text(
-                            verbatim: AppLanguage.localized(
-                                "官方账号",
-                                english: "Official Account"
-                            )
-                        )
-                    } icon: {
-                        Image(systemName: "person.crop.circle.badge.checkmark")
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 10) {
+                        oauthStatusBadge
+                        Spacer(minLength: 0)
                     }
-                    oauthStatusBadge
-                    Spacer(minLength: 0)
-                }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Label {
-                        Text(
-                            verbatim: AppLanguage.localized(
-                                "官方账号",
-                                english: "Official Account"
-                            )
-                        )
-                    } icon: {
-                        Image(systemName: "person.crop.circle.badge.checkmark")
-                    }
                     oauthStatusBadge
                 }
-            }
 
-            Text(verbatim: currentOAuthState.localizedDetail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if isOAuthVerificationInFlight {
-                HStack(spacing: 7) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text(
-                        verbatim: AppLanguage.localized(
-                            "正在验证…",
-                            english: "Verifying…"
-                        )
-                    )
+                Text(verbatim: currentOAuthState.localizedDetail)
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                }
-            }
+                    .fixedSize(horizontal: false, vertical: true)
 
-            oauthActions
+                if isOAuthVerificationInFlight {
+                    HStack(spacing: 7) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(
+                            verbatim: AppLanguage.localized(
+                                "正在验证…",
+                                english: "Verifying…"
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                }
+
+                oauthActions
+            }
+        } label: {
+            Label(
+                AppLanguage.localized("官方账号", english: "Official Account"),
+                systemImage: "person.crop.circle.badge.checkmark"
+            )
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
-        }
     }
 
     private var oauthStatusBadge: some View {
@@ -733,12 +694,6 @@ struct AIProviderSettingsRow: View {
         ai.activeAuthenticationMode == nil ? nil : ai.activeProviderKind
     }
 
-    private var activeModeTitle: String {
-        guard ai.activeProviderKind == kind else { return "" }
-        return ai.activeAuthenticationMode?.localizedTitle
-            ?? AIAuthenticationMode.apiKey.localizedTitle
-    }
-
     private var providerStatusPresentation: AIProviderCollapsedStatusPresentation {
         AIProviderCollapsedStatusPresentation.make(
             supportsOAuth: supportsOAuth,
@@ -758,18 +713,6 @@ struct AIProviderSettingsRow: View {
 
     private var providerStatusColor: Color {
         providerStatusPresentation.tone.color
-    }
-
-    private var providerAccessibilityLabel: String {
-        var parts = [providerTitle]
-        if ai.activeProviderKind == kind {
-            parts.append(AppLanguage.localized("当前 AI", english: "Current AI"))
-            if !activeModeTitle.isEmpty {
-                parts.append(activeModeTitle)
-            }
-        }
-        parts.append(providerStatusTitle)
-        return AppLanguage.joinedForAccessibility(parts)
     }
 
     private func announceAccessibility(_ message: String) {

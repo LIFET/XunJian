@@ -54,7 +54,12 @@ struct TextExtractionService: Sendable {
                 isCancelled: isCancelled
             )
         } else {
-            extracted = Self.readTextFile(at: url, isCancelled: isCancelled)
+            extracted = Self.readTextFile(
+                at: url,
+                fileSize: fileSize,
+                maximumCharacterCount: maxCharacterCount,
+                isCancelled: isCancelled
+            )
         }
 
         guard !isCancelled(), let extracted else { return nil }
@@ -85,9 +90,23 @@ struct TextExtractionService: Sendable {
 
     private static func readTextFile(
         at url: URL,
+        fileSize: Int,
+        maximumCharacterCount: Int,
         isCancelled: @Sendable () -> Bool
     ) -> String? {
-        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe),
+        // Read only enough bytes to satisfy the character budget. Inspector
+        // previews use a much smaller budget than AI/full-text extraction, so
+        // rapid row changes no longer map and decode every multi-megabyte file.
+        let byteBudget = min(
+            fileSize,
+            max(64 * 1_024, maximumCharacterCount * 4 + 4)
+        )
+        guard !isCancelled(),
+              let handle = try? FileHandle(forReadingFrom: url) else {
+            return nil
+        }
+        defer { try? handle.close() }
+        guard let data = try? handle.read(upToCount: byteBudget),
               !isCancelled(),
               !data.isEmpty,
               !data.prefix(4_096).contains(0) else {

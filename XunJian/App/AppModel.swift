@@ -67,11 +67,13 @@ final class AppModel: ObservableObject {
         didSet {
             if oldValue != selectedFileIDs {
                 fileSelectionRevision &+= 1
+                selectedFileTotalSize = index.totalSize(of: selectedFileIDs)
             }
             reconcileFileSelectionMetadata()
         }
     }
     private(set) var fileSelectionRevision: UInt64 = 0
+    private(set) var selectedFileTotalSize: Int64 = 0
     var selectedFileID: String? {
         get { fileSelection.primaryID }
         set {
@@ -226,14 +228,13 @@ final class AppModel: ObservableObject {
     func publishBrowseSnapshot(
         _ files: [IndexedFile],
         orderedIDs: [String],
+        idIndex: [String: Int],
         visibleIDs: Set<String>,
         signature: Int,
         userSignature: Int
     ) {
         browseSnapshotIDs = orderedIDs
-        browseSnapshotIDIndex = Dictionary(
-            uniqueKeysWithValues: orderedIDs.enumerated().map { ($0.element, $0.offset) }
-        )
+        browseSnapshotIDIndex = idIndex
         browseSnapshotIDSet = visibleIDs
         browseSnapshotSignature = signature
         browseSnapshotUserSignature = userSignature
@@ -278,6 +279,14 @@ final class AppModel: ObservableObject {
         hasPublishedCommandTarget = true
     }
 
+    /// Keeps the current search-pagination ownership while a replacement
+    /// snapshot is being prepared, so an in-flight Select All is not lost.
+    func clearCommandTargetFilesKeepingPagination() {
+        commandTargetFiles = []
+        commandTargetSignature = nil
+        hasPublishedCommandTarget = true
+    }
+
     var filesRevision: UInt64 { index.filesRevision }
     var categoryRevision: UInt64 { index.categoryRevision }
 
@@ -296,6 +305,10 @@ final class AppModel: ObservableObject {
                 guard self.paginatedSelectAllContext == context,
                       self.hasPublishedCommandTarget,
                       self.commandTargetUsesGlobalSearchPagination else { return }
+                self.updateCommandTargetFiles(
+                    files,
+                    usesGlobalSearchPagination: true
+                )
                 self.applySelectAll(to: files)
             }
             return
@@ -496,6 +509,24 @@ final class AppModel: ObservableObject {
         selectionLeadID = next.leadID
         selectionAnchorID = next.anchorID
         selectedFileIDs = next.ids
+    }
+
+    func applyNativeTableSelection(
+        _ ids: Set<String>,
+        orderedIDs: [String],
+        idIndex: [String: Int]? = nil,
+        command: Bool = false,
+        shift: Bool = false
+    ) {
+        var next = fileSelection
+        next.applyNativeTableSelection(
+            ids,
+            orderedIDs: orderedIDs,
+            idIndex: idIndex,
+            command: command,
+            shift: shift
+        )
+        applyFileSelection(next)
     }
 
     private func reconcileFileSelectionMetadata() {
@@ -1003,6 +1034,10 @@ final class AppModel: ObservableObject {
         index.fileCount(for: kind)
     }
 
+    func files(for kind: FileKind) -> [IndexedFile] {
+        index.files(for: kind)
+    }
+
     func loadMoreSearchResults() {
         index.loadMoreSearchResults(query: searchText)
     }
@@ -1087,6 +1122,33 @@ final class AppModel: ObservableObject {
     func fetchTextContent(forFileID fileID: String) async throws -> String? {
         guard let file = index.file(id: fileID) else { return nil }
         return try await textContentForExplicitUse(file)
+    }
+
+    /// Cancellable, bounded text path for Inspector. AI requests continue to
+    /// use `textContentForExplicitUse` and its larger explicit-use budget.
+    func fetchInspectorPreviewText(
+        forFileID fileID: String,
+        maximumCharacters: Int
+    ) async throws -> String? {
+        guard let file = index.file(id: fileID), maximumCharacters > 0 else { return nil }
+        if let indexed = try await index.textContentPrefix(
+            forFileID: fileID,
+            maximumCharacters: maximumCharacters
+        ), !indexed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return indexed
+        }
+        guard supportsTextContent(file) else { return nil }
+        let extraction = Task.detached(priority: .userInitiated) {
+            TextExtractionService(maxCharacterCount: maximumCharacters).extractText(
+                from: file.url,
+                isCancelled: { Task.isCancelled }
+            )
+        }
+        return try await withTaskCancellationHandler {
+            try await extraction.value
+        } onCancel: {
+            extraction.cancel()
+        }
     }
 
     func rename(_ file: IndexedFile, to newName: String) async throws {

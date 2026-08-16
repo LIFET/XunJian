@@ -188,8 +188,17 @@ actor JSONLineRPCPeer {
         var timeoutTask: Task<Void, Never>?
     }
 
+    private struct QueuedNotification {
+        let value: JSONRPCNotification
+        let byteCount: Int
+    }
+
     private static let maximumMessageBytes = 1_048_576
-    private static let maximumQueuedNotifications = 256
+    /// Grok can emit hundreds of small lifecycle/thought chunks for one valid
+    /// answer. Keep the queue bounded by both count and encoded bytes instead
+    /// of rejecting a safe stream solely because it crossed 256 messages.
+    private static let maximumQueuedNotifications = 65_536
+    private static let maximumQueuedNotificationBytes = 4 * 1_048_576
     private static let notificationQuiescenceNanoseconds: UInt64 = 150_000_000
     private static let requiredNotificationQuiescenceChecks = 2
     /// Hard ceiling for any single request; generation policy allows 75s.
@@ -204,7 +213,8 @@ actor JSONLineRPCPeer {
     private let requestTimeoutNanoseconds: UInt64
     private var nextRequestIdentifier: Int64 = 1
     private var pendingRequests: [Int64: PendingRequest] = [:]
-    private var queuedNotifications: [JSONRPCNotification] = []
+    private var queuedNotifications: [QueuedNotification] = []
+    private var queuedNotificationBytes = 0
     private var notificationWaiters: [RPCOneShot<JSONRPCNotification>] = []
     private var verificationDrainIsActive = false
     private var readerTask: Task<Void, Never>?
@@ -325,8 +335,7 @@ actor JSONLineRPCPeer {
         // bounded quiescence window so buffered trailing chunks are validated.
         try await waitForNotificationQuiescence()
 
-        let notifications = queuedNotifications
-        queuedNotifications.removeAll(keepingCapacity: true)
+        let notifications = drainQueuedNotifications()
         return JSONRPCRequestCompletion(
             result: result,
             queuedNotifications: notifications
@@ -346,9 +355,7 @@ actor JSONLineRPCPeer {
         verificationDrainIsActive = true
         defer { verificationDrainIsActive = false }
         try await waitForNotificationQuiescence()
-        let notifications = queuedNotifications
-        queuedNotifications.removeAll(keepingCapacity: true)
-        return notifications
+        return drainQueuedNotifications()
     }
 
     func notify(method: String, params: JSONValue? = nil) async throws {
@@ -381,7 +388,9 @@ actor JSONLineRPCPeer {
         }
         ensureReaderStarted()
         if !queuedNotifications.isEmpty {
-            return queuedNotifications.removeFirst()
+            let queued = queuedNotifications.removeFirst()
+            queuedNotificationBytes -= queued.byteCount
+            return queued.value
         }
 
         let gate = RPCOneShot<JSONRPCNotification>()
@@ -508,7 +517,7 @@ actor JSONLineRPCPeer {
         }
 
         if object.keys.contains("method") {
-            await receiveMethodEnvelope(object)
+            await receiveMethodEnvelope(object, byteCount: data.count)
         } else {
             await receiveResponseEnvelope(object)
         }
@@ -551,7 +560,10 @@ actor JSONLineRPCPeer {
         return !inString && depth == 0
     }
 
-    private func receiveMethodEnvelope(_ object: [String: JSONValue]) async {
+    private func receiveMethodEnvelope(
+        _ object: [String: JSONValue],
+        byteCount: Int
+    ) async {
         guard let method = object["method"]?.stringValue, !method.isEmpty else {
             await failClosed(.invalidEnvelope)
             return
@@ -586,11 +598,28 @@ actor JSONLineRPCPeer {
         if let waiter = notificationWaiters.first {
             notificationWaiters.removeFirst()
             waiter.resolve(.success(notification))
-        } else if queuedNotifications.count < Self.maximumQueuedNotifications {
-            queuedNotifications.append(notification)
         } else {
-            await failClosed(.notificationOverflow)
+            let (newByteCount, byteCountOverflowed) = queuedNotificationBytes
+                .addingReportingOverflow(byteCount)
+            guard !byteCountOverflowed,
+                  queuedNotifications.count < Self.maximumQueuedNotifications,
+                  newByteCount <= Self.maximumQueuedNotificationBytes else {
+                await failClosed(.notificationOverflow)
+                return
+            }
+            queuedNotifications.append(QueuedNotification(
+                value: notification,
+                byteCount: byteCount
+            ))
+            queuedNotificationBytes = newByteCount
         }
+    }
+
+    private func drainQueuedNotifications() -> [JSONRPCNotification] {
+        let notifications = queuedNotifications.map(\.value)
+        queuedNotifications.removeAll(keepingCapacity: true)
+        queuedNotificationBytes = 0
+        return notifications
     }
 
     private func receiveResponseEnvelope(_ object: [String: JSONValue]) async {
@@ -722,6 +751,7 @@ actor JSONLineRPCPeer {
         let waiters = notificationWaiters
         notificationWaiters.removeAll()
         queuedNotifications.removeAll()
+        queuedNotificationBytes = 0
         for waiter in waiters {
             waiter.resolve(.failure(error))
         }

@@ -29,6 +29,7 @@ struct TextPreviewView: View {
     @State private var chunkMatchRanges: [Int: [Range<String.Index>]] = [:]
     @State private var currentMatch = 0
     @State private var matchTask: Task<Void, Never>?
+    @State private var isSearchFocused = false
 
     private enum LoadState: Equatable {
         case loading
@@ -53,7 +54,7 @@ struct TextPreviewView: View {
             Divider()
             content
         }
-        .frame(minWidth: 520, idealWidth: 720, minHeight: 420, idealHeight: 680)
+        .frame(minWidth: 340, idealWidth: 720, minHeight: 420, idealHeight: 680)
         .task { await load() }
         .onChange(of: query) { _, newValue in
             scheduleMatchComputation(for: newValue)
@@ -65,23 +66,17 @@ struct TextPreviewView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 12) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(verbatim: file.name)
-                        .font(.title3.weight(.semibold))
-                        .lineLimit(2)
-                    Text(verbatim: file.path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    previewIdentity
+                    Spacer(minLength: 0)
+                    previewActions
                 }
-                Spacer(minLength: 0)
-                Button(AppLanguage.localized("打开文件", english: "Open File")) {
-                    appModel.open(file)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    previewIdentity
+                    HStack(spacing: 8) { previewActions }
                 }
-                Button(AppLanguage.localized("完成", english: "Done")) { dismiss() }
-                    .keyboardShortcut(.defaultAction)
             }
 
             if loadState == .ready {
@@ -91,26 +86,55 @@ struct TextPreviewView: View {
         .padding(XunJianUI.Spacing.page)
     }
 
-    private var findBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
+    private var previewIdentity: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(verbatim: file.name)
+                .font(.title3.weight(.semibold))
+                .lineLimit(2)
+            Text(verbatim: file.path)
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+        }
+    }
 
-            TextField(
-                "",
+    @ViewBuilder
+    private var previewActions: some View {
+        Button(AppLanguage.localized("打开文件", english: "Open File")) {
+            appModel.open(file)
+        }
+        Button(AppLanguage.localized("完成", english: "Done")) { dismiss() }
+            .keyboardShortcut(.defaultAction)
+    }
+
+    private var findBar: some View {
+        HStack(spacing: 8) {
+            NativeSearchField(
                 text: $query,
-                prompt: Text(verbatim: AppLanguage.localized(
+                isFocused: $isSearchFocused,
+                prompt: AppLanguage.localized(
                     "在正文中查找…",
                     english: "Find in text…"
-                ))
+                ),
+                accessibilityLabel: AppLanguage.localized(
+                    "在正文中查找",
+                    english: "Find in Text"
+                ),
+                accessibilityHelp: AppLanguage.localized(
+                    "在提取的正文中查找匹配内容",
+                    english: "Finds matching text in the extracted content"
+                ),
+                onSubmit: { _ in moveMatch(by: 1) },
+                onCancel: {
+                    if query.isEmpty {
+                        isSearchFocused = false
+                    } else {
+                        query = ""
+                    }
+                }
             )
-            .textFieldStyle(.plain)
-            .onSubmit { moveMatch(by: 1) }
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                "在正文中查找",
-                english: "Find in Text"
-            )))
+            .frame(height: 28)
 
             if !query.isEmpty {
                 Text(verbatim: matchSummary)
@@ -118,36 +142,32 @@ struct TextPreviewView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
 
-                Button {
-                    moveMatch(by: -1)
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .disabled(matches.isEmpty)
-                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                    "上一处",
-                    english: "Previous Match"
-                )))
+                ControlGroup {
+                    Button {
+                        moveMatch(by: -1)
+                    } label: {
+                        Image(systemName: "chevron.up")
+                    }
+                    .disabled(matches.isEmpty)
+                    .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                        "上一处",
+                        english: "Previous Match"
+                    )))
 
-                Button {
-                    moveMatch(by: 1)
-                } label: {
-                    Image(systemName: "chevron.down")
+                    Button {
+                        moveMatch(by: 1)
+                    } label: {
+                        Image(systemName: "chevron.down")
+                    }
+                    .disabled(matches.isEmpty)
+                    .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+                        "下一处",
+                        english: "Next Match"
+                    )))
                 }
-                .disabled(matches.isEmpty)
-                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                    "下一处",
-                    english: "Next Match"
-                )))
             }
         }
-        .buttonStyle(.borderless)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.control, style: .continuous)
-        )
+        .controlSize(.small)
     }
 
     private var matchSummary: String {

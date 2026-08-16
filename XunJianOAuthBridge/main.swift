@@ -659,7 +659,16 @@ private actor OAuthBridgeCoordinator {
             do {
                 let executable = try bundledCodexExecutable()
                 let runtime = try await ensureCodexRuntime(executableURL: executable)
-                switch try await runtime.client.readAccount() {
+                let account = try await runtime.client.readAccount()
+                let cleanupSucceeded = await closeCodexStatusRuntime(runtime)
+                guard cleanupSucceeded, !isInvalidated else {
+                    codexCredentialState = .unknown
+                    throw Failure.response(
+                        .authenticationFailed,
+                        "Codex authentication status cleanup failed."
+                    )
+                }
+                switch account {
                 case .signedOut:
                     clearStoredVerification(for: .codex)
                     codexCredentialState = .signedOut
@@ -2404,6 +2413,12 @@ private actor OAuthBridgeCoordinator {
         guard let runtime = codexRuntime else { return }
         codexRuntime = nil
         await close(runtime)
+    }
+
+    private func closeCodexStatusRuntime(_ runtime: CodexRuntime) async -> Bool {
+        guard codexRuntime?.client === runtime.client else { return false }
+        codexRuntime = nil
+        return await close(runtime)
     }
 
     private func discardGrokRuntime() async {

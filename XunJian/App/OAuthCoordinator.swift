@@ -48,6 +48,7 @@ final class OAuthCoordinator: ObservableObject {
     private var mutationWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var statusInFlight = Set<AIProviderKind>()
     private var statusWaiters: [AIProviderKind: [WaiterBox]] = [:]
+    private var providerRequestCounts: [AIProviderKind: Int] = [:]
     private var pollingTask: Task<Void, Never>?
     private var isApplicationActive = false
     private var isPollingPausedForVerification = false
@@ -63,6 +64,7 @@ final class OAuthCoordinator: ObservableObject {
         guard let provider = Self.oauthProvider(for: kind),
               loginStartGenerations[kind] == nil,
               mutationGenerations[kind] == nil,
+              providerRequestCounts[kind, default: 0] == 0,
               !statusInFlight.contains(kind) else { return }
         statusInFlight.insert(kind)
         defer { finishStatus(for: kind) }
@@ -98,6 +100,33 @@ final class OAuthCoordinator: ObservableObject {
         guard !isRunningTests else { return }
         isApplicationActive = true
         startPolling()
+    }
+
+    /// Prevents foreground status polling from racing an OAuth-backed model
+    /// request. A request that begins while a status probe is already running
+    /// waits for that short probe to finish; later probes skip this provider
+    /// until the model request releases its ownership.
+    func beginProviderRequest(_ kind: AIProviderKind) async throws {
+        guard Self.oauthProvider(for: kind) != nil else {
+            throw OAuthStateError.providerMismatch
+        }
+        providerRequestCounts[kind, default: 0] += 1
+        do {
+            await waitForStatus(for: kind)
+            try Task.checkCancellation()
+        } catch {
+            endProviderRequest(kind)
+            throw error
+        }
+    }
+
+    func endProviderRequest(_ kind: AIProviderKind) {
+        let remaining = providerRequestCounts[kind, default: 0] - 1
+        if remaining > 0 {
+            providerRequestCounts[kind] = remaining
+        } else {
+            providerRequestCounts.removeValue(forKey: kind)
+        }
     }
 
     private func startPolling() {

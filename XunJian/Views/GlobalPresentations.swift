@@ -44,6 +44,7 @@ private struct CommandPalettePresentation: ViewModifier {
 
     func body(content: Content) -> some View {
         content
+            .accessibilityHidden(isPresented)
             .onReceive(NotificationCenter.default.publisher(for: .xunJianShowCommandPalette)) { _ in
                 isPresented = true
             }

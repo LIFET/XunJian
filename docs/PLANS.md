@@ -20,6 +20,8 @@
 - [x] Phase 5：FSEvents 增量监听、文件身份识别与索引一致性。
 - [x] Phase 6：本地 API Key 凭据文件、统一 AI Provider、DeepSeek、Qwen，以及按官方能力评估 Codex/Grok；完成四项 AI 能力。
 - [x] Phase 7：错误与空状态、性能、权限恢复、网络异常、UI 交互与完整验收。
+- [x] Phase 8L：P1/P2/P3 交互原生化；搜索、列表/表格、展开区、信息分组、选择器、进度与操作组交还系统控件，业务与安全边界保持不变。
+- [x] Phase 8M：深度审查收尾；扫描数据安全、十万文件主线程卡顿、UI/无障碍及 OAuth/XPC 并发与签名权限边界已关闭。
 
 ## Phase 2 验收
 
@@ -309,9 +311,9 @@
 ### 8D 在线更新与正式发布
 
 - [x] 使用固定 Sparkle 2.9.5 的 SwiftUI/沙盒接入；设置与应用菜单均提供“检查更新…”。
-- [ ] GitHub Pages HTTPS appcast、EdDSA 密钥和 Installer entitlement 已接入；递增构建号、首个更新包签名、Developer ID、公证与伪造包拒绝仍待正式发布闭环。
+- [x] GitHub Pages HTTPS appcast、EdDSA 密钥、Installer entitlement、首个 Universal 更新包、Developer ID 签名与 Apple 公证已闭环。
 - [x] 自动检查可配置；未配置 feed/key 或关闭自动检查时启动零更新请求，Sparkle 负责呈现检查、最新版、新版本、网络与签名错误。
-- [ ] 先以本地/预发布签名 feed 验证升级、拒绝伪造包和失败恢复；用户另行确认后才生成新 DMG。
+- [ ] 使用旧构建实测 Sparkle 升级、拒绝伪造包和失败恢复；v0.1.0 已生成公证 DMG，不重复生成。
 
 ### 8E 正式验收
 
@@ -319,14 +321,69 @@
 - [ ] VoiceOver、Reduce Motion、360/640/960/1200pt、列表/网格/分类页及更新状态完成实机验收。
 - [x] 离线单元/协议/进程测试、5 万/10 万门禁和 arm64 Debug 构建通过；未经用户单独确认不运行真实 OAuth/AI、不生成 DMG、不提交。
 
+### 8M 深度审查收尾（已完成）
+
+- [x] 扫描取消、隐藏/排除文件对账与检查点提交保持数据安全；十万文件索引、选择、Inspector 与正文预览的主线程工作有界。
+- [x] 命令面板、搜索、侧栏、整盘设置、分类工具栏、正文预览及网格 VoiceOver 在窄窗和键盘场景下完成收口。
+- [x] Codex/Grok 使用独立 XPC connection lane；OAuth 业务请求与同 Provider 状态探针互斥，取消只影响对应 Provider。
+- [x] Codex 状态读取在返回前关闭私有 Runtime；App 启用持久化 security-scoped bookmark entitlement。
+- [x] OAuthBridge 66/66、OAuthProtocolClient 66/66，共 132/132、0 失败；未运行真实 OAuth/AI。v0.1.0 Universal DMG 已完成签名、公证、staple、Gatekeeper、Sparkle EdDSA 与完整性验证。
+
 ### 8F 页面层级、选择与 AI 交互收尾
 
-- [x] 统一页面标题层级与所有文件摘要，分类详情仅保留返回全部分类入口。
+- [x] 统一页面标题层级与所有文件摘要，分类详情保留返回全部分类入口。
 - [x] 文件名称/网格选择即时反馈，Inspector 显隐不重建大列表布局快照。
 - [x] 授权目录折叠与直接移除、AI Provider 整行展开、关于与更新合并。
 - [x] AI 看文件/问文件稳定布局、居中加载、取消所有权与可读错误；AI 分类支持全选。
 - [x] 菜单栏最近文件滚动、打开文件、回主窗口及应用命令恢复可用。
 - [x] arm64 Debug 与 279 项聚焦测试通过；真实 Provider 与人工视觉验收仍由用户显式启动。
+
+### 8G 列表性能、响应式与 Grok 流式修复
+
+- [x] 分类详情同时保留原生样式的返回入口与右侧编辑分类入口。
+- [x] 640pt 列表主体不再向父布局传播最小宽度；窄窗顶部搜索和工具栏按图标模式相同规则收纳。
+- [x] Table 原生负责单击与多选，名称单元格仅叠加双击打开，避免大列表选中态迟到。
+- [x] 文件索引按类型预分组，类型切换不再全库过滤；列表 24pt 图标改为有界 Quick Look 预览。
+- [x] 分类详情筛选保留旧快照，类型切换不再显示错误的“正在搜索”；列表行补齐 VoiceOver 摘要与选中状态。
+- [x] JSON-RPC 通知使用 65,536 条与 4 MiB 双重边界，解决 Grok `prompt.notification-overflow`，洪泛仍关闭连接。
+- [x] 相关套件 112 项、最终通知预算 2 项均 0 失败；本地 Grok 完整 patch 只读复审 `APPROVED`。
+- [ ] 使用当前构建人工验证窄窗、长列表滚动/点选、Inspector 与真实 Grok 看文件/问文件；未经确认不生成 DMG。
+
+### 8H 窄窗操作与无障碍收尾
+
+- [x] 批量操作栏使用连续响应布局；空间不足时只收纳动作，不压缩选择摘要或丢失功能。
+- [x] Inspector 增加 720pt 最小呈现宽度；文件页可手动调整，过窄时稳定收起。
+- [x] 废纸篓撤销横幅关闭按钮扩展至 28×28pt 命中区。
+- [x] 重建搜索索引期间保留按钮文字，并向 VoiceOver 发布明确的运行状态。
+- [x] 中文菜单术语统一为“在 Finder 中显示”。
+- [x] Inspector 宽度门禁回归 1/1 通过；arm64 Debug 测试构建通过。
+
+### 8I 名称列命中与选择性能收尾
+
+- [x] 名称列移除单元格级双击、右键和拖拽命中层；原生 Table 负责整列单击与修饰键多选，Table/TableRow 分别承载主操作、上下文菜单和拖拽。
+- [x] Table 本地选择与 AppModel 外部全选/取消双向同步；集合增量按显示顺序恢复 lead/anchor，键盘和菜单动作使用当前文件。
+- [x] Table 画布使用当前 detail 宽度弹性布局，Inspector 显隐不保留旧固定宽度；列表与网格滚动位置统一 500ms 防抖写入。
+- [x] Inspector 菜单按当前页面/宽度禁用，工具栏提供显隐选中态与 VoiceOver 状态；辅助列不重复朗读名称列整行摘要。
+- [x] 隔离索引实点名称文字、缩略图和名称列空白区均即时选中，右键菜单可用；本地 Grok 名称列审查 `APPROVED`。
+- [x] FileSelection、LagIsolation、NavigationModel、RemainingReview 共 96 项、0 失败；arm64 Debug 测试构建通过。
+- [ ] Mac 解锁后继续人工复核 ⌘/⇧多选、Inspector 显隐与 360/640/960/1200pt；未经确认不运行真实 AI、不生成 DMG、不提交。
+
+### 8J 原生 Table 响应式与分类编辑语义
+
+- [x] 删除列表的 640pt 强制画布和裁切层，交还 macOS `Table` 处理弹性列宽与水平滚动。
+- [x] 列表模式使用稳定布局身份；Inspector 显隐和 detail 宽度变化不再触发大 Table 重建，网格仍按列数响应。
+- [x] 分类详情“编辑分类”改为原生菜单，提供“修改名称…”与 destructive“删除分类…”，复用既有 Sheet/确认框。
+- [x] Apple 官方 `Table`、`inspector` 与 `NavigationSplitView` 文档完成核对；本地 Grok 补丁复审 `APPROVED`。
+- [x] FileSelection、LagIsolation、RemainingReview 共 59/59、0 失败；arm64 Debug 测试构建通过。
+- [ ] 当前构建人工复核 360/640/960/1200pt 水平滚动、Inspector 显隐帧率和分类菜单命中。
+
+### 8K 文件浏览控件与状态反馈原生化
+
+- [x] 搜索输入改用 AppKit `NSSearchField`，系统负责搜索图标、清除键、焦点环、键盘及辅助功能语义；现有防抖、历史和页面跳转逻辑不变。
+- [x] 文件类型、排序与显示方式改用 SwiftUI 原生 menu/segmented Picker；过滤、AI、方向及 overflow 使用系统 Button/Menu，删除自绘工具栏表面与分段选中背景。
+- [x] 多选操作区改用原生 `GroupBox + ControlGroup`，窄窗功能仍完整收纳；扫描、导出、撤销及数据库提示统一为系统 bar 材质和原生 ProgressView/Button。
+- [x] arm64 Debug 测试构建通过；RemainingReview、FileSelection、LagIsolation 共 59/59、0 失败。
+- [ ] 人工复核中英文、放大字号、360/640/960/1200pt 下的原生控件尺寸、菜单内容、搜索清除与批量操作命中。
 
 ## 风险
 

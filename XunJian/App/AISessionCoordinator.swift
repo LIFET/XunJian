@@ -269,12 +269,21 @@ final class AISessionCoordinator: ObservableObject {
         if activeAuthenticationMode == .oauth {
             return AIService(provider: OAuthStatePromotingProvider(
                 base: provider,
+                onStart: { [weak oauth] in
+                    guard let oauth else { throw CancellationError() }
+                    try await oauth.beginProviderRequest(activeProviderKind)
+                },
                 onSuccess: { [weak self] in
                     await MainActor.run {
                         guard let self,
                               self.activeProviderKind == activeProviderKind,
                               self.activeAuthenticationMode == .oauth else { return }
                         self.oauth.markConnected(activeProviderKind)
+                    }
+                },
+                onFinish: { [weak oauth] in
+                    await MainActor.run {
+                        oauth?.endProviderRequest(activeProviderKind)
                     }
                 }
             ))
@@ -444,13 +453,22 @@ final class AISessionCoordinator: ObservableObject {
 /// credential works, so the OAuth state is promoted to connected.
 private struct OAuthStatePromotingProvider: AIProvider {
     let base: any AIProvider
+    let onStart: @Sendable () async throws -> Void
     let onSuccess: @Sendable () async -> Void
+    let onFinish: @Sendable () async -> Void
 
     var kind: AIProviderKind { base.kind }
 
     func chat(_ messages: [AIMessage]) async throws -> String {
-        let response = try await base.chat(messages)
-        await onSuccess()
-        return response
+        try await onStart()
+        do {
+            let response = try await base.chat(messages)
+            await onSuccess()
+            await onFinish()
+            return response
+        } catch {
+            await onFinish()
+            throw error
+        }
     }
 }

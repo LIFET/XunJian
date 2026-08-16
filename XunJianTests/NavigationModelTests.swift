@@ -629,6 +629,18 @@ final class NavigationModelTests: XCTestCase {
     }
 
     @MainActor
+    func testInspectorRequiresFilePageAndUsableWindowWidth() {
+        XCTAssertFalse(AppShellView.supportsInspector(for: .allFiles, windowWidth: 719))
+        XCTAssertTrue(AppShellView.supportsInspector(for: .allFiles, windowWidth: 720))
+        XCTAssertTrue(AppShellView.supportsInspector(
+            for: .category(UUID()),
+            windowWidth: 960
+        ))
+        XCTAssertFalse(AppShellView.supportsInspector(for: .home, windowWidth: 1_200))
+        XCTAssertFalse(AppShellView.supportsInspector(for: .settings, windowWidth: 1_200))
+    }
+
+    @MainActor
     func testRelevanceSortOnlyAppearsDuringSearch() {
         XCTAssertFalse(AllFilesView.availableSortOrders(hasActiveSearch: false).contains(.relevance))
         XCTAssertTrue(AllFilesView.availableSortOrders(hasActiveSearch: true).contains(.relevance))
@@ -1558,8 +1570,13 @@ final class FileIndexDatabaseTests: XCTestCase {
         let listed = try await database.fetchFiles()
         XCTAssertNil(try XCTUnwrap(listed.first).textContent)
         let textContent = try await database.fetchTextContent(forFileID: file.id)
+        let textPrefix = try await database.fetchTextContentPrefix(
+            forFileID: file.id,
+            maximumCharacters: 4
+        )
         let missingContent = try await database.fetchTextContent(forFileID: "missing")
         XCTAssertEqual(textContent, "只在 AI 请求时读取")
+        XCTAssertEqual(textPrefix, "只在 A")
         XCTAssertNil(missingContent)
     }
 
@@ -2358,6 +2375,69 @@ final class FileIndexDatabaseTests: XCTestCase {
         let categoriesAfterDelete = try await database.fetchCategories()
         XCTAssertEqual(Set(deletedMemberships), [visible.id, hidden.id])
         XCTAssertFalse(categoriesAfterDelete.contains(where: { $0.id == category.id }))
+    }
+
+    func testIncrementalReconcilePreservesHiddenAndExcludedRowsAndCategories() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(
+            databaseURL: directory.appendingPathComponent("index.sqlite3")
+        )
+        let sourceRoot = directory.appendingPathComponent("source", isDirectory: true)
+        let source = try await database.upsertSource(
+            displayName: "增量保留",
+            path: sourceRoot.path,
+            bookmark: Data([41])
+        )
+        let visible = IndexedFile(
+            id: "visible", sourceID: source.id, name: "visible.txt",
+            path: sourceRoot.appendingPathComponent("visible.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let hidden = IndexedFile(
+            id: "hidden", sourceID: source.id, name: ".env",
+            path: sourceRoot.appendingPathComponent(".env").path,
+            fileExtension: "", kind: .other, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "hidden-preserved-phrase"
+        )
+        let excluded = IndexedFile(
+            id: "excluded", sourceID: source.id, name: "library.js",
+            path: sourceRoot.appendingPathComponent("vendor/library.js").path,
+            fileExtension: "js", kind: .code, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "excluded-preserved-phrase"
+        )
+        try await database.replaceFiles(for: source.id, with: [visible, hidden, excluded])
+        let category = try await database.createCategory(name: "人工分类", symbolName: "folder")
+        try await database.setCategory(category.id, assigned: true, toFile: hidden.id)
+        try await database.setCategory(category.id, assigned: true, toFile: excluded.id)
+
+        let removed = try await database.reconcileFiles(
+            for: source.id,
+            scopes: [FileIndexScope(path: sourceRoot.path, includesDescendants: true)],
+            with: [visible],
+            preservesUnscannedPath: { path in
+                FileIndexCoordinator.shouldPreserveUnscannedPath(
+                    path,
+                    canonicalSourceRootPath: sourceRoot.path,
+                    includesHiddenFiles: false,
+                    excludedDirectoryNames: ["vendor"]
+                )
+            }
+        )
+
+        let persistedIDs = Set(try await database.fetchFiles().map(\.id))
+        let links = try await database.fetchFileCategoryLinks()
+        let hiddenMatches = try await database.searchFiles(matching: "hidden-preserved-phrase")
+        let excludedMatches = try await database.searchFiles(matching: "excluded-preserved-phrase")
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(persistedIDs, [visible.id, hidden.id, excluded.id])
+        XCTAssertEqual(links[hidden.id], [category.id])
+        XCTAssertEqual(links[excluded.id], [category.id])
+        XCTAssertEqual(hiddenMatches.map(\.id), [hidden.id])
+        XCTAssertEqual(excludedMatches.map(\.id), [excluded.id])
     }
 
     func testMoveReconciliationIgnoresCategoryDeletedAfterSnapshot() async throws {

@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Shared visual tokens (Views only)
@@ -54,11 +55,6 @@ enum XunJianUI {
         static let compactPage: CGFloat = 520
         /// Below this the file toolbar collapses into an overflow menu.
         static let compactToolbar: CGFloat = 640
-        /// Table columns interpolate between their minimum and ideal widths
-        /// across this range.
-        static let tableCompressionStart: CGFloat = 640
-        static let tableCompressionEnd: CGFloat = 1_020
-
         /// Window widths at which the inspector auto-collapses / restores.
         static let inspectorAutoCollapse: CGFloat = 1_080
         static let inspectorRestore: CGFloat = 1_140
@@ -143,220 +139,211 @@ struct SearchField: View {
     /// Called when a recent-search chip is chosen. Home uses this to jump to
     /// All Files; other pages just fill the field via `text`.
     var onHistorySelect: ((String) -> Void)? = nil
-    @FocusState private var isFocused: Bool
+    @State private var isFocused = false
 
     /// Shared so the field can offer recent searches without every call site
     /// having to thread a store through (N03).
     @ObservedObject private var history = SearchHistoryStore.shared
-    @State private var dismissedHistoryForCurrentFocus = false
-    @State private var hoveredHistoryEntry: String?
-
-    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 14
-    @ScaledMetric(relativeTo: .body) private var iconWidth: CGFloat = 16
-    @ScaledMetric(relativeTo: .body) private var clearButtonSide: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var fieldHeight: CGFloat = 36
 
-    /// Recent searches are an aid for starting a new query, so they only show
-    /// while the field is focused and empty — never on top of results the user
-    /// is already refining.
-    private var showsHistory: Bool {
-        isFocused
-            && !dismissedHistoryForCurrentFocus
-            && text.isEmpty
-            && !history.entries.isEmpty
-    }
-
     var body: some View {
-        let historyOffset = fieldHeight + 6
         searchRow
-            .overlay(alignment: .topLeading) {
-                if showsHistory {
-                    historyPanel
-                        .alignmentGuide(.top) { _ in -historyOffset }
-                }
-            }
-            // Lifts the field above the content below it in the shell's VStack
-            // so the dropdown is not painted over by later siblings.
-            .zIndex(showsHistory ? 1 : 0)
-            .onChange(of: isFocused) { _, focused in
-                if !focused { dismissedHistoryForCurrentFocus = false }
-            }
             .onExitCommand {
-                // First Escape closes the suggestions, a second one clears the
-                // query — matching how Spotlight and Finder search behave.
-                if showsHistory {
-                    dismissedHistoryForCurrentFocus = true
-                } else if !text.isEmpty {
-                    text = ""
-                } else {
-                    isFocused = false
-                }
+                handleExitCommand()
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearchField)) { _ in
                 isFocused = true
             }
-            .xunjianAnimation(value: showsHistory)
     }
 
     private var searchRow: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: iconSize, weight: .medium))
-                .foregroundStyle(isFocused ? Color.accentColor : Color.secondary)
-                .frame(width: iconWidth)
-
-            TextField(
-                "",
-                text: $text,
-                prompt: Text(verbatim: prompt ?? AppLanguage.localized(
-                    "搜索本地文件…",
-                    english: "Search local files…"
-                ))
-            )
-            .textFieldStyle(.plain)
-            .font(.body)
-            .focused($isFocused)
-            .onSubmit { history.record(text) }
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
+        NativeSearchField(
+            text: $text,
+            isFocused: $isFocused,
+            prompt: prompt ?? AppLanguage.localized(
+                "搜索本地文件…",
+                english: "Search local files…"
+            ),
+            accessibilityLabel: AppLanguage.localized(
                 "搜索文件",
                 english: "Search Files"
-            )))
-            .accessibilityHint(Text(verbatim: accessibilityHint ?? AppLanguage.localized(
+            ),
+            accessibilityHelp: accessibilityHint ?? AppLanguage.localized(
                 "搜索已索引的本地文件",
                 english: "Searches indexed local files"
-            )))
-
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: iconSize))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: clearButtonSide, height: clearButtonSide)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                    "清除搜索",
-                    english: "Clear Search"
-                )))
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: fieldHeight)
-        .background {
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.search, style: .continuous)
-                .fill(Color(nsColor: .controlBackgroundColor))
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.search, style: .continuous)
-                .strokeBorder(
-                    isFocused
-                        ? Color.accentColor.opacity(0.45)
-                        : XunJianUI.Fill.stroke,
-                    lineWidth: 1
-                )
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    // MARK: - Recent searches
-
-    private var historyPanel: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Text(verbatim: AppLanguage.localized("最近搜索", english: "Recent Searches"))
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .padding(.horizontal, 12)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-                .accessibilityAddTraits(.isHeader)
-
-            ForEach(history.entries, id: \.self) { entry in
-                historyRow(entry)
-            }
-
-            Divider()
-
-            Button {
-                history.clear()
-            } label: {
-                Text(verbatim: AppLanguage.localized("清除搜索历史", english: "Clear Search History"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background {
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                .fill(.regularMaterial)
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func historyRow(_ entry: String) -> some View {
-        HStack(spacing: 8) {
-            Button {
-                text = entry
-                history.record(entry)
-                dismissedHistoryForCurrentFocus = true
-                onHistorySelect?(entry)
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: iconSize - 1))
-                        .foregroundStyle(.tertiary)
-                        .frame(width: iconWidth)
-                    Text(verbatim: entry)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                "搜索“\(entry)”",
-                english: "Search “\(entry)”"
-            )))
-
-            Button {
-                history.remove(entry)
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: iconSize - 3, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .frame(width: clearButtonSide - 8, height: clearButtonSide - 8)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .opacity(hoveredHistoryEntry == entry ? 1 : 0)
-            // Invisible until hover, so it must also stop being interactive
-            // and present in the accessibility tree: keyboard and VoiceOver
-            // users have no hover, and an invisible tappable area silently
-            // deleting an entry was a trap.
-            .disabled(hoveredHistoryEntry != entry)
-            .accessibilityHidden(hoveredHistoryEntry != entry)
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                "移除“\(entry)”",
-                english: "Remove “\(entry)”"
-            )))
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 7)
-        .background(
-            hoveredHistoryEntry == entry ? XunJianUI.Fill.hover : .clear,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.row, style: .continuous)
+            ),
+            recentSearches: history.entries,
+            recentSearchesTitle: AppLanguage.localized("最近搜索", english: "Recent Searches"),
+            noRecentSearchesTitle: AppLanguage.localized("没有最近搜索", english: "No Recent Searches"),
+            clearRecentSearchesTitle: AppLanguage.localized("清除搜索历史", english: "Clear Search History"),
+            onSubmit: { committedText in
+                history.record(committedText)
+                onHistorySelect?(committedText)
+            },
+            onClearRecentSearches: history.clear,
+            onCancel: handleExitCommand
         )
-        .padding(.horizontal, 4)
-        .onHover { isHovering in
-            hoveredHistoryEntry = isHovering ? entry : nil
+        .frame(height: fieldHeight)
+    }
+
+    private func handleExitCommand() {
+        if !text.isEmpty {
+            text = ""
+        } else {
+            isFocused = false
+        }
+    }
+}
+
+/// AppKit's native search control provides the standard magnifying glass,
+/// focus ring, clear button, keyboard behaviour, and macOS accessibility
+/// semantics without recreating that chrome in SwiftUI.
+struct NativeSearchField: NSViewRepresentable {
+    @Binding var text: String
+    @Binding var isFocused: Bool
+    let prompt: String
+    let accessibilityLabel: String
+    let accessibilityHelp: String
+    var recentSearches: [String] = []
+    var recentSearchesTitle = ""
+    var noRecentSearchesTitle = ""
+    var clearRecentSearchesTitle = ""
+    let onSubmit: (String) -> Void
+    var onClearRecentSearches: () -> Void = {}
+    var onMoveSelection: (Int) -> Void = { _ in }
+    let onCancel: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(parent: self)
+    }
+
+    func makeNSView(context: Context) -> NSSearchField {
+        let searchField = NSSearchField()
+        searchField.delegate = context.coordinator
+        searchField.target = context.coordinator
+        searchField.action = #selector(Coordinator.submit(_:))
+        searchField.focusRingType = .default
+        searchField.sendsSearchStringImmediately = false
+        searchField.sendsWholeSearchString = true
+        if !recentSearchesTitle.isEmpty {
+            context.coordinator.installSearchMenuIfNeeded(on: searchField)
+            searchField.maximumRecents = SearchHistoryStore.maximumEntryCount
+        }
+        return searchField
+    }
+
+    func updateNSView(_ searchField: NSSearchField, context: Context) {
+        context.coordinator.parent = self
+        if searchField.stringValue != text {
+            searchField.stringValue = text
+        }
+        searchField.placeholderString = prompt
+        searchField.setAccessibilityLabel(accessibilityLabel)
+        searchField.setAccessibilityHelp(accessibilityHelp)
+        searchField.recentSearches = recentSearches
+        if !recentSearchesTitle.isEmpty {
+            context.coordinator.installSearchMenuIfNeeded(on: searchField)
+        }
+
+        guard isFocused else { return }
+        DispatchQueue.main.async { [weak searchField, weak coordinator = context.coordinator] in
+            guard let searchField,
+                  let coordinator,
+                  coordinator.parent.isFocused,
+                  searchField.window?.firstResponder !== searchField.currentEditor() else { return }
+            searchField.window?.makeFirstResponder(searchField)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, NSSearchFieldDelegate {
+        var parent: NativeSearchField
+        private var searchMenuSignature: String?
+
+        init(parent: NativeSearchField) {
+            self.parent = parent
+        }
+
+        func controlTextDidBeginEditing(_ notification: Notification) {
+            parent.isFocused = true
+        }
+
+        func controlTextDidEndEditing(_ notification: Notification) {
+            parent.isFocused = false
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let searchField = notification.object as? NSSearchField else { return }
+            parent.text = searchField.stringValue
+        }
+
+        func control(
+            _ control: NSControl,
+            textView: NSTextView,
+            doCommandBy commandSelector: Selector
+        ) -> Bool {
+            switch commandSelector {
+            case #selector(NSResponder.cancelOperation(_:)):
+                parent.onCancel()
+                if !parent.isFocused {
+                    control.window?.makeFirstResponder(nil)
+                }
+                return true
+            case #selector(NSResponder.moveUp(_:)):
+                parent.onMoveSelection(-1)
+                return true
+            case #selector(NSResponder.moveDown(_:)):
+                parent.onMoveSelection(1)
+                return true
+            default:
+                return false
+            }
+        }
+
+        @objc func submit(_ sender: NSSearchField) {
+            parent.text = sender.stringValue
+            parent.onSubmit(sender.stringValue)
+        }
+
+        func makeSearchMenu() -> NSMenu {
+            let menu = NSMenu()
+
+            let title = NSMenuItem(title: parent.recentSearchesTitle, action: nil, keyEquivalent: "")
+            title.tag = NSSearchField.recentsTitleMenuItemTag
+            menu.addItem(title)
+
+            let recents = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+            recents.tag = NSSearchField.recentsMenuItemTag
+            menu.addItem(recents)
+
+            let noRecents = NSMenuItem(title: parent.noRecentSearchesTitle, action: nil, keyEquivalent: "")
+            noRecents.tag = NSSearchField.noRecentsMenuItemTag
+            menu.addItem(noRecents)
+
+            menu.addItem(.separator())
+            let clear = NSMenuItem(
+                title: parent.clearRecentSearchesTitle,
+                action: #selector(clearRecentSearches(_:)),
+                keyEquivalent: ""
+            )
+            clear.target = self
+            menu.addItem(clear)
+            return menu
+        }
+
+        func installSearchMenuIfNeeded(on searchField: NSSearchField) {
+            let signature = [
+                parent.recentSearchesTitle,
+                parent.noRecentSearchesTitle,
+                parent.clearRecentSearchesTitle
+            ].joined(separator: "\u{1F}")
+            guard searchMenuSignature != signature else { return }
+            searchMenuSignature = signature
+            searchField.searchMenuTemplate = makeSearchMenu()
+        }
+
+        @objc private func clearRecentSearches(_ sender: Any?) {
+            parent.onClearRecentSearches()
         }
     }
 }

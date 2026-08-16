@@ -362,6 +362,61 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
 }
 
 final class OAuthBridgeTests: XCTestCase {
+    func testProviderRequestsUseIndependentXPCConnectionLanes() {
+        let codexRequest = OAuthBridgeRequest(
+            operation: .authenticationStatus,
+            arguments: OAuthBridgeRequestArguments(provider: .codex)
+        )
+        let grokRequest = OAuthBridgeRequest(
+            operation: .authenticationStatus,
+            arguments: OAuthBridgeRequestArguments(provider: .grok)
+        )
+        let sharedRequest = OAuthBridgeRequest(operation: .capabilities)
+
+        XCTAssertEqual(OAuthBridgeClient.connectionLane(for: codexRequest), .codex)
+        XCTAssertEqual(OAuthBridgeClient.connectionLane(for: grokRequest), .grok)
+        XCTAssertEqual(OAuthBridgeClient.connectionLane(for: sharedRequest), .shared)
+        XCTAssertNotEqual(
+            OAuthBridgeClient.connectionLane(for: codexRequest),
+            OAuthBridgeClient.connectionLane(for: grokRequest)
+        )
+    }
+
+    func testApplicationEntitlementsAllowPersistentSecurityScopedBookmarks() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let entitlementURL = projectRoot
+            .appending(path: "XunJian/XunJian.entitlements")
+        let data = try Data(contentsOf: entitlementURL)
+        let plist = try XCTUnwrap(
+            PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
+        )
+
+        XCTAssertEqual(plist["com.apple.security.files.bookmarks.app-scope"] as? Bool, true)
+        XCTAssertEqual(plist["com.apple.security.files.user-selected.read-write"] as? Bool, true)
+    }
+
+    func testCodexStatusProbeClosesItsRuntimeBeforeReturning() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: projectRoot.appending(path: "XunJianOAuthBridge/main.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(
+            source.range(of: "private func authenticationStatus(")?.lowerBound
+        )
+        let end = try XCTUnwrap(
+            source.range(of: "private func startLogin(", range: start..<source.endIndex)?.lowerBound
+        )
+        let statusSource = source[start..<end]
+
+        XCTAssertTrue(statusSource.contains("await closeCodexStatusRuntime(runtime)"))
+        XCTAssertTrue(statusSource.contains("guard cleanupSucceeded"))
+    }
+
     func testProtocolV6GenerationRequestRoundTripPreservesTypedArguments() throws {
         let attemptID = UUID(uuidString: "991E6827-4F90-4980-963C-BF9AA5736571")!
         let cancelRequest = OAuthBridgeRequest(
@@ -1147,6 +1202,42 @@ final class OAuthBridgeTests: XCTestCase {
         let calls = await fake.calls()
         XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
         XCTAssertEqual(calls, [.status(.grok), .status(.grok)])
+    }
+
+    @MainActor
+    func testOAuthBusinessRequestWaitsForStatusAndSuppressesOverlappingRefresh() async throws {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: true)
+        let statusGate = OAuthStatusGate()
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedIn,
+            connectionState: .connected
+        )), gate: statusGate)
+
+        let statusRefresh = Task { await coordinator.refreshStatus(for: .codex) }
+        await waitForCallCount(1, fake: fake)
+        let businessRequest = Task {
+            try await coordinator.beginProviderRequest(.codex)
+        }
+        await Task.yield()
+        await statusGate.open()
+        await statusRefresh.value
+        try await businessRequest.value
+
+        await coordinator.refreshStatus(for: .codex)
+        let callsWhileBusy = await fake.calls()
+        XCTAssertEqual(callsWhileBusy, [.status(.codex)])
+
+        coordinator.endProviderRequest(.codex)
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedIn,
+            connectionState: .connected
+        )))
+        await coordinator.refreshStatus(for: .codex)
+        let callsAfterRelease = await fake.calls()
+        XCTAssertEqual(callsAfterRelease, [.status(.codex), .status(.codex)])
     }
 
     @MainActor

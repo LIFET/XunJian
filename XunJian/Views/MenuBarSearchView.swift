@@ -19,9 +19,7 @@ struct MenuBarSearchView: View {
     @State private var displayedResults: [IndexedFile] = []
     @State private var remainingCount = 0
     @State private var filterTask: Task<Void, Never>?
-    @FocusState private var isFieldFocused: Bool
-
-    @ScaledMetric(relativeTo: .body) private var iconSize: CGFloat = 13
+    @State private var isFieldFocused = false
 
     private static let maximumResults = 8
 
@@ -45,10 +43,8 @@ struct MenuBarSearchView: View {
                         .padding(.horizontal, 14)
                         .padding(.top, 8)
                 }
-                ScrollView {
-                    resultList
-                }
-                .frame(maxHeight: 280)
+                resultList
+                    .frame(maxHeight: 280)
                 if remainingCount > 0 {
                     Button {
                         revealRemainingInAllFiles()
@@ -94,37 +90,27 @@ struct MenuBarSearchView: View {
     }
 
     private var searchRow: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.system(size: iconSize))
-                .foregroundStyle(.secondary)
-
-            TextField(
-                "",
-                text: $query,
-                prompt: Text(verbatim: AppLanguage.localized(
-                    "快速查找文件…",
-                    english: "Find files…"
-                ))
-            )
-            .textFieldStyle(.plain)
-            .focused($isFieldFocused)
-            .onSubmit(revealHighlighted)
-            .onKeyPress(.upArrow) {
-                moveHighlight(by: -1)
-                return .handled
+        NativeSearchField(
+            text: $query,
+            isFocused: $isFieldFocused,
+            prompt: AppLanguage.localized("快速查找文件…", english: "Find files…"),
+            accessibilityLabel: AppLanguage.localized("快速查找文件", english: "Find Files"),
+            accessibilityHelp: AppLanguage.localized(
+                "搜索已索引的本地文件",
+                english: "Searches indexed local files"
+            ),
+            onSubmit: { _ in revealHighlighted() },
+            onMoveSelection: moveHighlight,
+            onCancel: {
+                if query.isEmpty {
+                    NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
+                } else {
+                    query = ""
+                }
             }
-            .onKeyPress(.downArrow) {
-                moveHighlight(by: 1)
-                return .handled
-            }
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                "快速查找文件",
-                english: "Find Files"
-            )))
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        )
+        .frame(height: 30)
+        .padding(10)
     }
 
     private var emptyMessage: String {
@@ -144,57 +130,46 @@ struct MenuBarSearchView: View {
     }
 
     private var resultList: some View {
-        VStack(spacing: 0) {
-            ForEach(Array(displayedResults.enumerated()), id: \.element.id) { index, file in
-                Button {
-                    reveal(file)
-                } label: {
-                    HStack(spacing: 9) {
-                        FileThumbnail(file: file, size: 22)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(verbatim: file.name)
-                                .lineLimit(1)
-                            Text(verbatim: resultSubtitle(for: file))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        Spacer(minLength: 0)
+        List(selection: resultSelection) {
+            ForEach(displayedResults) { file in
+                HStack(spacing: 9) {
+                    FileThumbnail(file: file, size: 22)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(verbatim: file.name)
+                            .lineLimit(1)
+                        Text(verbatim: resultSubtitle(for: file))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 6)
-                    .background(
-                        index == highlightedIndex ? XunJianUI.Fill.selected : .clear,
-                        in: RoundedRectangle(
-                            cornerRadius: XunJianUI.Radius.row,
-                            style: .continuous
-                        )
-                    )
-                    .contentShape(Rectangle())
+                    Spacer(minLength: 0)
                 }
-                .buttonStyle(.plain)
+                .tag(file.id)
                 .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                     "在寻简中显示“\(file.name)”",
                     english: "Reveal “\(file.name)” in XunJian"
                 )))
-                .accessibilityAddTraits(index == highlightedIndex ? [.isButton, .isSelected] : .isButton)
+                .onTapGesture(count: 2) { reveal(file) }
             }
         }
-        .padding(.vertical, 4)
+        .listStyle(.plain)
     }
 
     private var footer: some View {
         HStack(spacing: 10) {
-            Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
-                revealHighlighted()
-            }
-            .disabled(!displayedResults.indices.contains(highlightedIndex))
+            ControlGroup {
+                Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
+                    revealHighlighted()
+                }
+                .disabled(!displayedResults.indices.contains(highlightedIndex))
 
-            Button(AppLanguage.localized("打开文件", english: "Open File")) {
-                openHighlightedFile()
+                Button(AppLanguage.localized("打开文件", english: "Open File")) {
+                    openHighlightedFile()
+                }
+                .disabled(!displayedResults.indices.contains(highlightedIndex))
             }
-            .disabled(!displayedResults.indices.contains(highlightedIndex))
+            .controlSize(.small)
 
             Spacer(minLength: 0)
 
@@ -202,7 +177,6 @@ struct MenuBarSearchView: View {
                 activateMainWindow()
             }
         }
-        .buttonStyle(.link)
         .font(.callout)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -222,6 +196,20 @@ struct MenuBarSearchView: View {
     private func moveHighlight(by offset: Int) {
         guard !displayedResults.isEmpty else { return }
         highlightedIndex = min(max(highlightedIndex + offset, 0), displayedResults.count - 1)
+    }
+
+    private var resultSelection: Binding<String?> {
+        Binding(
+            get: {
+                guard displayedResults.indices.contains(highlightedIndex) else { return nil }
+                return displayedResults[highlightedIndex].id
+            },
+            set: { selectedID in
+                guard let selectedID,
+                      let index = displayedResults.firstIndex(where: { $0.id == selectedID }) else { return }
+                highlightedIndex = index
+            }
+        )
     }
 
     private func revealHighlighted() {

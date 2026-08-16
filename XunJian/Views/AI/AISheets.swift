@@ -298,75 +298,72 @@ struct AIQuestionSheet: View {
     }
 
     private var conversationPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if !turns.isEmpty || !output.isEmpty {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(turns) { turn in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(turn.role == .user
-                                     ? AppLanguage.localized("你", english: "You")
-                                     : AppLanguage.localized("AI", english: "AI"))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(verbatim: turn.text)
-                                    .textSelection(.enabled)
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                if !turns.isEmpty || !output.isEmpty {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(turns) { turn in
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(turn.role == .user
+                                         ? AppLanguage.localized("你", english: "You")
+                                         : AppLanguage.localized("AI", english: "AI"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(verbatim: turn.text)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                            if isWorking, !output.isEmpty {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(AppLanguage.localized("AI", english: "AI"))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(.secondary)
+                                    Text(verbatim: output)
+                                        .textSelection(.enabled)
+                                }
                             }
                         }
-                        if isWorking, !output.isEmpty {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(AppLanguage.localized("AI", english: "AI"))
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundStyle(.secondary)
-                                Text(verbatim: output)
-                                    .textSelection(.enabled)
-                            }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    if isWorking {
+                        HStack(spacing: 8) {
+                            ProgressView().controlSize(.small)
+                            Text(AppLanguage.localized("正在生成回答…", english: "Generating an answer…"))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
+                        .frame(maxWidth: .infinity, alignment: .center)
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if isWorking {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text(AppLanguage.localized("正在生成回答…", english: "Generating an answer…"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                } else if isWorking {
+                    Spacer(minLength: 0)
+                    ProgressView(
+                        AppLanguage.localized(
+                            "正在读取文件并生成回答…",
+                            english: "Reading the file and generating an answer…"
+                        )
+                    )
                     .frame(maxWidth: .infinity, alignment: .center)
+                    Spacer(minLength: 0)
+                } else {
+                    ContentUnavailableView(
+                        AppLanguage.localized("准备向 AI 提问", english: "Ready to Ask AI"),
+                        systemImage: "bubble.left.and.text.bubble.right",
+                        description: Text(AppLanguage.localized(
+                            "仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。",
+                            english: "Only the text needed to answer is sent from this file. Paths and other files are not."
+                        ))
+                    )
                 }
-            } else if isWorking {
-                Spacer(minLength: 0)
-                ProgressView(
-                    AppLanguage.localized(
-                        "正在读取文件并生成回答…",
-                        english: "Reading the file and generating an answer…"
-                    )
-                )
-                .frame(maxWidth: .infinity, alignment: .center)
-                Spacer(minLength: 0)
-            } else {
-                Text(
-                    AppLanguage.localized(
-                        "仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。",
-                        english: "Only the text needed to answer is sent from this file. Paths and other files are not."
-                    )
-                )
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            }
 
-            if let failure {
-                Text(AppLanguage.localizedRuntimeMessage(failure))
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.danger)
+                if let failure {
+                    Text(AppLanguage.localizedRuntimeMessage(failure))
+                        .font(.caption)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
+                }
             }
         }
-        .padding(12)
         .frame(maxWidth: .infinity, minHeight: 220, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-        )
     }
 
     private func ask() {
@@ -467,7 +464,8 @@ struct AITextResultSheet: View {
     }
 
     private var resultPanel: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
             if !output.isEmpty {
                 ScrollView {
                     Text(output)
@@ -513,18 +511,14 @@ struct AITextResultSheet: View {
                 .foregroundStyle(.secondary)
             }
 
-            if let failure {
-                Text(AppLanguage.localizedRuntimeMessage(failure))
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.danger)
+                if let failure {
+                    Text(AppLanguage.localizedRuntimeMessage(failure))
+                        .font(.caption)
+                        .foregroundStyle(XunJianUI.Semantic.danger)
+                }
             }
         }
-        .padding(12)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-        )
     }
 }
 
@@ -543,6 +537,7 @@ struct AIClassificationSheet: View {
     @State private var showsAppliedConfirmation = false
     @State private var isCommittingChanges = false
     @State private var showsCategoryEditor = false
+    @State private var isFileSearchFocused = false
     /// Name-sorted copy of the index, rebuilt off the main actor only when
     /// the file set changes.
     @State private var nameSortedFilesCache: [IndexedFile] = []
@@ -707,11 +702,25 @@ struct AIClassificationSheet: View {
             )
             .toggleStyle(.switch)
             .frame(maxWidth: .infinity, alignment: .leading)
-            TextField(
-                AppLanguage.localized("搜索本地文件…", english: "Search local files…"),
-                text: $fileSearchText
+            NativeSearchField(
+                text: $fileSearchText,
+                isFocused: $isFileSearchFocused,
+                prompt: AppLanguage.localized("搜索本地文件…", english: "Search local files…"),
+                accessibilityLabel: AppLanguage.localized("搜索本地文件", english: "Search Local Files"),
+                accessibilityHelp: AppLanguage.localized(
+                    "筛选可供 AI 分类的本地文件",
+                    english: "Filters local files available for AI classification"
+                ),
+                onSubmit: { _ in },
+                onCancel: {
+                    if fileSearchText.isEmpty {
+                        isFileSearchFocused = false
+                    } else {
+                        fileSearchText = ""
+                    }
+                }
             )
-                .textFieldStyle(.roundedBorder)
+            .frame(height: 30)
             HStack {
                 Spacer(minLength: 0)
                 Button(
@@ -724,30 +733,18 @@ struct AIClassificationSheet: View {
                 .buttonStyle(.link)
                 .disabled(displayedClassificationFiles.isEmpty)
             }
-            List(displayedClassificationFiles) { file in
-                Button {
-                    toggle(file.id)
-                } label: {
+            List(selection: classificationSelection) {
+                ForEach(displayedClassificationFiles) { file in
                     HStack {
-                        Image(
-                            systemName: selectedFileIDs.contains(file.id)
-                                ? "checkmark.circle.fill" : "circle"
-                        )
-                        .foregroundStyle(
-                            selectedFileIDs.contains(file.id) ? Color.accentColor : .secondary
-                        )
                         Text(file.name)
                             .lineLimit(1)
                         Spacer()
                         Text(file.kind.localizedTitle)
                             .foregroundStyle(.secondary)
                     }
-                    .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                    .contentShape(Rectangle())
+                    .tag(file.id)
+                    .disabled(!selectedFileIDs.contains(file.id) && selectedFileIDs.count >= 50)
                 }
-                .buttonStyle(.plain)
-                .contentShape(Rectangle())
-                .disabled(!selectedFileIDs.contains(file.id) && selectedFileIDs.count >= 50)
             }
             .listStyle(.bordered(alternatesRowBackgrounds: true))
         }
@@ -879,12 +876,19 @@ struct AIClassificationSheet: View {
         .listStyle(.bordered(alternatesRowBackgrounds: true))
     }
 
-    private func toggle(_ fileID: String) {
-        if selectedFileIDs.contains(fileID) {
-            selectedFileIDs.remove(fileID)
-        } else if selectedFileIDs.count < 50 {
-            selectedFileIDs.insert(fileID)
-        }
+    private var classificationSelection: Binding<Set<String>> {
+        Binding(
+            get: { selectedFileIDs },
+            set: { proposed in
+                guard proposed.count > 50 else {
+                    selectedFileIDs = proposed
+                    return
+                }
+                let additions = proposed.subtracting(selectedFileIDs)
+                let capacity = max(50 - selectedFileIDs.count, 0)
+                selectedFileIDs.formUnion(additions.prefix(capacity))
+            }
+        )
     }
 
     private var allDisplayedFilesSelected: Bool {

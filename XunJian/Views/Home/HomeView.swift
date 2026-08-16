@@ -34,11 +34,6 @@ struct HomeView: View {
                             searchAllFiles(query)
                         }
                     )
-                        .onSubmit {
-                            let trimmed = homeQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !trimmed.isEmpty else { return }
-                            searchAllFiles(trimmed)
-                        }
                     recentFiles
                     fileKinds
                     scanLocations
@@ -223,33 +218,32 @@ struct HomeView: View {
     private var scanLocations: some View {
         section(title: AppLanguage.localized("扫描位置", english: "Scan Locations")) {
             if appModel.sources.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "folder.badge.questionmark")
+                GroupBox {
+                    LabeledContent {
+                        Text(verbatim: AppLanguage.localized(
+                            "可在设置中添加",
+                            english: "Add one in Settings"
+                        ))
                         .foregroundStyle(.secondary)
-                    Text(
-                        AppLanguage.localized(
-                            "尚未添加扫描位置",
-                            english: "No scan locations yet"
+                    } label: {
+                        Label(
+                            AppLanguage.localized(
+                                "尚未添加扫描位置",
+                                english: "No scan locations yet"
+                            ),
+                            systemImage: "folder.badge.questionmark"
                         )
-                    )
-                        .foregroundStyle(.secondary)
-                    Spacer(minLength: 0)
+                    }
                 }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 14)
-                .background(
-                    XunJianUI.Fill.quiet,
-                    in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                )
             } else {
-                GroupedSurface(padding: 10) {
+                GroupBox {
                     VStack(spacing: 0) {
                         ForEach(Array(appModel.sources.enumerated()), id: \.element.id) { index, source in
                             ViewThatFits(in: .horizontal) {
-                                HStack(spacing: 12) {
-                                    sourceIdentity(source)
-                                    Spacer(minLength: 0)
+                                LabeledContent {
                                     sourceActions(source)
+                                } label: {
+                                    sourceIdentity(source)
                                 }
 
                                 VStack(alignment: .leading, spacing: 8) {
@@ -308,12 +302,6 @@ struct HomeView: View {
     @ViewBuilder
     private func sourceActions(_ source: FileSource) -> some View {
         HStack(spacing: 8) {
-            if source.accessState != .available {
-                Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
-                    appModel.reauthorizeSource(source)
-                }
-                .controlSize(.small)
-            }
             Toggle(
                 AppLanguage.localized(
                     source.enabled ? "索引中" : "已暂停",
@@ -342,14 +330,21 @@ struct HomeView: View {
                 )
             )
             .disabled(!appModel.isDatabaseAvailable)
-            Button(
-                AppLanguage.localized("移除…", english: "Remove…"),
-                role: .destructive
-            ) {
-                sourcePendingRemoval = source
+            ControlGroup {
+                if source.accessState != .available {
+                    Button(AppLanguage.localized("重新授权", english: "Reauthorize")) {
+                        appModel.reauthorizeSource(source)
+                    }
+                }
+                Button(
+                    AppLanguage.localized("移除…", english: "Remove…"),
+                    role: .destructive
+                ) {
+                    sourcePendingRemoval = source
+                }
+                .disabled(!appModel.isDatabaseAvailable)
             }
             .controlSize(.small)
-            .disabled(!appModel.isDatabaseAvailable)
         }
     }
 

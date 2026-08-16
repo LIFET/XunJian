@@ -154,4 +154,89 @@ struct FileSelection: Equatable, Sendable {
         leadID = ids.first
         anchorID = leadID
     }
+
+    /// Reconciles the native macOS table's set-only selection with the
+    /// Finder-style lead/anchor metadata used by keyboard and menu actions.
+    /// The table does not expose the clicked row separately, so the newly
+    /// added endpoint is inferred from the selection delta and display order.
+    mutating func applyNativeTableSelection(
+        _ newIDs: Set<String>,
+        orderedIDs: [String],
+        idIndex: [String: Int]? = nil,
+        command: Bool = false,
+        shift: Bool = false
+    ) {
+        guard newIDs != ids else { return }
+        guard !newIDs.isEmpty else {
+            clear()
+            return
+        }
+        if newIDs.count == 1, let onlyID = newIDs.first {
+            replace(with: onlyID)
+            return
+        }
+
+        let previousIDs = ids
+        let previousAnchor = anchorID ?? leadID
+        let addedIDs = newIDs.subtracting(previousIDs)
+        let removedIDs = previousIDs.subtracting(newIDs)
+
+        if command,
+           let toggledID = addedIDs.count == 1
+                ? addedIDs.first
+                : (removedIDs.count == 1 ? removedIDs.first : nil) {
+            select(
+                toggledID,
+                in: orderedIDs,
+                command: true,
+                shift: shift,
+                idIndex: idIndex
+            )
+            if ids == newIDs { return }
+        }
+
+        if shift, let anchor = previousAnchor {
+            func position(of id: String) -> Int? {
+                idIndex?[id] ?? orderedIDs.firstIndex(of: id)
+            }
+            if let anchorPosition = position(of: anchor),
+               let endpoint = newIDs.max(by: { lhs, rhs in
+                   abs((position(of: lhs) ?? anchorPosition) - anchorPosition)
+                       < abs((position(of: rhs) ?? anchorPosition) - anchorPosition)
+               }) {
+                select(
+                    endpoint,
+                    in: orderedIDs,
+                    command: command,
+                    shift: true,
+                    idIndex: idIndex
+                )
+                if ids == newIDs { return }
+            }
+        }
+
+        ids = newIDs
+
+        if addedIDs.count == 1, let addedID = addedIDs.first {
+            leadID = addedID
+            anchorID = addedID
+            return
+        }
+
+        if addedIDs.count > 1 {
+            func position(of id: String) -> Int? {
+                idIndex?[id] ?? orderedIDs.firstIndex(of: id)
+            }
+            if let anchor = previousAnchor, let anchorPosition = position(of: anchor) {
+                leadID = addedIDs.max { lhs, rhs in
+                    abs((position(of: lhs) ?? anchorPosition) - anchorPosition)
+                        < abs((position(of: rhs) ?? anchorPosition) - anchorPosition)
+                }
+                anchorID = anchor
+                return
+            }
+        }
+
+        reconcileMetadata()
+    }
 }

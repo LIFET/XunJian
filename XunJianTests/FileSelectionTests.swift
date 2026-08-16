@@ -109,4 +109,42 @@ final class FileSelectionTests: XCTestCase {
         XCTAssertEqual(selection.anchorID, selection.leadID)
         XCTAssertNotEqual(selection.leadID, "c")
     }
+
+    func testNativeTableSingleSelectionMovesLeadAndAnchor() {
+        var selection = FileSelection(ids: ["a", "c"], leadID: "c", anchorID: "a")
+
+        selection.applyNativeTableSelection(["b"], orderedIDs: files)
+
+        XCTAssertEqual(selection.ids, ["b"])
+        XCTAssertEqual(selection.leadID, "b")
+        XCTAssertEqual(selection.anchorID, "b")
+    }
+
+    func testNativeTableCommandAdditionMovesLeadAndAnchor() {
+        var selection = FileSelection(ids: ["b"], leadID: "b", anchorID: "b")
+
+        selection.applyNativeTableSelection(
+            ["b", "d"],
+            orderedIDs: files,
+            command: true
+        )
+
+        XCTAssertEqual(selection.ids, ["b", "d"])
+        XCTAssertEqual(selection.leadID, "d")
+        XCTAssertEqual(selection.anchorID, "d")
+    }
+
+    func testNativeTableRangeInfersEndpointFarthestFromAnchor() {
+        var selection = FileSelection(ids: ["c"], leadID: "c", anchorID: "c")
+
+        selection.applyNativeTableSelection(
+            ["a", "b", "c"],
+            orderedIDs: files,
+            idIndex: ["a": 0, "b": 1, "c": 2, "d": 3],
+            shift: true
+        )
+
+        XCTAssertEqual(selection.leadID, "a")
+        XCTAssertEqual(selection.anchorID, "c")
+    }
 }

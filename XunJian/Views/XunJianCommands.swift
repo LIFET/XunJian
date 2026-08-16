@@ -1,5 +1,16 @@
 import SwiftUI
 
+private struct XunJianInspectorSupportKey: FocusedValueKey {
+    typealias Value = Bool
+}
+
+extension FocusedValues {
+    var xunJianSupportsInspector: Bool? {
+        get { self[XunJianInspectorSupportKey.self] }
+        set { self[XunJianInspectorSupportKey.self] = newValue }
+    }
+}
+
 extension Notification.Name {
     static let xunJianFocusSearch = Notification.Name(
         "com.xingmingbo.XunJian.focusSearch"
@@ -31,6 +42,7 @@ extension Notification.Name {
 struct XunJianCommands: Commands {
     @ObservedObject var appModel: AppModel
     @ObservedObject var undo: UndoCoordinator
+    @FocusedValue(\.xunJianSupportsInspector) private var supportsInspector
 
     private var selectedFile: IndexedFile? { appModel.selectedFile }
     private var hasSelection: Bool { selectedFile != nil }
@@ -85,7 +97,7 @@ struct XunJianCommands: Commands {
             .keyboardShortcut("y", modifiers: .command)
             .disabled(!hasSelection)
 
-            Button(AppLanguage.localized("在访达中显示", english: "Show in Finder")) {
+            Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
                 selectedFile.map(appModel.showInFinder)
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
@@ -194,6 +206,7 @@ struct XunJianCommands: Commands {
                 NotificationCenter.default.post(name: .xunJianToggleInspector, object: nil)
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
+            .disabled(supportsInspector != true)
 
             Divider()
 

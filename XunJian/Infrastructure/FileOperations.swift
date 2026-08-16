@@ -599,11 +599,12 @@ struct FileThumbnail: View {
         }
     }
 
-    /// Table-sized cells only need the file icon. Asking Quick Look for
-    /// `.all` made every visible image/video row wait on a full preview.
+    /// Finder-like previews are requested at every display size. Quick Look
+    /// remains bounded to visible rows by SwiftUI task lifetime, the shared
+    /// concurrency gate and the thumbnail cache.
     static func representationTypes(
         for size: CGFloat
     ) -> QLThumbnailGenerator.Request.RepresentationTypes {
-        size <= 32 ? .icon : .thumbnail
+        .thumbnail
     }
 }
