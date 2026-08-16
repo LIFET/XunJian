@@ -110,10 +110,12 @@ struct AIProviderSettingsRow: View {
                     .transition(.opacity)
                 }
             }
-            .padding(.top, 8)
+            .padding(.top, 10)
         } label: {
-            HStack {
+            HStack(spacing: 8) {
                 Text(verbatim: providerTitle)
+                    .font(.body.weight(.medium))
+                    .layoutPriority(1)
                 Spacer()
                 if ai.activeProviderKind == kind {
                     Image(systemName: "checkmark.circle.fill")
@@ -124,10 +126,14 @@ struct AIProviderSettingsRow: View {
                         .foregroundStyle(providerStatusColor)
                         .font(.caption)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
             }
+            .padding(.vertical, 5)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
+        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
         .onAppear(perform: synchronizeFields)
         .onAppear {
             guard !didApplyInitialExpansion else { return }
@@ -294,6 +300,11 @@ struct AIProviderSettingsRow: View {
 
                 oauthActions
             }
+            // GroupBox's content inset is intentionally compact on macOS.
+            // Status dots and multi-line failure details otherwise sit on the
+            // rounded border, especially when the label scrolls out of view.
+            .padding(.horizontal, 16)
+            .padding(.vertical, 14)
         } label: {
             Label(
                 AppLanguage.localized("官方账号", english: "Official Account"),
@@ -751,6 +762,44 @@ struct AIProviderSettingsRow: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(verbatim: title)
                 content()
+            }
+        }
+    }
+}
+
+/// Keeps the native disclosure semantics while making the complete provider
+/// header — not only the tiny chevron — the click target. A single custom
+/// button also avoids stacking a second tap gesture on top of DisclosureGroup.
+private struct FullRowDisclosureGroupStyle: DisclosureGroupStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                if reduceMotion {
+                    configuration.isExpanded.toggle()
+                } else {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        configuration.isExpanded.toggle()
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
+                        .frame(width: 12)
+                    configuration.label
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+
+            if configuration.isExpanded {
+                configuration.content
+                    .padding(.leading, 20)
             }
         }
     }

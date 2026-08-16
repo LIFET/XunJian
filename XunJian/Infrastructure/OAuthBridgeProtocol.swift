@@ -125,16 +125,25 @@ enum OAuthBridgeGenerationPolicy {
     }
 
     static func makePrompt(systemPrompt: String, userPrompt: String) -> String {
-        """
+        let escapedSystemPrompt = escapedPromptSegment(systemPrompt)
+        let escapedUserPrompt = escapedPromptSegment(userPrompt)
+        return """
         Follow the system instructions and answer the user request below.
         Do not use tools, commands, files, network access, or external resources.
         <system_instructions>
-        \(systemPrompt)
+        \(escapedSystemPrompt)
         </system_instructions>
         <user_request>
-        \(userPrompt)
+        \(escapedUserPrompt)
         </user_request>
         """
+    }
+
+    private static func escapedPromptSegment(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
     }
 
     private static func stringIsValid(

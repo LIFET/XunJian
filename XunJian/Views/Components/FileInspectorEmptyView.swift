@@ -14,6 +14,9 @@ struct FileInspectorView: View {
     @State private var isLoadingPreview = false
     @State private var previewFailed = false
     @State private var previewRetry = 0
+    /// Observe only the presentation query. Search lifecycle changes no
+    /// longer travel through AppModel and redraw the entire inspector shell.
+    @State private var highlightQuery = ""
     // Read-only Finder tags, fetched live rather than indexed (N11).
     @State private var finderTags: [String] = []
     @State private var loadedFinderTagFileID: String?
@@ -340,6 +343,11 @@ struct FileInspectorView: View {
                 )
             }
         }
+        .onReceive(
+            appModel.browseSearchStore.$highlightQuery.removeDuplicates()
+        ) { query in
+            highlightQuery = query
+        }
         .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
         .onAppear { restoreCachedInspectorContent() }
         .onChange(of: file?.id) { _, _ in
@@ -451,7 +459,7 @@ struct FileInspectorView: View {
     /// highlighted (N08). Case-insensitive; plain text otherwise.
     private func highlightedPreview(_ text: String) -> AttributedString {
         var attributed = AttributedString(text)
-        let query = appModel.highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return attributed }
 
         let lowercasedText = text.lowercased()

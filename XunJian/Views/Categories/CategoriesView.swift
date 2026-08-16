@@ -357,7 +357,8 @@ struct CategoriesView: View {
                         accessibilityHint: AppLanguage.localized(
                             "只搜索当前分类中的文件",
                             english: "Searches only files in this category"
-                        )
+                        ),
+                        focusScope: .category
                     )
                     if isCategorySearching {
                         ProgressView()

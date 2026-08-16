@@ -337,6 +337,25 @@ private enum ManagedRuntimeDigestError: Error {
     case unreadableFile
 }
 
+/// Pure, offline decision used by lifecycle status restoration.
+///
+/// A credential file only proves that an account was previously signed in.
+/// The stronger `connected` state is restored exclusively when the local
+/// runtime-and-credential-bound verification proof still matches.
+enum OAuthStoredCredentialDecision: Equatable, Sendable {
+    case signedOut
+    case signedInUnverified
+    case connected
+
+    static func resolve(
+        credentialIsPresent: Bool,
+        verificationProofMatches: Bool
+    ) -> Self {
+        guard credentialIsPresent else { return .signedOut }
+        return verificationProofMatches ? .connected : .signedInUnverified
+    }
+}
+
 enum ManagedRuntimeDigest {
     static func sha256Hex(data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()

@@ -195,7 +195,7 @@ actor CodexAppServerClient {
                 "clientInfo": .object([
                     "name": .string("xunjian"),
                     "title": .string("XunJian"),
-                    "version": .string("0.1.0")
+                    "version": .string("0.1.1")
                 ]),
                 "capabilities": .object([
                     "experimentalApi": .bool(false),

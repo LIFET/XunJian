@@ -15,7 +15,7 @@ struct FileSelection: Equatable, Sendable {
         if let leadID, ids.contains(leadID) {
             return leadID
         }
-        return ids.first
+        return ids.min()
     }
 
     mutating func clear() {
@@ -83,9 +83,13 @@ struct FileSelection: Equatable, Sendable {
 
         if command {
             if ids.contains(fileID) {
+                let removedPosition = index(of: fileID)
                 ids.remove(fileID)
                 if leadID == fileID {
-                    leadID = ids.first
+                    leadID = nearestSelectedID(
+                        to: removedPosition,
+                        in: orderedIDs
+                    )
                 }
                 if anchorID == fileID {
                     anchorID = leadID
@@ -99,6 +103,27 @@ struct FileSelection: Equatable, Sendable {
         }
 
         replace(with: fileID)
+    }
+
+    private func nearestSelectedID(
+        to removedPosition: Int?,
+        in orderedIDs: [String]
+    ) -> String? {
+        guard !ids.isEmpty else { return nil }
+        guard let removedPosition else { return ids.min() }
+        if removedPosition > 0 {
+            for position in stride(from: removedPosition - 1, through: 0, by: -1) {
+                let candidate = orderedIDs[position]
+                if ids.contains(candidate) { return candidate }
+            }
+        }
+        if removedPosition + 1 < orderedIDs.count {
+            for position in (removedPosition + 1)..<orderedIDs.count {
+                let candidate = orderedIDs[position]
+                if ids.contains(candidate) { return candidate }
+            }
+        }
+        return ids.min()
     }
 
     /// Arrow-key movement. Shift keeps the original anchor and grows the range.
@@ -151,7 +176,7 @@ struct FileSelection: Equatable, Sendable {
             }
             return
         }
-        leadID = ids.first
+        leadID = ids.min()
         anchorID = leadID
     }
 
@@ -238,5 +263,53 @@ struct FileSelection: Equatable, Sendable {
         }
 
         reconcileMetadata()
+    }
+}
+
+/// Keeps an AppKit selection gesture authoritative until its SwiftUI binding
+/// has echoed the same value back into `updateNSView`.
+///
+/// `NSCollectionView` can publish deselect/select callbacks separately and a
+/// representable update may run between them (for example when a thumbnail
+/// finishes). Applying the still-old binding during that window visibly rolls
+/// the native highlight back. Once publication completes, a genuinely
+/// different external value remains authoritative.
+struct NativeSelectionEchoGuard: Equatable, Sendable {
+    private enum Phase: Equatable, Sendable {
+        case awaitingPublication
+        case awaitingEcho
+    }
+
+    private var pendingIDs: Set<String>?
+    private var phase: Phase?
+
+    mutating func nativeSelectionDidChange(to ids: Set<String>) {
+        pendingIDs = ids
+        phase = .awaitingPublication
+    }
+
+    mutating func nativeSelectionPublicationDidComplete() {
+        guard pendingIDs != nil else { return }
+        phase = .awaitingEcho
+    }
+
+    /// Returns `true` only when AppKit should apply the external value.
+    mutating func shouldApplyExternalSelection(_ ids: Set<String>) -> Bool {
+        guard let pendingIDs, let phase else { return true }
+        if ids == pendingIDs {
+            cancelPendingNativeSelection()
+            return false
+        }
+        if phase == .awaitingPublication {
+            return false
+        }
+        // The model intentionally normalized or replaced the native value.
+        cancelPendingNativeSelection()
+        return true
+    }
+
+    mutating func cancelPendingNativeSelection() {
+        pendingIDs = nil
+        phase = nil
     }
 }

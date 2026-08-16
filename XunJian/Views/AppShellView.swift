@@ -1,19 +1,69 @@
 import SwiftUI
 
+struct AppShellResponsiveLayoutState: Equatable {
+    private(set) var prefersSidebarVisible = true
+    private(set) var prefersInspectorVisible = false
+    private(set) var isSidebarForcedCollapsed = false
+    private(set) var isInspectorForcedCollapsed = false
+
+    var showsSidebar: Bool {
+        prefersSidebarVisible && !isSidebarForcedCollapsed
+    }
+
+    var showsInspector: Bool {
+        prefersInspectorVisible && !isInspectorForcedCollapsed
+    }
+
+    mutating func update(windowWidth: CGFloat) {
+        guard windowWidth > 0 else { return }
+
+        if isSidebarForcedCollapsed {
+            if windowWidth > XunJianUI.Breakpoint.sidebarRestore {
+                isSidebarForcedCollapsed = false
+            }
+        } else if windowWidth < XunJianUI.Breakpoint.sidebarAutoCollapse {
+            isSidebarForcedCollapsed = true
+        }
+
+        if isInspectorForcedCollapsed {
+            if windowWidth > XunJianUI.Breakpoint.inspectorRestore {
+                isInspectorForcedCollapsed = false
+            }
+        } else if windowWidth < XunJianUI.Breakpoint.inspectorAutoCollapse {
+            isInspectorForcedCollapsed = true
+        }
+    }
+
+    mutating func setSidebarVisible(_ isVisible: Bool) {
+        guard !isSidebarForcedCollapsed else { return }
+        prefersSidebarVisible = isVisible
+    }
+
+    mutating func setInspectorVisible(_ isVisible: Bool) {
+        guard !isInspectorForcedCollapsed else { return }
+        prefersInspectorVisible = isVisible
+    }
+}
+
+enum AppShellSearchCommandRoute: Equatable {
+    case focusVisibleField
+    case revealAllFilesThenFocus
+}
+
+enum AppShellBrowseModeCommandRoute: Equatable {
+    case visibleFilePage
+    case revealAllFiles
+}
+
 struct AppShellView: View {
     static let minimumInspectorWindowWidth: CGFloat = 720
 
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.controlActiveState) private var controlActiveState
     @State private var selection: NavigationDestination? = .home
-    @State private var columnVisibility = NavigationSplitViewVisibility.all
-    @State private var showsInspector = false
+    @State private var responsiveLayout = AppShellResponsiveLayoutState()
     @State private var windowWidth: CGFloat = 1_200
-    @State private var hasMeasuredWindow = false
-    @State private var sidebarWasAutoCollapsed = false
-    @State private var inspectorWasAutoCollapsed = false
     @State private var showsGlobalNewCategory = false
 
     var body: some View {
@@ -30,7 +80,7 @@ struct AppShellView: View {
     }
 
     private var appContent: some View {
-        let navigation = NavigationSplitView(columnVisibility: $columnVisibility) {
+        let navigation = NavigationSplitView(columnVisibility: columnVisibility) {
             SidebarView(
                 selection: $selection,
                 categories: appModel.categories.map(\.localizedForDisplay)
@@ -40,7 +90,10 @@ struct AppShellView: View {
             GeometryReader { detailGeometry in
                 VStack(spacing: 0) {
                     if selection == .allFiles {
-                        SearchField(text: $appModel.searchText)
+                        BrowseSearchField(
+                            store: appModel.browseSearchStore,
+                            appModel: appModel
+                        )
                             .padding(.horizontal, XunJianUI.Spacing.page)
                             .padding(.top, 12)
                             .padding(.bottom, 10)
@@ -91,12 +144,7 @@ struct AppShellView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
-                    var transaction = Transaction()
-                    transaction.animation = nil
-                    withTransaction(transaction) {
-                        showsInspector.toggle()
-                    }
-                    inspectorWasAutoCollapsed = false
+                    setInspectorVisible(!showsInspector)
                 } label: {
                     Label(
                         AppLanguage.localized("文件详情", english: "File Details"),
@@ -104,7 +152,7 @@ struct AppShellView: View {
                     )
                     .symbolVariant(showsInspector ? .fill : .none)
                 }
-                .disabled(!supportsInspector)
+                .disabled(!canToggleInspector)
                 .accessibilityValue(
                     AppLanguage.localized(
                         showsInspector ? "已显示" : "已隐藏",
@@ -120,64 +168,22 @@ struct AppShellView: View {
                 )
             }
         }
-        .focusedSceneValue(\.xunJianSupportsInspector, supportsInspector)
+        .focusedSceneValue(\.xunJianCommandContext, commandContext)
         return navigation
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRevealInAllFiles)) { _ in
                 selection = .allFiles
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearch)) { _ in
-                // Home and category detail already own search fields; ⌘F
-                // should focus the visible field instead of changing pages.
-                switch selection ?? .home {
-                case .home, .category:
-                    NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
-                    return
-                case .allFiles, .categories, .settings:
-                    break
-                }
-                selection = .allFiles
-                Task { @MainActor in
-                    // Wait until the retained All Files layer is visible and
-                    // its SearchField has re-entered the responder chain.
-                    try? await Task.sleep(for: .milliseconds(50))
-                    guard selection == .allFiles else { return }
-                    NotificationCenter.default.post(name: .xunJianFocusSearchField, object: nil)
-                }
+                focusSearch()
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
                 guard let raw = note.object as? String,
                       let mode = FileBrowseViewMode(rawValue: raw) else { return }
-                switch selection ?? .home {
-                case .allFiles, .category:
-                    // The visible file page consumes this notification itself.
-                    return
-                case .home, .categories, .settings:
-                    // No file list is visible: land on All Files and forward
-                    // the request so ⌘1/⌘2 does what it says instead of
-                    // silently no-op'ing.
-                    selection = .allFiles
-                    Task { @MainActor in
-                        NotificationCenter.default.post(
-                            name: .xunJianSetBrowseViewMode,
-                            object: mode.rawValue
-                        )
-                    }
-                }
+                handleBrowseViewModeNotification(mode)
             }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianToggleInspector)) { _ in
-                guard supportsInspector else { return }
-                var transaction = Transaction()
-                transaction.animation = nil
-                withTransaction(transaction) {
-                    showsInspector.toggle()
-                }
-                inspectorWasAutoCollapsed = false
-            }
-            .onChange(of: columnVisibility) { oldValue, newValue in
-                handleColumnVisibilityChange(oldValue, newValue)
-            }
-            .onChange(of: showsInspector) { oldValue, newValue in
-                handleInspectorVisibilityChange(oldValue, newValue)
+                guard canToggleInspector else { return }
+                setInspectorVisible(!showsInspector)
             }
             .onChange(of: selection) { _, newSelection in
                 prepareCommandTargets(for: newSelection)
@@ -295,23 +301,6 @@ struct AppShellView: View {
             }
     }
 
-    private func handleColumnVisibilityChange(
-        _ oldValue: NavigationSplitViewVisibility,
-        _ newValue: NavigationSplitViewVisibility
-    ) {
-        let isAutomaticCollapse = windowWidth < XunJianUI.Breakpoint.sidebarAutoCollapse
-            && newValue == .detailOnly
-            && sidebarWasAutoCollapsed
-        if !isAutomaticCollapse { sidebarWasAutoCollapsed = false }
-    }
-
-    private func handleInspectorVisibilityChange(_ oldValue: Bool, _ isPresented: Bool) {
-        let isAutomaticCollapse = windowWidth < XunJianUI.Breakpoint.inspectorAutoCollapse
-            && !isPresented
-            && inspectorWasAutoCollapsed
-        if !isAutomaticCollapse { inspectorWasAutoCollapsed = false }
-    }
-
     private func prepareCommandTargets(for destination: NavigationDestination?) {
         switch destination ?? .home {
         case .home:
@@ -320,6 +309,163 @@ struct AppShellView: View {
             // Each destination publishes its own exact visible rows once its
             // async filtering is complete. Clear the previous page now.
             appModel.updateCommandTargetFiles([])
+        }
+    }
+
+    private var commandContext: XunJianCommandContext {
+        let destination = selection ?? .home
+        let isFilePage = Self.supportsFileCommands(for: destination)
+        let selectedFile = isFilePage ? appModel.selectedFile : nil
+        let availability = XunJianCommandAvailability.resolve(
+            destination: destination,
+            databaseAvailable: appModel.isDatabaseAvailable,
+            hasSelectedFile: selectedFile != nil,
+            selectedFileCount: isFilePage ? appModel.selectedFileIDs.count : 0,
+            hasCommandTargets: isFilePage && !appModel.commandTargetFiles.isEmpty,
+            canToggleInspector: canToggleInspector,
+            isExporting: appModel.isExportingFileList
+        )
+        return XunJianCommandContext(
+            availability: availability,
+            createCategory: { showsGlobalNewCategory = true },
+            addFolder: { appModel.chooseFolder() },
+            openSelected: { selectedFile.map(appModel.open) },
+            quickLookSelected: { selectedFile.map(appModel.quickLook) },
+            showSelectedInFinder: { selectedFile.map(appModel.showInFinder) },
+            renameSelected: { selectedFile.map(appModel.requestRename) },
+            moveSelected: { selectedFile.map(appModel.chooseMoveDestination) },
+            trashSelection: {
+                guard let selectedFile else { return }
+                if appModel.selectedFileIDs.count > 1 {
+                    appModel.requestBatchTrash()
+                } else {
+                    appModel.requestTrash(selectedFile)
+                }
+            },
+            copySelectedPath: { selectedFile.map(appModel.copyPath) },
+            selectAll: appModel.selectAllDisplayedFiles,
+            deselectAll: { appModel.selectedFileIDs = [] },
+            focusSearch: focusSearch,
+            setBrowseViewMode: setBrowseViewMode,
+            toggleInspector: { setInspectorVisible(!showsInspector) },
+            showCommandPalette: {
+                NotificationCenter.default.post(name: .xunJianShowCommandPalette, object: nil)
+            },
+            previewSelectedText: {
+                NotificationCenter.default.post(name: .xunJianShowTextPreview, object: nil)
+            },
+            showStorageInsights: {
+                NotificationCenter.default.post(name: .xunJianShowStorageInsights, object: nil)
+            },
+            exportFileList: { format in
+                NotificationCenter.default.post(
+                    name: .xunJianExportFileList,
+                    object: format.rawValue
+                )
+            }
+        )
+    }
+
+    static func supportsFileCommands(for destination: NavigationDestination) -> Bool {
+        switch destination {
+        case .allFiles, .category:
+            return true
+        case .home, .categories, .settings:
+            return false
+        }
+    }
+
+    static func searchCommandRoute(
+        for destination: NavigationDestination
+    ) -> AppShellSearchCommandRoute {
+        switch destination {
+        case .home, .allFiles, .category:
+            return .focusVisibleField
+        case .categories, .settings:
+            return .revealAllFilesThenFocus
+        }
+    }
+
+    static func searchFieldScope(
+        for destination: NavigationDestination
+    ) -> XunJianSearchFieldScope? {
+        switch destination {
+        case .home:
+            return .home
+        case .allFiles:
+            return .allFiles
+        case .category:
+            return .category
+        case .categories, .settings:
+            return nil
+        }
+    }
+
+    static func browseModeCommandRoute(
+        for destination: NavigationDestination
+    ) -> AppShellBrowseModeCommandRoute {
+        supportsFileCommands(for: destination) ? .visibleFilePage : .revealAllFiles
+    }
+
+    private func focusSearch() {
+        let destination = selection ?? .home
+        switch Self.searchCommandRoute(for: destination) {
+        case .focusVisibleField:
+            guard let scope = Self.searchFieldScope(for: destination) else { return }
+            NotificationCenter.default.post(
+                name: .xunJianFocusSearchField,
+                object: scope.rawValue
+            )
+        case .revealAllFilesThenFocus:
+            selection = .allFiles
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(50))
+                guard selection == .allFiles else { return }
+                NotificationCenter.default.post(
+                    name: .xunJianFocusSearchField,
+                    object: XunJianSearchFieldScope.allFiles.rawValue
+                )
+            }
+        }
+    }
+
+    private func setBrowseViewMode(_ mode: FileBrowseViewMode) {
+        switch Self.browseModeCommandRoute(for: selection ?? .home) {
+        case .visibleFilePage:
+            NotificationCenter.default.post(
+                name: .xunJianSetBrowseViewMode,
+                object: mode.rawValue
+            )
+        case .revealAllFiles:
+            selection = .allFiles
+            Task { @MainActor in
+                NotificationCenter.default.post(
+                    name: .xunJianSetBrowseViewMode,
+                    object: mode.rawValue
+                )
+            }
+        }
+    }
+
+    private func handleBrowseViewModeNotification(_ mode: FileBrowseViewMode) {
+        guard Self.browseModeCommandRoute(for: selection ?? .home) == .revealAllFiles else {
+            // The visible file page already received this notification.
+            return
+        }
+        selection = .allFiles
+        Task { @MainActor in
+            NotificationCenter.default.post(
+                name: .xunJianSetBrowseViewMode,
+                object: mode.rawValue
+            )
+        }
+    }
+
+    private func setInspectorVisible(_ isVisible: Bool) {
+        var transaction = Transaction()
+        transaction.animation = nil
+        withTransaction(transaction) {
+            responsiveLayout.setInspectorVisible(isVisible)
         }
     }
 
@@ -334,6 +480,23 @@ struct AppShellView: View {
         Self.supportsInspector(
             for: selection ?? .home,
             windowWidth: windowWidth
+        )
+    }
+
+    private var canToggleInspector: Bool {
+        supportsInspector && !responsiveLayout.isInspectorForcedCollapsed
+    }
+
+    private var showsInspector: Bool {
+        supportsInspector && responsiveLayout.showsInspector
+    }
+
+    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { responsiveLayout.showsSidebar ? .all : .detailOnly },
+            set: { visibility in
+                responsiveLayout.setSidebarVisible(visibility != .detailOnly)
+            }
         )
     }
 
@@ -363,61 +526,18 @@ struct AppShellView: View {
 
     private var inspectorPresentation: Binding<Bool> {
         Binding(
-            get: { supportsInspector && showsInspector },
-            set: { if supportsInspector { showsInspector = $0 } }
+            get: { showsInspector },
+            set: { isPresented in
+                guard supportsInspector else { return }
+                setInspectorVisible(isPresented)
+            }
         )
     }
 
     private func updateResponsiveLayout(for newWidth: CGFloat) {
         guard newWidth > 0 else { return }
-
-        guard hasMeasuredWindow else {
-            windowWidth = newWidth
-            hasMeasuredWindow = true
-            if newWidth < Self.minimumInspectorWindowWidth, showsInspector {
-                showsInspector = false
-                inspectorWasAutoCollapsed = true
-            }
-            if newWidth < XunJianUI.Breakpoint.sidebarAutoCollapse,
-               columnVisibility != .detailOnly {
-                columnVisibility = .detailOnly
-                sidebarWasAutoCollapsed = true
-            }
-            return
-        }
-
-        let previousWidth = windowWidth
         windowWidth = newWidth
-
-        let animation = XunJianUI.motion(reduceMotion: reduceMotion)
-
-        if newWidth < Self.minimumInspectorWindowWidth,
-           showsInspector {
-            showsInspector = false
-            inspectorWasAutoCollapsed = true
-        } else if previousWidth >= XunJianUI.Breakpoint.inspectorAutoCollapse,
-           newWidth < XunJianUI.Breakpoint.inspectorAutoCollapse,
-           showsInspector {
-            showsInspector = false
-            inspectorWasAutoCollapsed = true
-        } else if previousWidth <= XunJianUI.Breakpoint.inspectorRestore,
-                  newWidth > XunJianUI.Breakpoint.inspectorRestore,
-                  inspectorWasAutoCollapsed {
-            showsInspector = true
-            inspectorWasAutoCollapsed = false
-        }
-
-        if previousWidth >= XunJianUI.Breakpoint.sidebarAutoCollapse,
-           newWidth < XunJianUI.Breakpoint.sidebarAutoCollapse,
-           columnVisibility != .detailOnly {
-            withAnimation(animation) { columnVisibility = .detailOnly }
-            sidebarWasAutoCollapsed = true
-        } else if previousWidth <= XunJianUI.Breakpoint.sidebarRestore,
-                  newWidth > XunJianUI.Breakpoint.sidebarRestore,
-                  sidebarWasAutoCollapsed {
-            withAnimation(animation) { columnVisibility = .all }
-            sidebarWasAutoCollapsed = false
-        }
+        responsiveLayout.update(windowWidth: newWidth)
     }
 
     @ViewBuilder

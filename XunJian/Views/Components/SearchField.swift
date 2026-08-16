@@ -130,12 +130,30 @@ extension View {
 
 // MARK: - Search field
 
+/// Observes the global query without making AppShellView observe it. Each key
+/// therefore invalidates only this small native-control bridge.
+struct BrowseSearchField: View {
+    @ObservedObject var store: BrowseSearchStore
+    let appModel: AppModel
+
+    var body: some View {
+        SearchField(
+            text: Binding(
+                get: { store.query },
+                set: { appModel.searchText = $0 }
+            ),
+            focusScope: .allFiles
+        )
+    }
+}
+
 struct SearchField: View {
     @Binding var text: String
     /// Overrides the default "search local files" prompt when the field is
     /// scoped (category page) rather than global.
     var prompt: String? = nil
     var accessibilityHint: String? = nil
+    var focusScope: XunJianSearchFieldScope
     /// Called when a recent-search chip is chosen. Home uses this to jump to
     /// All Files; other pages just fill the field via `text`.
     var onHistorySelect: ((String) -> Void)? = nil
@@ -144,14 +162,15 @@ struct SearchField: View {
     /// Shared so the field can offer recent searches without every call site
     /// having to thread a store through (N03).
     @ObservedObject private var history = SearchHistoryStore.shared
-    @ScaledMetric(relativeTo: .body) private var fieldHeight: CGFloat = 36
+    @ScaledMetric(relativeTo: .body) private var fieldHeight: CGFloat = 40
 
     var body: some View {
         searchRow
             .onExitCommand {
                 handleExitCommand()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearchField)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearchField)) { note in
+                guard note.object as? String == focusScope.rawValue else { return }
                 isFocused = true
             }
     }
@@ -172,6 +191,7 @@ struct SearchField: View {
                 "搜索已索引的本地文件",
                 english: "Searches indexed local files"
             ),
+            controlSize: .large,
             recentSearches: history.entries,
             recentSearchesTitle: AppLanguage.localized("最近搜索", english: "Recent Searches"),
             noRecentSearchesTitle: AppLanguage.localized("没有最近搜索", english: "No Recent Searches"),
@@ -204,6 +224,7 @@ struct NativeSearchField: NSViewRepresentable {
     let prompt: String
     let accessibilityLabel: String
     let accessibilityHelp: String
+    var controlSize: NSControl.ControlSize = .regular
     var recentSearches: [String] = []
     var recentSearchesTitle = ""
     var noRecentSearchesTitle = ""
@@ -222,6 +243,8 @@ struct NativeSearchField: NSViewRepresentable {
         searchField.delegate = context.coordinator
         searchField.target = context.coordinator
         searchField.action = #selector(Coordinator.submit(_:))
+        searchField.controlSize = controlSize
+        searchField.bezelStyle = .roundedBezel
         searchField.focusRingType = .default
         searchField.sendsSearchStringImmediately = false
         searchField.sendsWholeSearchString = true
@@ -238,6 +261,7 @@ struct NativeSearchField: NSViewRepresentable {
             searchField.stringValue = text
         }
         searchField.placeholderString = prompt
+        searchField.controlSize = controlSize
         searchField.setAccessibilityLabel(accessibilityLabel)
         searchField.setAccessibilityHelp(accessibilityHelp)
         searchField.recentSearches = recentSearches

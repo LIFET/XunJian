@@ -21,7 +21,7 @@ struct MenuBarSearchView: View {
     @State private var filterTask: Task<Void, Never>?
     @State private var isFieldFocused = false
 
-    private static let maximumResults = 8
+    private static let maximumResults = 50
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -44,7 +44,7 @@ struct MenuBarSearchView: View {
                         .padding(.top, 8)
                 }
                 resultList
-                    .frame(maxHeight: 280)
+                    .frame(maxHeight: .infinity)
                 if remainingCount > 0 {
                     Button {
                         revealRemainingInAllFiles()
@@ -64,7 +64,7 @@ struct MenuBarSearchView: View {
             Divider()
             footer
         }
-        .frame(width: 340)
+        .frame(width: 340, height: 480)
         .environment(
             \.locale,
             AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
@@ -145,12 +145,20 @@ struct MenuBarSearchView: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .contentShape(Rectangle())
                 .tag(file.id)
                 .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                     "在寻简中显示“\(file.name)”",
                     english: "Reveal “\(file.name)” in XunJian"
                 )))
-                .onTapGesture(count: 2) { reveal(file) }
+                // A double-click recognizer delays the first click while it
+                // waits for a possible second click. Keep selection immediate;
+                // Return and the footer buttons perform the actions.
+                .onTapGesture {
+                    if let index = displayedResults.firstIndex(where: { $0.id == file.id }) {
+                        highlightedIndex = index
+                    }
+                }
             }
         }
         .listStyle(.plain)
@@ -158,18 +166,15 @@ struct MenuBarSearchView: View {
 
     private var footer: some View {
         HStack(spacing: 10) {
-            ControlGroup {
-                Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
-                    revealHighlighted()
-                }
-                .disabled(!displayedResults.indices.contains(highlightedIndex))
-
-                Button(AppLanguage.localized("打开文件", english: "Open File")) {
-                    openHighlightedFile()
-                }
-                .disabled(!displayedResults.indices.contains(highlightedIndex))
+            Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
+                revealHighlighted()
             }
-            .controlSize(.small)
+            .disabled(!displayedResults.indices.contains(highlightedIndex))
+
+            Button(AppLanguage.localized("打开文件", english: "Open File")) {
+                openHighlightedFile()
+            }
+            .disabled(!displayedResults.indices.contains(highlightedIndex))
 
             Spacer(minLength: 0)
 
@@ -177,6 +182,7 @@ struct MenuBarSearchView: View {
                 activateMainWindow()
             }
         }
+        .controlSize(.small)
         .font(.callout)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

@@ -118,7 +118,7 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
 
         let popover = NSPopover()
         popover.behavior = .transient
-        popover.contentSize = NSSize(width: 340, height: 360)
+        popover.contentSize = NSSize(width: 340, height: 480)
         popover.contentViewController = NSHostingController(
             rootView: MenuBarSearchView().environmentObject(appModel)
         )

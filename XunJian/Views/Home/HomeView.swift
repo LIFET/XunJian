@@ -30,6 +30,7 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
                     SearchField(
                         text: $homeQuery,
+                        focusScope: .home,
                         onHistorySelect: { query in
                             searchAllFiles(query)
                         }
@@ -240,10 +241,12 @@ struct HomeView: View {
                     VStack(spacing: 0) {
                         ForEach(Array(appModel.sources.enumerated()), id: \.element.id) { index, source in
                             ViewThatFits(in: .horizontal) {
-                                LabeledContent {
-                                    sourceActions(source)
-                                } label: {
+                                HStack(spacing: 12) {
                                     sourceIdentity(source)
+                                        .layoutPriority(1)
+                                    Spacer(minLength: 12)
+                                    sourceActions(source)
+                                        .fixedSize(horizontal: true, vertical: false)
                                 }
 
                                 VStack(alignment: .leading, spacing: 8) {

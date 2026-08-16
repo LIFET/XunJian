@@ -287,6 +287,7 @@ enum FileIndexError: LocalizedError, Sendable {
     case bookmarkCreation
     case bookmarkResolution
     case unreadableFolder(String)
+    case scanLimitExceeded(Int)
     case overlappingSource(String)
     case invalidCategoryName
     case categoryExists
@@ -308,6 +309,11 @@ enum FileIndexError: LocalizedError, Sendable {
             AppLanguage.localized("macOS 已取消这个文件夹的访问权限，请重新授权。", english: "macOS revoked access to this folder. Authorize it again.")
         case let .unreadableFolder(name):
             AppLanguage.localized("无法读取文件夹“\(name)”，请检查它是否存在以及当前权限。", english: "The folder “\(name)” could not be read. Check that it exists and that access is allowed.")
+        case let .scanLimitExceeded(limit):
+            AppLanguage.localized(
+                "这个扫描范围超过 \(limit) 个文件。为避免寻简占用过多内存，已保留原索引；请改为添加更小的文件夹。",
+                english: "This scan scope contains more than \(limit) files. Its previous index was preserved to prevent excessive memory use. Add a smaller folder instead."
+            )
         case let .overlappingSource(existingName):
             AppLanguage.localized(
                 "无法添加这个文件夹，因为它与已授权文件夹“\(existingName)”重叠。请选择现有索引范围之外的文件夹。",
@@ -418,6 +424,7 @@ actor FileScanner {
         includesHiddenFiles: Bool = false,
         extractsText: Bool = true,
         allowsUnreadableDescendants: Bool = false,
+        maximumFileCount: Int? = nil,
         progress: ProgressHandler? = nil
     ) async throws -> [IndexedFile] {
         beginCanonicalizationCache()
@@ -427,6 +434,7 @@ actor FileScanner {
             includesHiddenFiles: includesHiddenFiles,
             extractsText: extractsText,
             allowsUnreadableDescendants: allowsUnreadableDescendants,
+            maximumFileCount: maximumFileCount,
             progress: progress
         )
     }
@@ -445,7 +453,9 @@ actor FileScanner {
         progress: ProgressHandler? = nil
     ) async throws {
         precondition(batchSize > 0)
-        let candidates = files.filter { textExtractor.supports($0.url) }
+        let candidates = files.filter {
+            !ScanExclusions.isSensitivePath($0.url) && textExtractor.supports($0.url)
+        }
         guard !candidates.isEmpty else { return }
 
         let maximumConcurrentExtractions = 4
@@ -528,6 +538,7 @@ actor FileScanner {
             let eventPath = canonicalPath(event.path)
             guard isPath(eventPath, inside: canonicalRootPath),
                   (includesHiddenFiles || !isDotPrefixedPath(eventPath)),
+                  !ScanExclusions.isSensitivePath(URL(fileURLWithPath: eventPath)),
                   !isExcludedPath(eventPath, relativeTo: canonicalRootPath) else {
                 continue
             }
@@ -588,6 +599,7 @@ actor FileScanner {
                         includesHiddenFiles: includesHiddenFiles,
                         extractsText: extractsText,
                         allowsUnreadableDescendants: false,
+                        maximumFileCount: nil,
                         progress: nil
                     )
                 } catch is CancellationError {
@@ -638,6 +650,7 @@ actor FileScanner {
         includesHiddenFiles: Bool,
         extractsText: Bool,
         allowsUnreadableDescendants: Bool,
+        maximumFileCount: Int?,
         progress: ProgressHandler?
     ) throws -> [IndexedFile] {
         var isDirectory: ObjCBool = false
@@ -684,6 +697,11 @@ actor FileScanner {
                 try Task.checkCancellation()
             }
 
+            if ScanExclusions.isSensitivePath(fileURL) {
+                enumerator.skipDescendants()
+                continue
+            }
+
             let values: URLResourceValues
             do {
                 values = try resourceValuesLoader(fileURL, resourceKeySet)
@@ -715,6 +733,9 @@ actor FileScanner {
                 extractsText: extractsText
             ) else { continue }
             files.append(file)
+            if let maximumFileCount, files.count > maximumFileCount {
+                throw FileIndexError.scanLimitExceeded(maximumFileCount)
+            }
 
             // Stride-based progress plus a time floor: fast scans otherwise
             // emit thousands of main-actor hops for no visible benefit.
@@ -776,7 +797,8 @@ actor FileScanner {
         indexedAt: Date,
         extractsText: Bool
     ) -> IndexedFile? {
-        guard (values.isRegularFile == true || Self.isDocumentPackage(fileURL, values: values)),
+        guard !ScanExclusions.isSensitivePath(fileURL),
+              (values.isRegularFile == true || Self.isDocumentPackage(fileURL, values: values)),
               values.isSymbolicLink != true else {
             return nil
         }
@@ -873,6 +895,10 @@ actor FileScanner {
 
 actor FileIndexDatabase {
     private let connection: SQLiteConnection
+    /// FTS reads run on their own actor and read-only WAL connection. Keeping
+    /// this immutable reference nonisolated lets searches bypass a long writer
+    /// transaction while SQLite serves the last committed snapshot.
+    private nonisolated let searchReader: FileIndexSearchReader
 
     init(databaseURL: URL) throws {
         let databaseDirectory = databaseURL.deletingLastPathComponent()
@@ -900,6 +926,7 @@ actor FileIndexDatabase {
             throw FileIndexError.database(message)
         }
 
+        var openedSearchDatabase: OpaquePointer?
         do {
             guard try Self.databaseFileIdentity(at: databaseURL) == expectedDatabaseIdentity else {
                 throw FileIndexError.database("索引文件在打开期间被替换")
@@ -913,12 +940,38 @@ actor FileIndexDatabase {
             sqlite3_busy_timeout(openedDatabase, 3_000)
             try Self.migrate(openedDatabase)
             try Self.restrictDatabaseFiles(at: databaseURL)
+
+            let searchOpenCode = sqlite3_open_v2(
+                databaseURL.path,
+                &openedSearchDatabase,
+                SQLITE_OPEN_READONLY | SQLITE_OPEN_FULLMUTEX,
+                nil
+            )
+            guard searchOpenCode == SQLITE_OK, let openedSearchDatabase else {
+                let message = openedSearchDatabase.map {
+                    String(cString: sqlite3_errmsg($0))
+                } ?? "无法打开只读搜索连接"
+                throw FileIndexError.database(message)
+            }
+            guard try Self.databaseFileIdentity(at: databaseURL) == expectedDatabaseIdentity else {
+                throw FileIndexError.database("索引文件在打开搜索连接期间被替换")
+            }
+            try Self.execute("PRAGMA query_only = ON;", on: openedSearchDatabase)
+            sqlite3_busy_timeout(openedSearchDatabase, 3_000)
         } catch {
+            if let openedSearchDatabase { sqlite3_close(openedSearchDatabase) }
             sqlite3_close(openedDatabase)
             throw error
         }
 
+        guard let openedSearchDatabase else {
+            sqlite3_close(openedDatabase)
+            throw FileIndexError.database("无法打开只读搜索连接")
+        }
         connection = SQLiteConnection(pointer: openedDatabase)
+        searchReader = FileIndexSearchReader(
+            connection: SQLiteConnection(pointer: openedSearchDatabase)
+        )
     }
 
     static func defaultDatabaseURL() throws -> URL {
@@ -1364,6 +1417,64 @@ actor FileIndexDatabase {
         return removedFileIDs
     }
 
+    /// Drops legacy rows that no longer belong to the product's bounded
+    /// Whole-Mac scopes. This is intentionally path-based so upgrading from
+    /// the former root-directory scan removes system and sensitive entries
+    /// without touching files that remain inside an allowed user folder.
+    @discardableResult
+    func removeFiles(
+        for sourceID: UUID,
+        outsideScopePaths scopePaths: [String]
+    ) throws -> Set<String> {
+        guard !scopePaths.isEmpty else { return [] }
+        let normalizedScopes = scopePaths.map {
+            $0.hasSuffix("/") ? $0 : $0 + "/"
+        }
+        let selectStatement = try prepare(
+            "SELECT id, path FROM files WHERE source_id = ?;"
+        )
+        defer { sqlite3_finalize(selectStatement) }
+        try bind(sourceID.uuidString, at: 1, to: selectStatement)
+
+        var removedFileIDs = Set<String>()
+        while sqlite3_step(selectStatement) == SQLITE_ROW {
+            let fileID = text(selectStatement, column: 0)
+            let path = text(selectStatement, column: 1)
+            let isAllowed = zip(scopePaths, normalizedScopes).contains { scope, prefix in
+                path == scope || path.hasPrefix(prefix)
+            }
+            if !isAllowed || ScanExclusions.isSensitivePath(URL(fileURLWithPath: path)) {
+                removedFileIDs.insert(fileID)
+            }
+        }
+        guard !removedFileIDs.isEmpty else { return [] }
+
+        try transaction {
+            let deleteSearchStatement = try prepare(
+                "DELETE FROM file_search WHERE file_id = ?;"
+            )
+            defer { sqlite3_finalize(deleteSearchStatement) }
+            let deleteFileStatement = try prepare(
+                "DELETE FROM files WHERE id = ? AND source_id = ?;"
+            )
+            defer { sqlite3_finalize(deleteFileStatement) }
+
+            for fileID in removedFileIDs {
+                sqlite3_reset(deleteSearchStatement)
+                sqlite3_clear_bindings(deleteSearchStatement)
+                try bind(fileID, at: 1, to: deleteSearchStatement)
+                try stepDone(deleteSearchStatement)
+
+                sqlite3_reset(deleteFileStatement)
+                sqlite3_clear_bindings(deleteFileStatement)
+                try bind(fileID, at: 1, to: deleteFileStatement)
+                try bind(sourceID.uuidString, at: 2, to: deleteFileStatement)
+                try stepDone(deleteFileStatement)
+            }
+        }
+        return removedFileIDs
+    }
+
     /// Removes rows whose paths no longer exist on disk, returning the IDs of
     /// the rows removed.
     @discardableResult
@@ -1735,211 +1846,91 @@ actor FileIndexDatabase {
         }
     }
 
-    func searchFiles(
+    nonisolated func searchFiles(
         matching query: String,
         limit: Int = 500,
         sourceIDs: Set<UUID>? = nil
-    ) throws -> [IndexedFile] {
-        try searchFilesPage(
-            matching: query,
-            limit: limit,
-            sourceIDs: sourceIDs
-        ).files
+    ) async throws -> [IndexedFile] {
+        let cancellationToken = SQLiteSearchCancellationToken()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await searchReader.searchFilesPage(
+                matching: query,
+                limit: limit,
+                sourceIDs: sourceIDs,
+                cancellationToken: cancellationToken
+            ).files
+        } onCancel: {
+            cancellationToken.cancel()
+        }
     }
 
     /// Single-query FTS lookup for multiple keywords (F13): AI search used to
     /// run one query per keyword (up to 12 round-trips); now they OR together
     /// into one MATCH expression.
-    func searchFiles(
+    nonisolated func searchFiles(
         matchingAnyOf keywords: [String],
         limit: Int = 500,
         sourceIDs: Set<UUID>? = nil
-    ) throws -> [IndexedFile] {
-        guard let matchExpression = SearchIndexText.matchExpression(forKeywords: keywords) else {
-            return []
+    ) async throws -> [IndexedFile] {
+        let cancellationToken = SQLiteSearchCancellationToken()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await searchReader.searchFiles(
+                matchingAnyOf: keywords,
+                limit: limit,
+                sourceIDs: sourceIDs,
+                cancellationToken: cancellationToken
+            )
+        } onCancel: {
+            cancellationToken.cancel()
         }
-        return try searchFilesPage(
-            matchExpression: matchExpression,
-            limit: limit,
-            sourceIDs: sourceIDs
-        ).files
     }
 
-    func searchFilesPage(
+    nonisolated func searchFilesPage(
         matching query: String,
         limit: Int = 500,
         offset: Int = 0,
         includesHiddenFiles: Bool = true,
         fetchesTotalCount: Bool = true,
         sourceIDs: Set<UUID>? = nil
-    ) throws -> FileSearchPage {
-        guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
-            return FileSearchPage(files: [], totalCount: 0)
+    ) async throws -> FileSearchPage {
+        let cancellationToken = SQLiteSearchCancellationToken()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await searchReader.searchFilesPage(
+                matching: query,
+                limit: limit,
+                offset: offset,
+                includesHiddenFiles: includesHiddenFiles,
+                fetchesTotalCount: fetchesTotalCount,
+                sourceIDs: sourceIDs,
+                cancellationToken: cancellationToken
+            )
+        } onCancel: {
+            cancellationToken.cancel()
         }
-        return try searchFilesPage(
-            matchExpression: matchExpression,
-            limit: limit,
-            offset: offset,
-            includesHiddenFiles: includesHiddenFiles,
-            fetchesTotalCount: fetchesTotalCount,
-            sourceIDs: sourceIDs
-        )
     }
 
-    func searchFileIDs(
+    nonisolated func searchFileIDs(
         matching query: String,
         inCategory categoryID: UUID,
         limit: Int,
         sourceIDs: Set<UUID>? = nil
-    ) throws -> Set<String> {
-        guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
-            return []
-        }
-        if let sourceIDs, sourceIDs.isEmpty { return [] }
-        let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
-        let sourceClause = orderedSourceIDs.map {
-            "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
-        } ?? ""
-        let statement = try prepare(
-            """
-            SELECT file_search.file_id
-            FROM file_search
-            JOIN file_categories AS fc ON fc.file_id = file_search.file_id
-            JOIN files AS f ON f.id = file_search.file_id
-            WHERE file_search MATCH ? AND fc.category_id = ?
-              \(sourceClause)
-            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
-            LIMIT ?;
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        try bind(matchExpression, at: 1, to: statement)
-        try bind(categoryID.uuidString, at: 2, to: statement)
-        var nextBinding: Int32 = 3
-        if let orderedSourceIDs {
-            for sourceID in orderedSourceIDs {
-                try bind(sourceID.uuidString, at: nextBinding, to: statement)
-                nextBinding += 1
-            }
-        }
-        try bind(Int64(max(1, limit)), at: nextBinding, to: statement)
-
-        var result = Set<String>()
-        while sqlite3_step(statement) == SQLITE_ROW {
-            result.insert(text(statement, column: 0))
-        }
-        return result
-    }
-
-    private func searchFilesPage(
-        matchExpression: String,
-        limit: Int,
-        offset: Int = 0,
-        includesHiddenFiles: Bool = true,
-        fetchesTotalCount: Bool = true,
-        sourceIDs: Set<UUID>? = nil
-    ) throws -> FileSearchPage {
-
-        if let sourceIDs, sourceIDs.isEmpty {
-            return FileSearchPage(files: [], totalCount: 0)
-        }
-
-        let requestedLimit = Int64(max(1, limit))
-        let requestedOffset = Int64(max(0, offset))
-        let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
-        let sourceClause = orderedSourceIDs.map {
-            "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
-        } ?? ""
-
-        // `rowid` is an indexed, stable tie-breaker for equal FTS ranks.
-        // Without it, OFFSET pagination can duplicate or skip rows when many
-        // files share the same bm25 score.
-        let statement = try prepare(
-            """
-            SELECT f.id, f.source_id, f.name, f.path, f.extension, f.file_type, f.size,
-                   f.created_at, f.modified_at, f.indexed_at,
-                   bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) AS search_rank
-            FROM file_search
-            JOIN files AS f ON f.id = file_search.file_id
-            WHERE file_search MATCH ?
-              AND (? = 1 OR f.path NOT GLOB '*/.*')
-              \(sourceClause)
-            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
-                     file_search.rowid ASC
-            LIMIT ? OFFSET ?;
-            """
-        )
-        defer { sqlite3_finalize(statement) }
-        try bind(matchExpression, at: 1, to: statement)
-        try bind(includesHiddenFiles ? 1 : 0, at: 2, to: statement)
-        var nextBinding: Int32 = 3
-        if let orderedSourceIDs {
-            for sourceID in orderedSourceIDs {
-                try bind(sourceID.uuidString, at: nextBinding, to: statement)
-                nextBinding += 1
-            }
-        }
-        try bind(requestedLimit, at: nextBinding, to: statement)
-        try bind(requestedOffset, at: nextBinding + 1, to: statement)
-
-        var files: [IndexedFile] = []
-        var fetchedRows = 0
-        while sqlite3_step(statement) == SQLITE_ROW {
-            fetchedRows += 1
-            guard let sourceID = UUID(uuidString: text(statement, column: 1)),
-                  let kind = FileKind(rawValue: text(statement, column: 5)) else {
-                continue
-            }
-            let file = IndexedFile(
-                id: text(statement, column: 0),
-                sourceID: sourceID,
-                name: text(statement, column: 2),
-                path: text(statement, column: 3),
-                fileExtension: text(statement, column: 4),
-                kind: kind,
-                size: sqlite3_column_int64(statement, 6),
-                createdAt: optionalDate(statement, column: 7),
-                modifiedAt: optionalDate(statement, column: 8),
-                indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+    ) async throws -> Set<String> {
+        let cancellationToken = SQLiteSearchCancellationToken()
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await searchReader.searchFileIDs(
+                matching: query,
+                inCategory: categoryID,
+                limit: limit,
+                sourceIDs: sourceIDs,
+                cancellationToken: cancellationToken
             )
-            files.append(file)
+        } onCancel: {
+            cancellationToken.cancel()
         }
-        guard fetchesTotalCount else {
-            return FileSearchPage(files: files, totalCount: max(0, offset) + files.count)
-        }
-        // When the page did not fill, the row count is the total and the
-        // second full MATCH scan can be skipped entirely.
-        guard fetchedRows == requestedLimit else {
-            return FileSearchPage(
-                files: files,
-                totalCount: max(0, offset) + fetchedRows
-            )
-        }
-        let countStatement = try prepare(
-            """
-            SELECT COUNT(*)
-            FROM file_search
-            JOIN files AS f ON f.id = file_search.file_id
-            WHERE file_search MATCH ?
-              AND (? = 1 OR f.path NOT GLOB '*/.*')
-              \(sourceClause);
-            """
-        )
-        defer { sqlite3_finalize(countStatement) }
-        try bind(matchExpression, at: 1, to: countStatement)
-        try bind(includesHiddenFiles ? 1 : 0, at: 2, to: countStatement)
-        if let orderedSourceIDs {
-            for (index, sourceID) in orderedSourceIDs.enumerated() {
-                try bind(sourceID.uuidString, at: Int32(index + 3), to: countStatement)
-            }
-        }
-        guard sqlite3_step(countStatement) == SQLITE_ROW else {
-            throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
-        }
-        return FileSearchPage(
-            files: files,
-            totalCount: Int(sqlite3_column_int64(countStatement, 0))
-        )
     }
 
     // MARK: - Saved searches (N07)
@@ -2981,7 +2972,390 @@ actor FileIndexDatabase {
 
     private func optionalDate(_ statement: OpaquePointer, column: Int32) -> Date? {
         guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
-        return Date(timeIntervalSince1970: sqlite3_column_double(statement, column))
+        let timestamp = sqlite3_column_double(statement, column)
+        guard timestamp > 1 else { return nil }
+        return Date(timeIntervalSince1970: timestamp)
+    }
+
+    private static var transientDestructor: sqlite3_destructor_type {
+        unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+    }
+}
+
+/// Serializes FTS statements independently from the writer actor. WAL keeps
+/// each statement on a coherent committed snapshot while a scan replaces rows
+/// in `FileIndexDatabase`'s separate connection.
+private final class SQLiteSearchCancellationToken: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        lock.unlock()
+    }
+
+    var isCancelled: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return cancelled
+    }
+
+    func checkCancellation() throws {
+        if isCancelled { throw CancellationError() }
+    }
+}
+
+private actor FileIndexSearchReader {
+    private let connection: SQLiteConnection
+
+    init(connection: SQLiteConnection) {
+        self.connection = connection
+    }
+
+    func searchFiles(
+        matchingAnyOf keywords: [String],
+        limit: Int,
+        sourceIDs: Set<UUID>?,
+        cancellationToken: SQLiteSearchCancellationToken
+    ) throws -> [IndexedFile] {
+        try cancellationToken.checkCancellation()
+        guard let matchExpression = SearchIndexText.matchExpression(forKeywords: keywords) else {
+            return []
+        }
+        return try searchFilesPage(
+            matchExpression: matchExpression,
+            limit: limit,
+            sourceIDs: sourceIDs,
+            cancellationToken: cancellationToken
+        ).files
+    }
+
+    func searchFilesPage(
+        matching query: String,
+        limit: Int,
+        offset: Int = 0,
+        includesHiddenFiles: Bool = true,
+        fetchesTotalCount: Bool = true,
+        sourceIDs: Set<UUID>? = nil,
+        cancellationToken: SQLiteSearchCancellationToken
+    ) throws -> FileSearchPage {
+        try cancellationToken.checkCancellation()
+        guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
+            return FileSearchPage(files: [], totalCount: 0)
+        }
+        return try searchFilesPage(
+            matchExpression: matchExpression,
+            limit: limit,
+            offset: offset,
+            includesHiddenFiles: includesHiddenFiles,
+            fetchesTotalCount: fetchesTotalCount,
+            sourceIDs: sourceIDs,
+            cancellationToken: cancellationToken
+        )
+    }
+
+    func searchFileIDs(
+        matching query: String,
+        inCategory categoryID: UUID,
+        limit: Int,
+        sourceIDs: Set<UUID>?,
+        cancellationToken: SQLiteSearchCancellationToken
+    ) throws -> Set<String> {
+        try cancellationToken.checkCancellation()
+        guard let matchExpression = SearchIndexText.matchExpression(for: query) else {
+            return []
+        }
+        if let sourceIDs, sourceIDs.isEmpty { return [] }
+        return try withCancellableReadOperation(cancellationToken) {
+            let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
+            let sourceClause = orderedSourceIDs.map {
+                "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
+            } ?? ""
+            let statement = try prepare(
+                """
+                SELECT file_search.file_id
+                FROM file_search
+                JOIN file_categories AS fc ON fc.file_id = file_search.file_id
+                JOIN files AS f ON f.id = file_search.file_id
+                WHERE file_search MATCH ? AND fc.category_id = ?
+                  \(sourceClause)
+                ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC
+                LIMIT ?;
+                """
+            )
+            defer { sqlite3_finalize(statement) }
+            try bind(matchExpression, at: 1, to: statement)
+            try bind(categoryID.uuidString, at: 2, to: statement)
+            var nextBinding: Int32 = 3
+            if let orderedSourceIDs {
+                for sourceID in orderedSourceIDs {
+                    try bind(sourceID.uuidString, at: nextBinding, to: statement)
+                    nextBinding += 1
+                }
+            }
+            try bind(Int64(max(1, limit)), at: nextBinding, to: statement)
+
+            var result = Set<String>()
+            while true {
+                switch sqlite3_step(statement) {
+                case SQLITE_ROW:
+                    result.insert(text(statement, column: 0))
+                case SQLITE_DONE:
+                    return result
+                default:
+                    throw databaseError()
+                }
+            }
+        }
+    }
+
+    private func searchFilesPage(
+        matchExpression: String,
+        limit: Int,
+        offset: Int = 0,
+        includesHiddenFiles: Bool = true,
+        fetchesTotalCount: Bool = true,
+        sourceIDs: Set<UUID>? = nil,
+        cancellationToken: SQLiteSearchCancellationToken
+    ) throws -> FileSearchPage {
+        try cancellationToken.checkCancellation()
+        if let sourceIDs, sourceIDs.isEmpty {
+            return FileSearchPage(files: [], totalCount: 0)
+        }
+        return try withReadTransaction(cancellationToken: cancellationToken) {
+            try searchFilesPageInCurrentSnapshot(
+                matchExpression: matchExpression,
+                limit: limit,
+                offset: offset,
+                includesHiddenFiles: includesHiddenFiles,
+                fetchesTotalCount: fetchesTotalCount,
+                sourceIDs: sourceIDs
+            )
+        }
+    }
+
+    private func searchFilesPageInCurrentSnapshot(
+        matchExpression: String,
+        limit: Int,
+        offset: Int,
+        includesHiddenFiles: Bool,
+        fetchesTotalCount: Bool,
+        sourceIDs: Set<UUID>?
+    ) throws -> FileSearchPage {
+        let requestedLimit = Int64(max(1, limit))
+        let requestedOffset = Int64(max(0, offset))
+        let orderedSourceIDs = sourceIDs?.sorted { $0.uuidString < $1.uuidString }
+        let sourceClause = orderedSourceIDs.map {
+            "AND f.source_id IN (\(Array(repeating: "?", count: $0.count).joined(separator: ", ")))"
+        } ?? ""
+        let statement = try prepare(
+            """
+            SELECT f.id, f.source_id, f.name, f.path, f.extension, f.file_type, f.size,
+                   f.created_at, f.modified_at, f.indexed_at,
+                   bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) AS search_rank
+            FROM file_search
+            JOIN files AS f ON f.id = file_search.file_id
+            WHERE file_search MATCH ?
+              AND (? = 1 OR f.path NOT GLOB '*/.*')
+              \(sourceClause)
+            ORDER BY bm25(file_search, 0.0, 8.0, 3.0, 5.0, 1.0) ASC,
+                     file_search.rowid ASC
+            LIMIT ? OFFSET ?;
+            """
+        )
+        defer { sqlite3_finalize(statement) }
+        try bind(matchExpression, at: 1, to: statement)
+        try bind(includesHiddenFiles ? 1 : 0, at: 2, to: statement)
+        var nextBinding: Int32 = 3
+        if let orderedSourceIDs {
+            for sourceID in orderedSourceIDs {
+                try bind(sourceID.uuidString, at: nextBinding, to: statement)
+                nextBinding += 1
+            }
+        }
+        try bind(requestedLimit, at: nextBinding, to: statement)
+        try bind(requestedOffset, at: nextBinding + 1, to: statement)
+
+        var files: [IndexedFile] = []
+        var fetchedRows = 0
+        readRows: while true {
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW:
+                fetchedRows += 1
+                guard let sourceID = UUID(uuidString: text(statement, column: 1)),
+                      let kind = FileKind(rawValue: text(statement, column: 5)) else {
+                    continue
+                }
+                files.append(IndexedFile(
+                    id: text(statement, column: 0),
+                    sourceID: sourceID,
+                    name: text(statement, column: 2),
+                    path: text(statement, column: 3),
+                    fileExtension: text(statement, column: 4),
+                    kind: kind,
+                    size: sqlite3_column_int64(statement, 6),
+                    createdAt: optionalDate(statement, column: 7),
+                    modifiedAt: optionalDate(statement, column: 8),
+                    indexedAt: Date(timeIntervalSince1970: sqlite3_column_double(statement, 9))
+                ))
+            case SQLITE_DONE:
+                break readRows
+            default:
+                throw databaseError()
+            }
+        }
+
+        guard fetchesTotalCount else {
+            return FileSearchPage(files: files, totalCount: max(0, offset) + files.count)
+        }
+        guard fetchedRows == requestedLimit else {
+            return FileSearchPage(files: files, totalCount: max(0, offset) + fetchedRows)
+        }
+        let countStatement = try prepare(
+            """
+            SELECT COUNT(*)
+            FROM file_search
+            JOIN files AS f ON f.id = file_search.file_id
+            WHERE file_search MATCH ?
+              AND (? = 1 OR f.path NOT GLOB '*/.*')
+              \(sourceClause);
+            """
+        )
+        defer { sqlite3_finalize(countStatement) }
+        try bind(matchExpression, at: 1, to: countStatement)
+        try bind(includesHiddenFiles ? 1 : 0, at: 2, to: countStatement)
+        if let orderedSourceIDs {
+            for (index, sourceID) in orderedSourceIDs.enumerated() {
+                try bind(sourceID.uuidString, at: Int32(index + 3), to: countStatement)
+            }
+        }
+        guard sqlite3_step(countStatement) == SQLITE_ROW else {
+            throw databaseError()
+        }
+        return FileSearchPage(
+            files: files,
+            totalCount: Int(sqlite3_column_int64(countStatement, 0))
+        )
+    }
+
+    private func withReadTransaction<T>(
+        cancellationToken: SQLiteSearchCancellationToken,
+        _ operation: () throws -> T
+    ) throws -> T {
+        try cancellationToken.checkCancellation()
+        try execute("BEGIN DEFERRED TRANSACTION;")
+        installProgressHandler(cancellationToken)
+        do {
+            let value = try operation()
+            try cancellationToken.checkCancellation()
+            removeProgressHandler()
+            try execute("COMMIT;")
+            return value
+        } catch {
+            // A cancelled progress callback leaves SQLite in the active read
+            // transaction. Remove it before ROLLBACK, otherwise the rollback
+            // itself can be interrupted and retain the obsolete snapshot.
+            removeProgressHandler()
+            try? execute("ROLLBACK;")
+            if cancellationToken.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+    }
+
+    private func withCancellableReadOperation<T>(
+        _ cancellationToken: SQLiteSearchCancellationToken,
+        _ operation: () throws -> T
+    ) throws -> T {
+        try cancellationToken.checkCancellation()
+        installProgressHandler(cancellationToken)
+        defer { removeProgressHandler() }
+        do {
+            let value = try operation()
+            try cancellationToken.checkCancellation()
+            return value
+        } catch {
+            if cancellationToken.isCancelled {
+                throw CancellationError()
+            }
+            throw error
+        }
+    }
+
+    private func installProgressHandler(_ cancellationToken: SQLiteSearchCancellationToken) {
+        let context = Unmanaged.passUnretained(cancellationToken).toOpaque()
+        sqlite3_progress_handler(
+            connection.pointer,
+            256,
+            { context in
+                guard let context else { return 0 }
+                let token = Unmanaged<SQLiteSearchCancellationToken>
+                    .fromOpaque(context)
+                    .takeUnretainedValue()
+                return token.isCancelled ? 1 : 0
+            },
+            context
+        )
+    }
+
+    private func removeProgressHandler() {
+        sqlite3_progress_handler(connection.pointer, 0, nil, nil)
+    }
+
+    private func execute(_ sql: String) throws {
+        var errorMessage: UnsafeMutablePointer<CChar>?
+        let result = sqlite3_exec(connection.pointer, sql, nil, nil, &errorMessage)
+        guard result == SQLITE_OK else {
+            let message = errorMessage.map { String(cString: $0) }
+                ?? String(cString: sqlite3_errmsg(connection.pointer))
+            sqlite3_free(errorMessage)
+            throw FileIndexError.database(message)
+        }
+    }
+
+    private func prepare(_ sql: String) throws -> OpaquePointer {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(connection.pointer, sql, -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            throw databaseError()
+        }
+        return statement
+    }
+
+    private func bind(_ value: String, at index: Int32, to statement: OpaquePointer) throws {
+        guard sqlite3_bind_text(statement, index, value, -1, Self.transientDestructor) == SQLITE_OK else {
+            throw FileIndexError.database("无法绑定搜索文本参数")
+        }
+    }
+
+    private func bind(_ value: Int, at index: Int32, to statement: OpaquePointer) throws {
+        guard sqlite3_bind_int(statement, index, Int32(value)) == SQLITE_OK else {
+            throw FileIndexError.database("无法绑定搜索整数参数")
+        }
+    }
+
+    private func bind(_ value: Int64, at index: Int32, to statement: OpaquePointer) throws {
+        guard sqlite3_bind_int64(statement, index, value) == SQLITE_OK else {
+            throw FileIndexError.database("无法绑定搜索整数参数")
+        }
+    }
+
+    private func text(_ statement: OpaquePointer, column: Int32) -> String {
+        guard let value = sqlite3_column_text(statement, column) else { return "" }
+        return String(cString: value)
+    }
+
+    private func optionalDate(_ statement: OpaquePointer, column: Int32) -> Date? {
+        guard sqlite3_column_type(statement, column) != SQLITE_NULL else { return nil }
+        let timestamp = sqlite3_column_double(statement, column)
+        guard timestamp > 1 else { return nil }
+        return Date(timeIntervalSince1970: timestamp)
+    }
+
+    private func databaseError() -> FileIndexError {
+        FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
     }
 
     private static var transientDestructor: sqlite3_destructor_type {

@@ -397,7 +397,7 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(plist["com.apple.security.files.user-selected.read-write"] as? Bool, true)
     }
 
-    func testCodexStatusProbeClosesItsRuntimeBeforeReturning() throws {
+    func testLifecycleStatusProbeNeverLaunchesProviderRuntimeOrGeneration() throws {
         let projectRoot = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
@@ -413,8 +413,12 @@ final class OAuthBridgeTests: XCTestCase {
         )
         let statusSource = source[start..<end]
 
-        XCTAssertTrue(statusSource.contains("await closeCodexStatusRuntime(runtime)"))
-        XCTAssertTrue(statusSource.contains("guard cleanupSucceeded"))
+        XCTAssertTrue(statusSource.contains("restoreAuthenticationStatusWithoutRuntime"))
+        XCTAssertFalse(statusSource.contains("ensureCodexRuntime"))
+        XCTAssertFalse(statusSource.contains("makeGrokRuntime"))
+        XCTAssertFalse(statusSource.contains("verifyConnection("))
+        XCTAssertFalse(statusSource.contains("performCodexGeneration"))
+        XCTAssertFalse(statusSource.contains("performGrokVerification"))
     }
 
     func testProtocolV6GenerationRequestRoundTripPreservesTypedArguments() throws {
@@ -934,7 +938,7 @@ final class OAuthBridgeTests: XCTestCase {
         ] {
             XCTAssertTrue(source.contains(requiredBinding), requiredBinding)
         }
-        XCTAssertTrue(source.contains("restoreStoredVerification("))
+        XCTAssertTrue(source.contains("OAuthVerificationProofStore.restore("))
         XCTAssertTrue(source.contains("persistStoredVerification("))
         XCTAssertTrue(source.contains("clearStoredVerification(for:"))
         XCTAssertTrue(source.contains("providerReservations"))
@@ -1155,6 +1159,35 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(model.aiOAuthStates[.grok], .signedInUnverified)
         let calls = await fake.calls()
         XCTAssertEqual(calls, [.status(.grok)])
+    }
+
+    @MainActor
+    func testForegroundLifecycleOnlyRequestsReadOnlyStatuses() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: false)
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedIn,
+            connectionState: .connected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedIn,
+            connectionState: .authenticated
+        )))
+
+        coordinator.applicationBecameActive()
+        await waitForCallCount(2, fake: fake)
+        for _ in 0..<20 { await Task.yield() }
+        coordinator.applicationResignedActive()
+        let calls = await fake.calls()
+
+        XCTAssertEqual(
+            calls,
+            [.status(.codex), .status(.grok)]
+        )
+        XCTAssertEqual(coordinator.states[.codex], .connected)
+        XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
     }
 
     @MainActor

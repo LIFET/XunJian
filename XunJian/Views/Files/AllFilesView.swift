@@ -7,6 +7,7 @@ struct AllFilesView: View {
 
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var searchProgressStore: SearchProgressStore
+    @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
 
     let windowWidth: CGFloat
@@ -30,10 +31,22 @@ struct AllFilesView: View {
     @State private var liveListScrollPosition: String?
     @State private var liveGridScrollPosition: String?
     @State private var tableSelectedIDs: Set<String> = []
+    /// A native table click is already visible. Feeding that same row back
+    /// through `scrollPosition` makes a six-figure table locate and scroll to
+    /// its current row again, adding avoidable work to every selection.
+    @State private var nativeSelectionLeadID: String?
     /// Only external/programmatic selection changes need to pierce the
     /// equatable table shell. Native row clicks already update Table itself.
     @State private var tableSelectionEpoch: UInt64 = 0
     @State private var scrollPositionPersistenceTask: Task<Void, Never>?
+    /// Page-local, atomically published browse state. Keeping this off the
+    /// broad AppModel prevents one 100k-row refresh from invalidating the
+    /// sidebar, inspector, settings and app commands at the same time.
+    @State private var browseSnapshot = DisplayedFilesSnapshot.empty
+    /// Search pages are observed directly instead of being forwarded through
+    /// AppModel. Only a new result revision wakes this retained page; typing
+    /// and the searching flag stay inside their narrow stores.
+    @State private var searchResultState = BrowseSearchStore.ResultState.empty
 
     // Manual filters (N02): a size floor and a modified-since date, applied
     // on top of whatever search/AI narrowing is active. Values live on
@@ -58,7 +71,7 @@ struct AllFilesView: View {
     var body: some View {
         Group {
             if isVisible {
-                content(filesSnapshot: appModel.browseSnapshot)
+                content(filesSnapshot: browseSnapshot.files)
             } else {
                 Color.clear
                     .accessibilityHidden(true)
@@ -67,6 +80,13 @@ struct AllFilesView: View {
         .task(id: displayedFilesRefreshKey) {
             guard isVisible else { return }
             await refreshDisplayedFilesSnapshot()
+        }
+        .onReceive(
+            appModel.browseSearchStore.$resultState.removeDuplicates {
+                $0.revision == $1.revision
+            }
+        ) { state in
+            searchResultState = state
         }
         .onAppear {
             guard isVisible else { return }
@@ -93,6 +113,12 @@ struct AllFilesView: View {
         }
         .onChange(of: appModel.selectedFileID) { _, id in
             guard isVisible, let id else { return }
+            if FileBrowsePerformancePolicy.usesNativeBrowser(fileCount: appModel.files.count),
+               nativeSelectionLeadID == id {
+                nativeSelectionLeadID = nil
+                return
+            }
+            nativeSelectionLeadID = nil
             if viewMode == .list {
                 liveListScrollPosition = id
             } else {
@@ -294,16 +320,16 @@ struct AllFilesView: View {
             } label: {
                 Text(
                     AppLanguage.localized(
-                        "加载更多（\(appModel.searchResults?.count ?? 0)/\(appModel.searchResultTotalCount ?? 0)）",
-                        english: "Load More (\(appModel.searchResults?.count ?? 0)/\(appModel.searchResultTotalCount ?? 0))"
+                        "加载更多（\(searchResultState.results?.count ?? 0)/\(searchResultState.totalCount ?? 0)）",
+                        english: "Load More (\(searchResultState.results?.count ?? 0)/\(searchResultState.totalCount ?? 0))"
                     )
                 )
             }
             .buttonStyle(.link)
             .accessibilityHint(
                 AppLanguage.localized(
-                    "当前仅显示前 \(appModel.searchResults?.count ?? 0) 项搜索结果",
-                    english: "Currently showing the first \(appModel.searchResults?.count ?? 0) search results"
+                    "当前仅显示前 \(searchResultState.results?.count ?? 0) 项搜索结果",
+                    english: "Currently showing the first \(searchResultState.results?.count ?? 0) search results"
                 )
             )
         }
@@ -373,48 +399,15 @@ struct AllFilesView: View {
     }
 
     private var responsiveFileToolbar: some View {
-        ViewThatFits(in: .horizontal) {
-            fileToolbarRow(
-                compactAI: false,
-                showsFileType: true,
-                showsSort: true,
-                showsSortDirection: true,
-                showsViewMode: true,
-                spacing: FileToolbarMetrics.regularSpacing
-            )
-            fileToolbarRow(
-                compactAI: false,
-                showsFileType: true,
-                showsSort: true,
-                showsSortDirection: true,
-                showsViewMode: false,
-                spacing: FileToolbarMetrics.regularSpacing
-            )
-            fileToolbarRow(
-                compactAI: true,
-                showsFileType: true,
-                showsSort: true,
-                showsSortDirection: false,
-                showsViewMode: false,
-                spacing: FileToolbarMetrics.compactSpacing
-            )
-            fileToolbarRow(
-                compactAI: true,
-                showsFileType: true,
-                showsSort: false,
-                showsSortDirection: false,
-                showsViewMode: false,
-                spacing: FileToolbarMetrics.compactSpacing
-            )
-            fileToolbarRow(
-                compactAI: true,
-                showsFileType: false,
-                showsSort: false,
-                showsSortDirection: false,
-                showsViewMode: false,
-                spacing: FileToolbarMetrics.compactSpacing
-            )
-        }
+        let layout = FileToolbarLayoutPolicy.configuration(for: contentWidth)
+        return fileToolbarRow(
+            compactAI: layout.compactAI,
+            showsFileType: layout.showsFileType,
+            showsSort: layout.showsSort,
+            showsSortDirection: layout.showsSortDirection,
+            showsViewMode: layout.showsViewMode,
+            spacing: layout.spacing
+        )
     }
 
     private func fileToolbarRow(
@@ -441,6 +434,9 @@ struct AllFilesView: View {
             }
 
             if showsViewMode {
+                Divider()
+                    .frame(height: 18)
+                    .padding(.horizontal, 2)
                 viewModeControl
             }
 
@@ -491,13 +487,9 @@ struct AllFilesView: View {
             selection: $viewMode
         ) {
             ForEach(ViewMode.allCases) { mode in
-                Label(
-                    mode == .list
-                        ? AppLanguage.localized("列表", english: "List")
-                        : AppLanguage.localized("图标", english: "Icons"),
-                    systemImage: mode.symbolName
-                )
-                .tag(mode)
+                Image(systemName: mode.symbolName)
+                    .tag(mode)
+                    .accessibilityLabel(Text(verbatim: mode.localizedTitle))
             }
         }
         .pickerStyle(.segmented)
@@ -610,7 +602,7 @@ struct AllFilesView: View {
 
     private func emptyState(files: [IndexedFile]) -> some View {
         Group {
-            if appModel.browseSnapshotSignature == nil, hasPotentialSourceFilesForDisplay {
+            if browseSnapshot.signature == nil, hasPotentialSourceFilesForDisplay {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(
@@ -625,9 +617,12 @@ struct AllFilesView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if viewMode == .list, !files.isEmpty {
                 EquatableSnapshotList(
-                    signature: appModel.browseSnapshotSignature,
+                    signature: browseSnapshot.signature,
                     viewMode: viewMode,
                     selectionEpoch: tableSelectionEpoch,
+                    metadataEpoch: FileBrowsePerformancePolicy.usesNativeTable(
+                        fileCount: appModel.files.count
+                    ) ? categoryIndex.revision : 0,
                     layoutToken: FileTableLayout.snapshotLayoutToken(
                         contentWidth: contentWidth,
                         viewMode: viewMode
@@ -638,9 +633,10 @@ struct AllFilesView: View {
                 .equatable()
             } else if viewMode == .grid, !files.isEmpty {
                 EquatableSnapshotList(
-                    signature: appModel.browseSnapshotSignature,
+                    signature: browseSnapshot.signature,
                     viewMode: viewMode,
-                    selectionEpoch: 0,
+                    selectionEpoch: tableSelectionEpoch,
+                    metadataEpoch: 0,
                     layoutToken: FileTableLayout.snapshotLayoutToken(
                         contentWidth: contentWidth,
                         viewMode: viewMode
@@ -704,7 +700,12 @@ struct AllFilesView: View {
                 }
             }
         }
-        .xunjianAnimation(value: viewMode)
+        .xunjianAnimation(
+            FileBrowsePerformancePolicy.animatesModeChange(fileCount: files.count)
+                ? XunJianUI.standardAnimation
+                : nil,
+            value: viewMode
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
@@ -811,10 +812,10 @@ struct AllFilesView: View {
         if let aiSearchResults = appModel.aiSearchResults {
             return query.isEmpty
                 ? !aiSearchResults.isEmpty
-                : !aiSearchResults.isEmpty && !(appModel.searchResults ?? []).isEmpty
+                : !aiSearchResults.isEmpty && !(searchResultState.results ?? []).isEmpty
         }
         if !query.isEmpty {
-            return !(appModel.searchResults ?? []).isEmpty
+            return !(searchResultState.results ?? []).isEmpty
         }
         return !appModel.files.isEmpty
     }
@@ -871,6 +872,9 @@ struct AllFilesView: View {
         Binding(
             get: { liveListScrollPosition },
             set: { newValue in
+                guard FileBrowsePerformancePolicy.tracksLiveListScrollPosition(
+                    fileCount: browseSnapshot.files.count
+                ) else { return }
                 liveListScrollPosition = newValue
                 scheduleScrollPositionPersistence(newValue, mode: .list)
             }
@@ -937,7 +941,7 @@ struct AllFilesView: View {
     private var displayedFilesRefreshKey: DisplayedFilesRefreshKey {
         DisplayedFilesRefreshKey(
             filesRevision: appModel.filesRevision,
-            searchResultsRevision: appModel.searchResultsRevision,
+            searchResultsRevision: searchResultState.revision,
             aiSearchResultCount: appModel.aiSearchResults?.count,
             aiSearchRevision: appModel.aiSearchRevision,
             selectedKind: appModel.selectedKind,
@@ -952,7 +956,7 @@ struct AllFilesView: View {
     private var displayedFilesUserKey: DisplayedFilesUserKey {
         DisplayedFilesUserKey(
             query: appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines),
-            searchResultsRevision: appModel.searchResultsRevision,
+            searchResultsRevision: searchResultState.revision,
             aiSearchResultCount: appModel.aiSearchResults?.count,
             aiSearchRevision: appModel.aiSearchRevision,
             selectedKind: appModel.selectedKind,
@@ -980,25 +984,19 @@ struct AllFilesView: View {
         let signature = displayedFilesRefreshKey.signature
         // Returning to this page with unchanged inputs reuses the cached list
         // instead of re-sorting and flashing a placeholder.
-        guard appModel.browseSnapshotSignature != signature else {
+        guard browseSnapshot.signature != signature else {
             if isVisible {
                 appModel.updateCommandTargetFiles(
-                    appModel.browseSnapshot,
+                    browseSnapshot.files,
                     usesGlobalSearchPagination: true,
                     signature: signature
                 )
                 appModel.clearSelectionIfHidden(
-                    from: appModel.browseSnapshotIDSet
+                    using: browseSnapshot.idIndex
                 )
             }
             return
         }
-
-        // The visible rows still show the previous snapshot while the new
-        // filter/sort result is computed. Clear only the command target so a
-        // delayed Select All or destructive action cannot act on those stale
-        // rows during that short transition.
-        appModel.clearCommandTargetFilesKeepingPagination()
 
         // Burst settle: when only the file index moved (not query, search
         // results, sort, or filters), wait out FSEvents / iCloud metadata
@@ -1007,7 +1005,7 @@ struct AllFilesView: View {
         // doing that work on every iCloud xattr tick.
         let userSignature = displayedFilesUserKey.signature
         if DisplayedFilesRefreshPolicy.shouldSettleRevisionDrivenRefresh(
-            previousUserSignature: appModel.browseSnapshotUserSignature,
+            previousUserSignature: browseSnapshot.userSignature,
             currentUserSignature: userSignature
         ) {
             try? await Task.sleep(for: DisplayedFilesRefreshPolicy.revisionDrivenSettleDelay)
@@ -1020,7 +1018,7 @@ struct AllFilesView: View {
         let indexedFiles = selectedKind.map(appModel.files(for:)) ?? appModel.files
         let indexedFilesAreKindFiltered = selectedKind != nil
         let aiSearchResults = appModel.aiSearchResults
-        let searchResults = appModel.searchResults
+        let searchResults = searchResultState.results
         let query = appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let requestedSortOrder = activeSortOrder
         let requestedAscending = activeSortAscending
@@ -1073,26 +1071,41 @@ struct AllFilesView: View {
                     return (
                         files: [IndexedFile](),
                         orderedIDs: [String](),
-                        idIndex: [String: Int](),
-                        visibleIDs: Set<String>()
+                        idIndex: [String: Int]()
                     )
                 }
-                let sorted = requestedSortOrder.sorted(
+                guard let sorted = requestedSortOrder.sortedCancellable(
                     filteredFiles,
-                    ascending: requestedAscending
-                )
+                    ascending: requestedAscending,
+                    isCancelled: { cancellationFlag.isCancelled }
+                ) else {
+                    return (
+                        files: [IndexedFile](),
+                        orderedIDs: [String](),
+                        idIndex: [String: Int]()
+                    )
+                }
                 // Build both ID representations off the main actor. They are
                 // reused by selection, keyboard navigation and cache hits.
-                let orderedIDs = sorted.map(\.id)
+                var orderedIDs: [String] = []
+                orderedIDs.reserveCapacity(sorted.count)
+                var idIndex: [String: Int] = [:]
+                idIndex.reserveCapacity(sorted.count)
+                for (offset, file) in sorted.enumerated() {
+                    if offset.isMultiple(of: 2_048), cancellationFlag.isCancelled {
+                        return (
+                            files: [IndexedFile](),
+                            orderedIDs: [String](),
+                            idIndex: [String: Int]()
+                        )
+                    }
+                    orderedIDs.append(file.id)
+                    idIndex[file.id] = offset
+                }
                 return (
                     files: sorted,
                     orderedIDs: orderedIDs,
-                    idIndex: Dictionary(
-                        uniqueKeysWithValues: orderedIDs.enumerated().map {
-                            ($0.element, $0.offset)
-                        }
-                    ),
-                    visibleIDs: Set(orderedIDs)
+                    idIndex: idIndex
                 )
             }.value
         } onCancel: {
@@ -1102,11 +1115,10 @@ struct AllFilesView: View {
               isVisible,
               displayedFilesRefreshKey.signature == signature else { return }
         let result = computed.files
-        appModel.publishBrowseSnapshot(
-            result,
+        browseSnapshot = DisplayedFilesSnapshot(
+            files: result,
             orderedIDs: computed.orderedIDs,
             idIndex: computed.idIndex,
-            visibleIDs: computed.visibleIDs,
             signature: signature,
             userSignature: userSignature
         )
@@ -1115,32 +1127,81 @@ struct AllFilesView: View {
             usesGlobalSearchPagination: true,
             signature: signature
         )
-        appModel.clearSelectionIfHidden(from: computed.visibleIDs)
+        appModel.clearSelectionIfHidden(using: computed.idIndex)
     }
 
+    @ViewBuilder
     private func fileTable(files: [IndexedFile]) -> some View {
-        Table(
-            of: IndexedFile.self,
-            selection: tableSelection,
-            columnCustomization: $tableColumnCustomization
-        ) {
-            TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
-                plainTableCell {
-                    HStack(spacing: 8) {
-                        FileThumbnail(file: file, size: 24)
-                            .accessibilityHidden(true)
-                        Text(file.name)
-                            .lineLimit(1)
-                    }
-                    // The name cell carries a summary of the whole row, so
-                    // VoiceOver users hear what the file is without having to
-                    // step through all six columns.
-                    .accessibilityElement(children: .ignore)
-                    .accessibilityLabel(Text(verbatim: rowAccessibilityLabel(for: file)))
+        // Base the renderer on the library size, not the current filter.
+        // Otherwise changing file type can tear down AppKit and rebuild a
+        // SwiftUI Table exactly while the user is clicking the toolbar.
+        if FileBrowsePerformancePolicy.usesNativeTable(fileCount: appModel.files.count) {
+            nativeFileTable(files: files)
+        } else {
+            swiftUIFileTable(files: files)
+        }
+    }
+
+    private func nativeFileTable(files: [IndexedFile]) -> some View {
+        LargeFileTableView(
+            files: files,
+            idIndex: browseSnapshot.idIndex,
+            contentVersion: browseSnapshot.signature ?? 0,
+            categoryVersion: categoryIndex.revision,
+            locale: locale,
+            selection: nativeSelectionBinding(for: .list),
+            categoryText: { file in
+                categoryIndex.categories(for: file.id)
+                    .map(\.localizedDisplayName)
+                    .joined(separator: AppLanguage.listSeparator)
+            },
+            onSelectionLeadChange: { file in
+                nativeSelectionLeadID = file?.id
+            },
+            onDoubleClick: { file in
+                doubleClickBehavior.perform(on: file, using: appModel)
+            },
+            onQuickLook: { file in
+                appModel.quickLook(file)
+            },
+            onDelete: {
+                if appModel.selectedFileIDs.count > 1 {
+                    appModel.requestBatchTrash()
+                } else if let file = appModel.selectedFile {
+                    appModel.requestTrash(file)
                 }
+            },
+            contextMenuProvider: { file, selectedIDs in
+                nativeContextMenu(for: file, selectedIDs: selectedIDs)
             }
-            .width(min: 150, ideal: 280, max: 420)
-            .customizationID("name")
+        )
+        .frame(maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func swiftUIFileTable(files: [IndexedFile]) -> some View {
+        listTableScrollTracking(
+            Table(
+                of: IndexedFile.self,
+                selection: nativeSelectionBinding(for: .list),
+                columnCustomization: $tableColumnCustomization
+            ) {
+                TableColumn(AppLanguage.localized("名称", english: "Name")) { file in
+                    plainTableCell {
+                        HStack(spacing: 8) {
+                            FileThumbnail(file: file, size: 24)
+                                .accessibilityHidden(true)
+                            Text(file.name)
+                                .lineLimit(1)
+                        }
+                        // The name cell carries a summary of the whole row, so
+                        // VoiceOver users hear what the file is without having to
+                        // step through all six columns.
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(Text(verbatim: rowAccessibilityLabel(for: file)))
+                    }
+                }
+                .width(min: 150, ideal: 280, max: 420)
+                .customizationID("name")
 
             TableColumn(AppLanguage.localized("分类", english: "Category")) { file in
                 plainTableCell(accessibilityHidden: true) {
@@ -1215,33 +1276,50 @@ struct AllFilesView: View {
             }
             .width(min: 80, ideal: 200, max: 360)
             .customizationID("location")
-        } rows: {
-            ForEach(files) { file in
-                // Keep drag support at the native table-row layer. Putting
-                // gestures on the name cell creates a SwiftUI hit-testing
-                // surface that prevents NSTableView from receiving clicks.
-                TableRow(file)
-                    .draggable(file.url)
+            } rows: {
+                ForEach(files) { file in
+                    // Keep drag support at the native table-row layer. Putting
+                    // gestures on the name cell creates a SwiftUI hit-testing
+                    // surface that prevents NSTableView from receiving clicks.
+                    TableRow(file)
+                        .draggable(file.url)
+                }
             }
-        }
-        .contextMenu(forSelectionType: String.self) { selection in
-            if let file = tableFile(for: selection) {
-                FileContextMenu(file: file)
-            }
-        } primaryAction: { selection in
-            guard let file = tableFile(for: selection) else { return }
-            doubleClickBehavior.perform(on: file, using: appModel)
-        }
-        .scrollPosition(id: listScrollPositionBinding)
+            .contextMenu(forSelectionType: String.self) { selection in
+                if let file = tableFile(for: selection) {
+                    FileContextMenu(file: file)
+                }
+            } primaryAction: { selection in
+                guard let file = tableFile(for: selection) else { return }
+                doubleClickBehavior.perform(on: file, using: appModel)
+            },
+            fileCount: files.count
+        )
         .frame(maxHeight: .infinity, alignment: .leading)
         // Arrow keys are left to the table's own row navigation; this only
         // adds the file actions on top.
         .fileListKeyboardNavigation(
             files: files,
-            orderedIDs: appModel.browseSnapshotIDs,
-            idIndex: appModel.browseSnapshotIDIndex,
+            orderedIDs: browseSnapshot.orderedIDs,
+            idIndex: browseSnapshot.idIndex,
             handlesArrowKeys: false
         )
+    }
+
+    /// Omitting the modifier matters: a setter that discards updates still
+    /// makes SwiftUI resolve and observe row identities while scrolling. On a
+    /// six-figure table that work delays native selection and inspector
+    /// changes even though no position is ultimately persisted.
+    @ViewBuilder
+    private func listTableScrollTracking<Content: View>(
+        _ content: Content,
+        fileCount: Int
+    ) -> some View {
+        if FileBrowsePerformancePolicy.tracksLiveListScrollPosition(fileCount: fileCount) {
+            content.scrollPosition(id: listScrollPositionBinding)
+        } else {
+            content
+        }
     }
 
     /// Cell wrapper without per-cell interaction modifiers. Selection and
@@ -1258,6 +1336,93 @@ struct AllFilesView: View {
             .accessibilityHidden(accessibilityHidden)
     }
 
+    private func nativeContextMenu(
+        for file: IndexedFile,
+        selectedIDs: Set<String>
+    ) -> NSMenu {
+        let menu = NSMenu()
+        menu.addItem(NativeFileActionMenuItem(
+            title: AppLanguage.localized("打开", english: "Open")
+        ) { appModel.open(file) })
+        menu.addItem(NativeFileActionMenuItem(
+            title: AppLanguage.localized("快速查看", english: "Quick Look")
+        ) { appModel.quickLook(file) })
+        menu.addItem(NativeFileActionMenuItem(
+            title: AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")
+        ) { appModel.showInFinder(file) })
+        menu.addItem(NativeFileActionMenuItem(
+            title: AppLanguage.localized("复制路径", english: "Copy Path")
+        ) { appModel.copyPath(file) })
+        menu.addItem(.separator())
+
+        let actsOnSelection = selectedIDs.count > 1 && selectedIDs.contains(file.id)
+        let categoryRoot = NSMenuItem(
+            title: AppLanguage.localized(
+                actsOnSelection ? "批量添加到分类" : "添加到分类",
+                english: actsOnSelection ? "Add Selection to Category" : "Add to Category"
+            ),
+            action: nil,
+            keyEquivalent: ""
+        )
+        let categoryMenu = NSMenu()
+        if appModel.categories.isEmpty {
+            let empty = NSMenuItem(
+                title: AppLanguage.localized("还没有分类", english: "No categories yet"),
+                action: nil,
+                keyEquivalent: ""
+            )
+            empty.isEnabled = false
+            categoryMenu.addItem(empty)
+            categoryMenu.addItem(NativeFileActionMenuItem(
+                title: AppLanguage.localized("新建分类…", english: "New Category…")
+            ) {
+                NotificationCenter.default.post(
+                    name: .xunJianRequestNewCategory,
+                    object: nil
+                )
+            })
+        } else {
+            for category in appModel.categories {
+                let item = NativeFileActionMenuItem(
+                    title: category.localizedDisplayName
+                ) {
+                    if actsOnSelection {
+                        appModel.assignSelectedFiles(to: category)
+                    } else {
+                        appModel.toggleCategory(category, for: file)
+                    }
+                }
+                if !actsOnSelection, appModel.isCategory(category, assignedTo: file) {
+                    item.state = .on
+                }
+                categoryMenu.addItem(item)
+            }
+        }
+        categoryRoot.submenu = categoryMenu
+        menu.addItem(categoryRoot)
+
+        if actsOnSelection {
+            menu.addItem(NativeFileActionMenuItem(
+                title: AppLanguage.localized(
+                    "移到废纸篓（\(selectedIDs.count) 项）",
+                    english: "Move \(selectedIDs.count) Items to Trash"
+                )
+            ) { appModel.requestBatchTrash() })
+        } else {
+            menu.addItem(.separator())
+            menu.addItem(NativeFileActionMenuItem(
+                title: AppLanguage.localized("重命名…", english: "Rename…")
+            ) { appModel.requestRename(file) })
+            menu.addItem(NativeFileActionMenuItem(
+                title: AppLanguage.localized("移动到…", english: "Move To…")
+            ) { appModel.chooseMoveDestination(for: file) })
+            menu.addItem(NativeFileActionMenuItem(
+                title: AppLanguage.localized("移到废纸篓", english: "Move to Trash")
+            ) { appModel.requestTrash(file) })
+        }
+        return menu
+    }
+
     private func tableFile(for selection: Set<String>) -> IndexedFile? {
         if let selectedFileID = appModel.selectedFileID,
            selection.contains(selectedFileID),
@@ -1270,20 +1435,27 @@ struct AllFilesView: View {
 
     /// Table's native selection is the only click path. Same-set writes are
     /// dropped so `@Published` does not fire twice for one click.
-    private var tableSelection: Binding<Set<String>> {
+    private func nativeSelectionBinding(
+        for sourceMode: FileBrowseViewMode
+    ) -> Binding<Set<String>> {
         Binding(
             get: { tableSelectedIDs },
             set: { newValue in
+                guard FileBrowseSelection.shouldAcceptNativeSelectionPublication(
+                    from: sourceMode,
+                    currentMode: viewMode
+                ) else { return }
                 guard newValue != tableSelectedIDs else { return }
                 tableSelectedIDs = newValue
                 let modifiers = NSApp.currentEvent?.modifierFlags ?? []
                 appModel.applyNativeTableSelection(
                     newValue,
-                    orderedIDs: appModel.browseSnapshotIDs,
-                    idIndex: appModel.browseSnapshotIDIndex,
+                    orderedIDs: browseSnapshot.orderedIDs,
+                    idIndex: browseSnapshot.idIndex,
                     command: modifiers.contains(.command),
                     shift: modifiers.contains(.shift)
                 )
+                nativeSelectionLeadID = appModel.selectedFileID
             }
         )
     }
@@ -1305,36 +1477,104 @@ struct AllFilesView: View {
         return AppLanguage.joinedForAccessibility(parts)
     }
 
+    @ViewBuilder
     private func fileGrid(files: [IndexedFile]) -> some View {
-        ScrollView {
-            LazyVGrid(
-                columns: FileGridCard.gridColumns,
-                spacing: FileGridCard.gridSpacing
-            ) {
-                ForEach(files) { file in
-                    FileGridSelectableCard(
-                        file: file,
-                        isSelected: appModel.selectedFileIDs.contains(file.id),
-                        selectedIDs: appModel.$selectedFileIDs,
-                        onSelect: { selectGridFile(file) },
-                        onOpen: { openGridFile(file) }
-                    )
-                    .contextMenu {
-                        FileContextMenu(file: file)
-                    }
-                    .draggable(file.url)
-                }
-            }
-            .scrollTargetLayout()
-            .padding(XunJianUI.pagePadding(for: contentWidth))
+        // SwiftUI still eagerly resolves a large ForEach's identities even
+        // when LazyVGrid materializes only visible cards. Keep the large-data
+        // path fully native, matching the table renderer.
+        if FileBrowsePerformancePolicy.usesNativeGrid(fileCount: appModel.files.count) {
+            nativeFileGrid(files: files)
+        } else if FileBrowsePerformancePolicy.tracksLiveGridScrollPosition(fileCount: files.count) {
+            fileGridScrollView(files: files, tracksScrollPosition: true)
+                .scrollPosition(id: gridScrollPositionBinding)
+                .fileListKeyboardNavigation(
+                    files: files,
+                    orderedIDs: browseSnapshot.orderedIDs,
+                    idIndex: browseSnapshot.idIndex,
+                    columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+                )
+        } else {
+            fileGridScrollView(files: files, tracksScrollPosition: false)
+                .fileListKeyboardNavigation(
+                    files: files,
+                    orderedIDs: browseSnapshot.orderedIDs,
+                    idIndex: browseSnapshot.idIndex,
+                    columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+                )
         }
-        .scrollPosition(id: gridScrollPositionBinding)
-        .fileListKeyboardNavigation(
+    }
+
+    private func nativeFileGrid(files: [IndexedFile]) -> some View {
+        LargeFileGridView(
             files: files,
-            orderedIDs: appModel.browseSnapshotIDs,
-            idIndex: appModel.browseSnapshotIDIndex,
-            columnCount: FileGridCard.columnCount(forWidth: contentWidth)
+            idIndex: browseSnapshot.idIndex,
+            contentVersion: browseSnapshot.signature ?? 0,
+            selection: nativeSelectionBinding(for: .grid),
+            onSelectionLeadChange: { file in
+                nativeSelectionLeadID = file?.id
+            },
+            onDoubleClick: { file in
+                doubleClickBehavior.perform(on: file, using: appModel)
+            },
+            onQuickLook: { file in
+                appModel.quickLook(file)
+            },
+            onDelete: {
+                if appModel.selectedFileIDs.count > 1 {
+                    appModel.requestBatchTrash()
+                } else if let file = appModel.selectedFile {
+                    appModel.requestTrash(file)
+                }
+            },
+            contextMenuProvider: { file, selectedIDs in
+                nativeContextMenu(for: file, selectedIDs: selectedIDs)
+            }
         )
+        .frame(maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func fileGridScrollView(
+        files: [IndexedFile],
+        tracksScrollPosition: Bool
+    ) -> some View {
+        ScrollView {
+            fileGridRows(files: files, tracksScrollPosition: tracksScrollPosition)
+        }
+    }
+
+    @ViewBuilder
+    private func fileGridRows(
+        files: [IndexedFile],
+        tracksScrollPosition: Bool
+    ) -> some View {
+        if tracksScrollPosition {
+            fileGridCards(files: files)
+                .scrollTargetLayout()
+        } else {
+            fileGridCards(files: files)
+        }
+    }
+
+    private func fileGridCards(files: [IndexedFile]) -> some View {
+        LazyVGrid(
+            columns: FileGridCard.gridColumns,
+            spacing: FileGridCard.gridSpacing
+        ) {
+            ForEach(files) { file in
+                FileGridSelectableCard(
+                    file: file,
+                    isSelected: appModel.selectedFileIDs.contains(file.id),
+                    selectedIDs: appModel.$selectedFileIDs,
+                    onSelect: { selectGridFile(file) },
+                    onOpen: { openGridFile(file) }
+                )
+                .contextMenu {
+                    FileContextMenu(file: file)
+                }
+                .draggable(file.url)
+            }
+        }
+        .padding(XunJianUI.pagePadding(for: contentWidth))
     }
 
     private func selectGridFile(_ file: IndexedFile) {
@@ -1349,10 +1589,10 @@ struct AllFilesView: View {
         ) else { return }
         appModel.selectDisplayedFile(
             file.id,
-            inIDs: appModel.browseSnapshotIDs,
+            inIDs: browseSnapshot.orderedIDs,
             command: command,
             shift: shift,
-            idIndex: appModel.browseSnapshotIDIndex
+            idIndex: browseSnapshot.idIndex
         )
     }
 
@@ -1367,6 +1607,22 @@ struct AllFilesView: View {
         }
         doubleClickBehavior.perform(on: file, using: appModel)
     }
+}
+
+struct DisplayedFilesSnapshot {
+    let files: [IndexedFile]
+    let orderedIDs: [String]
+    let idIndex: [String: Int]
+    let signature: Int?
+    let userSignature: Int?
+
+    static let empty = DisplayedFilesSnapshot(
+        files: [],
+        orderedIDs: [],
+        idIndex: [:],
+        signature: nil,
+        userSignature: nil
+    )
 }
 
 /// Identifies the inputs a displayed-file snapshot was built from.
@@ -1442,11 +1698,109 @@ enum DisplayedFilesRefreshPolicy {
     }
 }
 
+struct FileToolbarLayoutConfiguration: Equatable {
+    let compactAI: Bool
+    let showsFileType: Bool
+    let showsSort: Bool
+    let showsSortDirection: Bool
+    let showsViewMode: Bool
+    let spacing: CGFloat
+}
+
+enum FileToolbarLayoutPolicy {
+    /// Build exactly one toolbar tree for the current width. ViewThatFits
+    /// eagerly measured five complete Picker/Menu variants, adding a visible
+    /// layout stall to every control click on a large library.
+    static func configuration(for contentWidth: CGFloat) -> FileToolbarLayoutConfiguration {
+        switch contentWidth {
+        case 1_120...:
+            FileToolbarLayoutConfiguration(
+                compactAI: false,
+                showsFileType: true,
+                showsSort: true,
+                showsSortDirection: true,
+                showsViewMode: true,
+                spacing: FileToolbarMetrics.regularSpacing
+            )
+        case 940..<1_120:
+            FileToolbarLayoutConfiguration(
+                compactAI: false,
+                showsFileType: true,
+                showsSort: true,
+                showsSortDirection: true,
+                showsViewMode: false,
+                spacing: FileToolbarMetrics.regularSpacing
+            )
+        case 760..<940:
+            FileToolbarLayoutConfiguration(
+                compactAI: true,
+                showsFileType: true,
+                showsSort: true,
+                showsSortDirection: false,
+                showsViewMode: false,
+                spacing: FileToolbarMetrics.compactSpacing
+            )
+        case 620..<760:
+            FileToolbarLayoutConfiguration(
+                compactAI: true,
+                showsFileType: true,
+                showsSort: false,
+                showsSortDirection: false,
+                showsViewMode: false,
+                spacing: FileToolbarMetrics.compactSpacing
+            )
+        default:
+            FileToolbarLayoutConfiguration(
+                compactAI: true,
+                showsFileType: false,
+                showsSort: false,
+                showsSortDirection: false,
+                showsViewMode: false,
+                spacing: FileToolbarMetrics.compactSpacing
+            )
+        }
+    }
+}
+
+enum FileBrowsePerformancePolicy {
+    /// Continuous scroll-position observation invalidates the SwiftUI parent
+    /// for every crossed row. Native Table already virtualizes large data sets,
+    /// so disable only that optional persistence layer for very large libraries.
+    static let liveScrollTrackingLimit = 20_000
+    static let modeAnimationLimit = 5_000
+    static let nativeTableThreshold = 20_000
+
+    static func tracksLiveListScrollPosition(fileCount: Int) -> Bool {
+        fileCount <= liveScrollTrackingLimit
+    }
+
+    static func tracksLiveGridScrollPosition(fileCount: Int) -> Bool {
+        fileCount <= liveScrollTrackingLimit
+    }
+
+    static func usesNativeTable(fileCount: Int) -> Bool {
+        fileCount > nativeTableThreshold
+    }
+
+    static func usesNativeGrid(fileCount: Int) -> Bool {
+        fileCount > nativeTableThreshold
+    }
+
+    static func usesNativeBrowser(fileCount: Int) -> Bool {
+        usesNativeTable(fileCount: fileCount) || usesNativeGrid(fileCount: fileCount)
+    }
+
+    static func animatesModeChange(fileCount: Int) -> Bool {
+        fileCount <= modeAnimationLimit
+    }
+}
+
 /// Skips rebuilding the file table when only unrelated AppModel fields changed.
 private struct EquatableSnapshotList<Content: View>: View, Equatable {
     let signature: Int?
     let viewMode: FileBrowseViewMode
     let selectionEpoch: UInt64
+    let metadataEpoch: UInt64
     let layoutToken: Int
     let content: () -> Content
 
@@ -1454,12 +1808,14 @@ private struct EquatableSnapshotList<Content: View>: View, Equatable {
         signature: Int?,
         viewMode: FileBrowseViewMode,
         selectionEpoch: UInt64,
+        metadataEpoch: UInt64,
         layoutToken: Int,
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature
         self.viewMode = viewMode
         self.selectionEpoch = selectionEpoch
+        self.metadataEpoch = metadataEpoch
         self.layoutToken = layoutToken
         self.content = content
     }
@@ -1468,6 +1824,7 @@ private struct EquatableSnapshotList<Content: View>: View, Equatable {
         lhs.signature == rhs.signature
             && lhs.viewMode == rhs.viewMode
             && lhs.selectionEpoch == rhs.selectionEpoch
+            && lhs.metadataEpoch == rhs.metadataEpoch
             && lhs.layoutToken == rhs.layoutToken
     }
 
@@ -1490,6 +1847,26 @@ struct FileCategoryNamesLabel: View {
                 : names.joined(separator: AppLanguage.listSeparator)
         )
         .lineLimit(1)
+    }
+}
+
+@MainActor
+private final class NativeFileActionMenuItem: NSMenuItem {
+    private let handler: () -> Void
+
+    init(title: String, handler: @escaping () -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(invoke), keyEquivalent: "")
+        target = self
+    }
+
+    @available(*, unavailable)
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func invoke() {
+        handler()
     }
 }
 

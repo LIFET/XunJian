@@ -33,6 +33,10 @@ actor FinderTagService {
     }
 
     func tags(forFileID fileID: String, path: String) -> [String] {
+        // A native table cell can leave the viewport while this actor hop is
+        // queued. Do not turn its cancelled request into an unnecessary disk
+        // metadata read after rapid scrolling.
+        guard !Task.isCancelled else { return [] }
         if let cached = cache.object(forKey: fileID as NSString) as? [String] {
             return cached
         }

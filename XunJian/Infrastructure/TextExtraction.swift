@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 import PDFKit
 
 struct TextExtractionService: Sendable {
@@ -108,24 +109,125 @@ struct TextExtractionService: Sendable {
         defer { try? handle.close() }
         guard let data = try? handle.read(upToCount: byteBudget),
               !isCancelled(),
-              !data.isEmpty,
-              !data.prefix(4_096).contains(0) else {
+              !data.isEmpty else {
             return nil
         }
 
-        for encoding in [
-            String.Encoding.utf8,
-            .utf16,
-            .utf16LittleEndian,
-            .utf16BigEndian,
-            .isoLatin1
-        ] {
+        let prefix = data.prefix(4_096)
+        let hasUTF16LittleEndianBOM = data.starts(with: [0xFF, 0xFE])
+        let hasUTF16BigEndianBOM = data.starts(with: [0xFE, 0xFF])
+        let encodings: [String.Encoding]
+        if hasUTF16LittleEndianBOM {
+            encodings = [.utf16, .utf16LittleEndian]
+        } else if hasUTF16BigEndianBOM {
+            encodings = [.utf16, .utf16BigEndian]
+        } else if prefix.contains(0), Self.looksLikeUTF16(prefix) {
+            // UTF-16 text commonly contains NUL bytes. The former early NUL
+            // rejection made the UTF-16 decoding branches unreachable.
+            encodings = [.utf16LittleEndian, .utf16BigEndian]
+        } else if prefix.contains(0) {
+            return nil
+        } else {
+            let detectedEncoding = NSString.stringEncoding(
+                for: data,
+                encodingOptions: nil,
+                convertedString: nil,
+                usedLossyConversion: nil
+            )
+            if detectedEncoding == Self.gb18030Encoding.rawValue {
+                encodings = [Self.gb18030Encoding, .utf8]
+            } else if String(data: data, encoding: .utf8) == nil,
+                      let utf16 = decodedUTF16WithoutBOM(data) {
+                return utf16
+            } else {
+                encodings = [.utf8, Self.gb18030Encoding]
+            }
+        }
+
+        for encoding in encodings {
             guard !isCancelled() else { return nil }
-            if let text = String(data: data, encoding: encoding) {
+            if let text = String(data: data, encoding: encoding),
+               isPlausibleText(text) {
                 return text
             }
         }
         return nil
+    }
+
+    private static let gb18030Encoding = String.Encoding(
+        rawValue: CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        )
+    )
+
+    private static func looksLikeUTF16(_ bytes: Data.SubSequence) -> Bool {
+        guard bytes.count >= 4 else { return false }
+        var evenNULs = 0
+        var oddNULs = 0
+        for (offset, byte) in bytes.enumerated() where byte == 0 {
+            if offset.isMultiple(of: 2) {
+                evenNULs += 1
+            } else {
+                oddNULs += 1
+            }
+        }
+        let codeUnitCount = bytes.count / 2
+        let dominantNULs = max(evenNULs, oddNULs)
+        let otherNULs = min(evenNULs, oddNULs)
+        return dominantNULs >= max(2, codeUnitCount / 5)
+            && dominantNULs >= otherNULs * 4
+    }
+
+    private static func decodedUTF16WithoutBOM(_ data: Data) -> String? {
+        guard data.count.isMultiple(of: 2), data.count >= 4 else { return nil }
+        let candidates = [
+            String(data: data, encoding: .utf16LittleEndian),
+            String(data: data, encoding: .utf16BigEndian)
+        ].compactMap { text -> (String, Int)? in
+            guard let text, isPlausibleText(text) else { return nil }
+            return (text, textLikelihoodScore(text))
+        }.sorted { $0.1 > $1.1 }
+        guard let best = candidates.first,
+              best.1 > 0,
+              candidates.count == 1 || best.1 >= candidates[1].1 + 2 else {
+            return nil
+        }
+        return best.0
+    }
+
+    private static func textLikelihoodScore(_ text: String) -> Int {
+        text.unicodeScalars.prefix(4_096).reduce(into: 0) { score, scalar in
+            switch scalar.value {
+            case 0x3400...0x9FFF, 0x20000...0x2FA1F:
+                score += 4
+            default:
+                if CharacterSet.letters.contains(scalar)
+                    || CharacterSet.decimalDigits.contains(scalar) {
+                    score += 2
+                } else if CharacterSet.whitespacesAndNewlines.contains(scalar)
+                            || CharacterSet.punctuationCharacters.contains(scalar) {
+                    score += 1
+                } else if CharacterSet.controlCharacters.contains(scalar) {
+                    score -= 4
+                }
+            }
+        }
+    }
+
+    private static func isPlausibleText(_ text: String) -> Bool {
+        var inspected = 0
+        var suspiciousControls = 0
+        for scalar in text.unicodeScalars.prefix(4_096) {
+            inspected += 1
+            if CharacterSet.controlCharacters.contains(scalar),
+               scalar.value != 0x09,
+               scalar.value != 0x0A,
+               scalar.value != 0x0D {
+                suspiciousControls += 1
+            }
+        }
+        guard inspected > 0 else { return false }
+        return suspiciousControls * 20 <= inspected
     }
 }
 
@@ -157,6 +259,37 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
         }
 
         return files.sorted { lhs, rhs in
+            let result = comparison(lhs, rhs)
+            if result == .orderedSame {
+                return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
+            }
+            return ascending ? result == .orderedAscending : result == .orderedDescending
+        }
+    }
+
+    /// Cancellation-aware stable merge sort for interactive six-figure
+    /// browse snapshots. Swift's `Array.sorted` cannot stop once started, so
+    /// rapidly changing filters previously left several obsolete O(n log n)
+    /// sorts competing for CPU and memory.
+    func sortedCancellable(
+        _ files: [IndexedFile],
+        ascending: Bool,
+        isCancelled: () -> Bool
+    ) -> [IndexedFile]? {
+        guard !isCancelled() else { return nil }
+        guard self != .relevance else { return files }
+        if self == .kind {
+            return sortedByKindCancellable(
+                files,
+                ascending: ascending,
+                isCancelled: isCancelled
+            )
+        }
+
+        return stableSortedCancellable(
+            files,
+            isCancelled: isCancelled
+        ) { lhs, rhs in
             let result = comparison(lhs, rhs)
             if result == .orderedSame {
                 return lhs.name.localizedStandardCompare(rhs.name) == .orderedAscending
@@ -209,6 +342,88 @@ enum FileSortOrder: String, CaseIterable, Identifiable, Sendable {
             result.append(contentsOf: buckets[rank])
         }
         return result
+    }
+
+    private func sortedByKindCancellable(
+        _ files: [IndexedFile],
+        ascending: Bool,
+        isCancelled: () -> Bool
+    ) -> [IndexedFile]? {
+        let orderedKinds = FileKind.allCases.sorted {
+            $0.localizedTitle.localizedStandardCompare($1.localizedTitle) == .orderedAscending
+        }
+        let rankByKind = Dictionary(uniqueKeysWithValues: orderedKinds.enumerated().map {
+            ($0.element, $0.offset)
+        })
+        guard let nameOrdered = stableSortedCancellable(
+            files,
+            isCancelled: isCancelled,
+            by: { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
+        ) else { return nil }
+        var buckets = Array(repeating: [IndexedFile](), count: orderedKinds.count)
+        for (offset, file) in nameOrdered.enumerated() {
+            if offset.isMultiple(of: 1_024), isCancelled() { return nil }
+            buckets[rankByKind[file.kind] ?? orderedKinds.count - 1].append(file)
+        }
+        let ranks = ascending ? Array(buckets.indices) : Array(buckets.indices.reversed())
+        var result: [IndexedFile] = []
+        result.reserveCapacity(files.count)
+        for rank in ranks {
+            guard !isCancelled() else { return nil }
+            result.append(contentsOf: buckets[rank])
+        }
+        return result
+    }
+
+    private func stableSortedCancellable(
+        _ files: [IndexedFile],
+        isCancelled: () -> Bool,
+        by areInIncreasingOrder: (IndexedFile, IndexedFile) -> Bool
+    ) -> [IndexedFile]? {
+        guard files.count > 1 else { return isCancelled() ? nil : files }
+        var source = files
+        var destination = files
+        var runWidth = 1
+        var comparisons = 0
+
+        while runWidth < source.count {
+            guard !isCancelled() else { return nil }
+            var runStart = 0
+            while runStart < source.count {
+                let middle = min(runStart + runWidth, source.count)
+                let runEnd = min(runStart + runWidth * 2, source.count)
+                var left = runStart
+                var right = middle
+                var output = runStart
+
+                while left < middle && right < runEnd {
+                    comparisons &+= 1
+                    if comparisons.isMultiple(of: 1_024), isCancelled() { return nil }
+                    if areInIncreasingOrder(source[right], source[left]) {
+                        destination[output] = source[right]
+                        right += 1
+                    } else {
+                        destination[output] = source[left]
+                        left += 1
+                    }
+                    output += 1
+                }
+                while left < middle {
+                    destination[output] = source[left]
+                    left += 1
+                    output += 1
+                }
+                while right < runEnd {
+                    destination[output] = source[right]
+                    right += 1
+                    output += 1
+                }
+                runStart = runEnd
+            }
+            swap(&source, &destination)
+            runWidth *= 2
+        }
+        return isCancelled() ? nil : source
     }
 
     private func compareOptionalDates(_ lhs: Date?, _ rhs: Date?) -> ComparisonResult {

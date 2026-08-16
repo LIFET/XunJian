@@ -49,6 +49,20 @@ struct PendingCategoryAssignment: Equatable, Sendable {
     let recordsUndo: Bool
 }
 
+private struct CommandTargetState {
+    let files: [IndexedFile]
+    let hasPublished: Bool
+    let usesGlobalSearchPagination: Bool
+    let signature: Int?
+
+    static let empty = CommandTargetState(
+        files: [],
+        hasPublished: false,
+        usesGlobalSearchPagination: false,
+        signature: nil
+    )
+}
+
 @MainActor
 final class AppModel: ObservableObject {
     // File index state now lives on `index` (FileIndexCoordinator); see the
@@ -124,12 +138,25 @@ final class AppModel: ObservableObject {
     var fileExportProgress: FileExportProgress? { fileExportProgressStore.progress }
     private var fileExportTask: Task<Void, Never>?
     private var fileExportRevision = UUID()
-    @Published var searchText = "" {
-        didSet { index.scheduleSearch(query: searchText) }
+    /// Search typing lives on a narrow store instead of `@Published` here.
+    /// The native field updates immediately without invalidating the complete
+    /// app shell, retained file browser, sidebar, and inspector on every key.
+    let browseSearchStore: BrowseSearchStore
+    var searchText: String {
+        get { browseSearchStore.query }
+        set {
+            guard newValue != browseSearchStore.query else { return }
+            index.scheduleSearch(query: newValue)
+        }
     }
     /// Search term used for inspector/preview highlighting. The visible page
     /// owns this so category search and All Files search stay independent.
-    @Published var highlightQuery = ""
+    /// It is deliberately not published by AppModel: typing and search result
+    /// delivery must not invalidate the full window.
+    var highlightQuery: String {
+        get { browseSearchStore.highlightQuery }
+        set { browseSearchStore.setHighlightQuery(newValue) }
+    }
     /// Bumped when the preferred language changes while the app is open, so
     /// hand-written `AppLanguage.localized` strings refresh.
     @Published private(set) var localeRevision: UInt64 = 0
@@ -205,53 +232,21 @@ final class AppModel: ObservableObject {
         undo.nextTitle ?? AppLanguage.localized("撤销", english: "Undo")
     }
 
-    /// Filtered and sorted "All Files" list, cached here rather than in the
-    /// view so switching pages does not throw it away and force a visible
-    /// re-preparation every time the user comes back.
-    @Published private(set) var browseSnapshot: [IndexedFile] = []
-    /// Ordered IDs for the cached snapshot. Grid selection uses this instead
-    /// of rebuilding an O(n) ID array on every click.
-    private(set) var browseSnapshotIDs: [String] = []
-    /// id -> position in `browseSnapshotIDs`, so grid/category selection and
-    /// arrow-key navigation skip O(n) index scans per click/keypress.
-    private(set) var browseSnapshotIDIndex: [String: Int] = [:]
-    private(set) var browseSnapshotIDSet: Set<String> = []
-    /// Identifies the inputs `browseSnapshot` was built from. `nil` means
-    /// nothing has been prepared yet, which is the only case that warrants
-    /// showing a spinner.
-    private(set) var browseSnapshotSignature: Int?
-    /// Hash of the user-driven snapshot inputs (query, kind, sort, filters).
-    /// When a refresh's signature differs only through index revisions, the
-    /// view can settle the burst before re-sorting a six-figure list.
-    private(set) var browseSnapshotUserSignature: Int?
-
-    func publishBrowseSnapshot(
-        _ files: [IndexedFile],
-        orderedIDs: [String],
-        idIndex: [String: Int],
-        visibleIDs: Set<String>,
-        signature: Int,
-        userSignature: Int
-    ) {
-        browseSnapshotIDs = orderedIDs
-        browseSnapshotIDIndex = idIndex
-        browseSnapshotIDSet = visibleIDs
-        browseSnapshotSignature = signature
-        browseSnapshotUserSignature = userSignature
-        // Publish once, after every piece of metadata is coherent. The old
-        // path emitted three extra object changes for each six-figure list.
-        browseSnapshot = files
-    }
-
     /// The files currently visible on the active page. Export and ⌘A read
     /// this rather than the All Files snapshot, which goes stale after the
     /// user leaves that page.
-    @Published var commandTargetFiles: [IndexedFile] = []
+    /// Keep the three related values in one published record. Previously one
+    /// toolbar change emitted up to three global `objectWillChange` events
+    /// here, in addition to the file snapshot publication.
+    @Published private var commandTargetState = CommandTargetState.empty
+
+    var commandTargetFiles: [IndexedFile] { commandTargetState.files }
     /// Distinguishes “no page has published yet” from “this page has nothing
     /// to export”, so Settings cannot silently dump the whole index.
-    @Published private(set) var hasPublishedCommandTarget = false
-    @Published private(set) var commandTargetUsesGlobalSearchPagination = false
-    private var commandTargetSignature: Int?
+    var hasPublishedCommandTarget: Bool { commandTargetState.hasPublished }
+    var commandTargetUsesGlobalSearchPagination: Bool {
+        commandTargetState.usesGlobalSearchPagination
+    }
 
     func updateCommandTargetFiles(
         _ files: [IndexedFile],
@@ -259,32 +254,37 @@ final class AppModel: ObservableObject {
         signature: Int? = nil
     ) {
         if let signature,
-           hasPublishedCommandTarget,
-           commandTargetSignature == signature,
-           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination {
+           commandTargetState.hasPublished,
+           commandTargetState.signature == signature,
+           commandTargetState.usesGlobalSearchPagination == usesGlobalSearchPagination {
             return
         }
         // Compare without allocating two ID arrays: publishing a 100k-file
         // snapshot was churning two full-size arrays per call.
         if signature == nil,
-           hasPublishedCommandTarget,
-           commandTargetUsesGlobalSearchPagination == usesGlobalSearchPagination,
-           files.count == commandTargetFiles.count,
-           zip(files, commandTargetFiles).allSatisfy({ $0.id == $1.id }) {
+           commandTargetState.hasPublished,
+           commandTargetState.usesGlobalSearchPagination == usesGlobalSearchPagination,
+           files.count == commandTargetState.files.count,
+           zip(files, commandTargetState.files).allSatisfy({ $0.id == $1.id }) {
             return
         }
-        commandTargetFiles = files
-        commandTargetUsesGlobalSearchPagination = usesGlobalSearchPagination
-        commandTargetSignature = signature
-        hasPublishedCommandTarget = true
+        commandTargetState = CommandTargetState(
+            files: files,
+            hasPublished: true,
+            usesGlobalSearchPagination: usesGlobalSearchPagination,
+            signature: signature
+        )
     }
 
     /// Keeps the current search-pagination ownership while a replacement
     /// snapshot is being prepared, so an in-flight Select All is not lost.
     func clearCommandTargetFilesKeepingPagination() {
-        commandTargetFiles = []
-        commandTargetSignature = nil
-        hasPublishedCommandTarget = true
+        commandTargetState = CommandTargetState(
+            files: [],
+            hasPublished: true,
+            usesGlobalSearchPagination: commandTargetState.usesGlobalSearchPagination,
+            signature: nil
+        )
     }
 
     var filesRevision: UInt64 { index.filesRevision }
@@ -574,7 +574,12 @@ final class AppModel: ObservableObject {
             oauth: oauth,
             isRunningTests: isRunningTests
         )
-        self.index = FileIndexCoordinator(isRunningTests: isRunningTests)
+        let browseSearchStore = BrowseSearchStore()
+        self.browseSearchStore = browseSearchStore
+        self.index = FileIndexCoordinator(
+            isRunningTests: isRunningTests,
+            browseSearchStore: browseSearchStore
+        )
         self.filterMinSizeMB = UserDefaults.standard.double(
             forKey: "allFiles.filterMinSizeMB"
         )
@@ -849,10 +854,12 @@ final class AppModel: ObservableObject {
     }
 
     func supportsTextContent(_ file: IndexedFile) -> Bool {
-        TextExtractionService.supports(file.url)
+        !ScanExclusions.isSensitivePath(file.url)
+            && TextExtractionService.supports(file.url)
     }
 
     private func textContentForExplicitUse(_ file: IndexedFile) async throws -> String? {
+        guard !ScanExclusions.isSensitivePath(file.url) else { return nil }
         if let indexed = try await index.textContent(forFileID: file.id),
            !indexed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return indexed
@@ -965,8 +972,6 @@ final class AppModel: ObservableObject {
         forward(index.$categories)
         forward(index.$savedSearches)
         forward(index.$sources)
-        forward(index.$searchResults)
-        forward(index.$searchResultTotalCount)
         forward(index.$isDatabaseAvailable)
         forward(index.$includesHiddenFiles)
         forward(index.$scanScopeMode)
@@ -1131,6 +1136,7 @@ final class AppModel: ObservableObject {
         maximumCharacters: Int
     ) async throws -> String? {
         guard let file = index.file(id: fileID), maximumCharacters > 0 else { return nil }
+        guard !ScanExclusions.isSensitivePath(file.url) else { return nil }
         if let indexed = try await index.textContentPrefix(
             forFileID: fileID,
             maximumCharacters: maximumCharacters
@@ -1545,6 +1551,15 @@ final class AppModel: ObservableObject {
         let remaining = selectedFileIDs.intersection(visibleFileIDs)
         guard remaining.count != selectedFileIDs.count else { return }
         selectedFileIDs = remaining
+    }
+
+    /// Large browse snapshots already maintain an ID-to-row map. Reusing it
+    /// avoids allocating a second 100k-entry Set only to retain the usually
+    /// one- or two-item selection.
+    func clearSelectionIfHidden(using visibleFileIndex: [String: Int]) {
+        let remaining = selectedFileIDs.filter { visibleFileIndex[$0] != nil }
+        guard remaining.count != selectedFileIDs.count else { return }
+        selectedFileIDs = Set(remaining)
     }
 
     private static func message(for error: Error) -> String {

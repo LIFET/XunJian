@@ -49,6 +49,12 @@ private enum OAuthVerificationProofStore {
         )
     }
 
+    /// Checks only the credential file's identity and safety metadata. Token
+    /// bytes are never read, decoded, or returned.
+    static func credentialIsPresent(at credentialURL: URL) throws -> Bool {
+        try credentialIdentity(at: credentialURL) != nil
+    }
+
     static func restore(
         provider: OAuthBridgeProvider,
         runtimeVersion: String,
@@ -656,49 +662,8 @@ private actor OAuthBridgeCoordinator {
                     loginAttemptID: login.localAttemptID
                 )
             }
-            do {
-                let executable = try bundledCodexExecutable()
-                let runtime = try await ensureCodexRuntime(executableURL: executable)
-                let account = try await runtime.client.readAccount()
-                let cleanupSucceeded = await closeCodexStatusRuntime(runtime)
-                guard cleanupSucceeded, !isInvalidated else {
-                    codexCredentialState = .unknown
-                    throw Failure.response(
-                        .authenticationFailed,
-                        "Codex authentication status cleanup failed."
-                    )
-                }
-                switch account {
-                case .signedOut:
-                    clearStoredVerification(for: .codex)
-                    codexCredentialState = .signedOut
-                    return disconnectedStatus(provider: .codex, credential: .signedOut)
-                case let .signedIn(type, _, _):
-                    guard type.lowercased() == "chatgpt" else {
-                        clearStoredVerification(for: .codex)
-                        codexCredentialState = .signedOut
-                        return disconnectedStatus(provider: .codex, credential: .signedOut)
-                    }
-                    codexCredentialState = .signedIn
-                    if !codexConnectionVerified, !codexVerificationRestored {
-                        codexConnectionVerified = restoreStoredVerification(for: .codex)
-                        codexVerificationRestored = true
-                    }
-                    return codexConnectionVerified
-                        ? connectedStatus(provider: .codex)
-                        : authenticatedStatus(provider: .codex)
-                }
-            } catch let failure as Failure {
-                clearStoredVerification(for: .codex)
-                await discardCodexRuntime()
-                codexCredentialState = .unknown
-                throw failure
-            } catch {
-                clearStoredVerification(for: .codex)
-                await discardCodexRuntime()
-                codexCredentialState = .unknown
-                return disconnectedStatus(provider: .codex, credential: .unknown)
-            }
+            await discardCodexRuntime()
+            return try restoreAuthenticationStatusWithoutRuntime(for: .codex)
 
         case .grok:
             let probe = managedGrokProbe()
@@ -725,79 +690,76 @@ private actor OAuthBridgeCoordinator {
                     loginAttemptID: finalization.attemptID
                 )
             }
-            if let runtime = grokRuntime {
-                guard try prepareGrokCLIHome() == runtime.cliHome else {
-                    grokConnectionVerified = false
-                    await discardGrokRuntime()
-                    grokCredentialState = .unknown
-                    throw Failure.response(
-                        .safeVerificationUnavailable,
-                        "XunJian's private Grok login directory changed unexpectedly."
-                    )
-                }
-                if await runtime.process.processIdentifier != nil {
-                    grokCredentialState = .signedIn
-                    guard grokConnectionVerified else {
-                        return authenticatedStatus(provider: .grok)
-                    }
-                    grokRuntime = nil
-                    guard await closeAfterVerification(runtime),
-                          !isInvalidated,
-                          grokConnectionVerified else {
-                        grokConnectionVerified = false
-                        grokCredentialState = .unknown
-                        return disconnectedStatus(
-                            provider: .grok,
-                            credential: .unknown
-                        )
-                    }
-                    return connectedStatus(provider: .grok)
-                }
-                grokConnectionVerified = false
-                await discardGrokRuntime()
-            }
-            do {
-                let runtime = try await makeGrokRuntime()
-                guard !isInvalidated else {
-                    await close(runtime)
-                    return disconnectedStatus(provider: .grok, credential: .unknown)
-                }
-                grokCredentialState = .signedIn
-                if !grokConnectionVerified, !grokVerificationRestored {
-                    grokConnectionVerified = restoreStoredVerification(for: .grok)
-                    grokVerificationRestored = true
-                }
-                guard grokConnectionVerified else {
-                    grokRuntime = runtime
-                    return authenticatedStatus(provider: .grok)
-                }
-                guard await closeAfterVerification(runtime),
-                      !isInvalidated,
-                      grokConnectionVerified else {
-                    grokConnectionVerified = false
-                    grokCredentialState = .unknown
-                    return disconnectedStatus(provider: .grok, credential: .unknown)
-                }
-                return connectedStatus(provider: .grok)
-            } catch GrokACPError.cachedTokenUnavailable {
-                clearStoredVerification(for: .grok)
-                grokConnectionVerified = false
-                await discardGrokRuntime()
-                grokCredentialState = .signedOut
-                return disconnectedStatus(provider: .grok, credential: .signedOut)
-            } catch let failure as Failure {
-                clearStoredVerification(for: .grok)
-                grokConnectionVerified = false
-                await discardGrokRuntime()
-                grokCredentialState = .unknown
-                throw failure
-            } catch {
-                clearStoredVerification(for: .grok)
-                grokConnectionVerified = false
-                await discardGrokRuntime()
-                grokCredentialState = .unknown
-                return disconnectedStatus(provider: .grok, credential: .unknown)
-            }
+            await discardGrokRuntime()
+            return try restoreAuthenticationStatusWithoutRuntime(for: .grok)
+        }
+    }
+
+    /// Startup and foreground refreshes are status-only operations. They may
+    /// inspect safe file metadata and the local proof, but must never launch a
+    /// provider runtime, authenticate over the wire, or generate model text.
+    private func restoreAuthenticationStatusWithoutRuntime(
+        for provider: OAuthBridgeProvider
+    ) throws -> OAuthBridgeAuthStatus {
+        guard let inputs = verificationProofInputs(for: provider) else {
+            throw Failure.response(
+                .safeVerificationUnavailable,
+                "XunJian's private OAuth verification storage is unavailable or unsafe."
+            )
+        }
+        let credentialIsPresent: Bool
+        do {
+            credentialIsPresent = try OAuthVerificationProofStore.credentialIsPresent(
+                at: inputs.credentialURL
+            )
+        } catch {
+            throw Failure.response(
+                .safeVerificationUnavailable,
+                "XunJian's private OAuth credential storage is unavailable or unsafe."
+            )
+        }
+        let proofMatches = credentialIsPresent && OAuthVerificationProofStore.restore(
+            provider: provider,
+            runtimeVersion: inputs.runtimeVersion,
+            runtimeURL: inputs.runtimeURL,
+            credentialURL: inputs.credentialURL
+        )
+        let decision = OAuthStoredCredentialDecision.resolve(
+            credentialIsPresent: credentialIsPresent,
+            verificationProofMatches: proofMatches
+        )
+
+        switch (provider, decision) {
+        case (.codex, .signedOut):
+            clearStoredVerification(for: .codex)
+            codexConnectionVerified = false
+            codexCredentialState = .signedOut
+            return disconnectedStatus(provider: .codex, credential: .signedOut)
+        case (.grok, .signedOut):
+            clearStoredVerification(for: .grok)
+            grokConnectionVerified = false
+            grokCredentialState = .signedOut
+            return disconnectedStatus(provider: .grok, credential: .signedOut)
+        case (.codex, .signedInUnverified):
+            codexVerificationRestored = true
+            codexConnectionVerified = false
+            codexCredentialState = .signedIn
+            return authenticatedStatus(provider: .codex)
+        case (.grok, .signedInUnverified):
+            grokVerificationRestored = true
+            grokConnectionVerified = false
+            grokCredentialState = .signedIn
+            return authenticatedStatus(provider: .grok)
+        case (.codex, .connected):
+            codexVerificationRestored = true
+            codexConnectionVerified = true
+            codexCredentialState = .signedIn
+            return connectedStatus(provider: .codex)
+        case (.grok, .connected):
+            grokVerificationRestored = true
+            grokConnectionVerified = true
+            grokCredentialState = .signedIn
+            return connectedStatus(provider: .grok)
         }
     }
 
@@ -2316,21 +2278,6 @@ private actor OAuthBridgeCoordinator {
         }
     }
 
-    private func restoreStoredVerification(
-        for provider: OAuthBridgeProvider
-    ) -> Bool {
-        guard let inputs = verificationProofInputs(for: provider) else {
-            clearStoredVerification(for: provider)
-            return false
-        }
-        return OAuthVerificationProofStore.restore(
-            provider: provider,
-            runtimeVersion: inputs.runtimeVersion,
-            runtimeURL: inputs.runtimeURL,
-            credentialURL: inputs.credentialURL
-        )
-    }
-
     private func persistStoredVerification(
         for provider: OAuthBridgeProvider
     ) -> Bool {
@@ -2413,12 +2360,6 @@ private actor OAuthBridgeCoordinator {
         guard let runtime = codexRuntime else { return }
         codexRuntime = nil
         await close(runtime)
-    }
-
-    private func closeCodexStatusRuntime(_ runtime: CodexRuntime) async -> Bool {
-        guard codexRuntime?.client === runtime.client else { return false }
-        codexRuntime = nil
-        return await close(runtime)
     }
 
     private func discardGrokRuntime() async {

@@ -159,6 +159,16 @@ enum FileBrowseSelection {
         if command || shift { return true }
         return selectedIDs != [fileID]
     }
+
+    /// A renderer being removed can emit one final empty AppKit selection.
+    /// Only the renderer that is still visible may publish into the shared
+    /// model; otherwise list ↔ grid switches visibly clear the selected file.
+    static func shouldAcceptNativeSelectionPublication(
+        from sourceMode: FileBrowseViewMode,
+        currentMode: FileBrowseViewMode
+    ) -> Bool {
+        sourceMode == currentMode
+    }
 }
 
 /// Each materialized lazy-grid card observes only whether its own ID is in the
@@ -355,6 +365,8 @@ struct FileBrowseToolbar: View {
                 }
                 HStack(spacing: 8) {
                     directionButton
+                    Divider()
+                        .frame(height: 18)
                     viewModePicker
                 }
             }
@@ -495,8 +507,9 @@ struct FileBrowseToolbar: View {
             selection: $viewMode
         ) {
             ForEach(FileBrowseViewMode.allCases) { mode in
-                Label(mode.localizedTitle, systemImage: mode.symbolName)
+                Image(systemName: mode.symbolName)
                     .tag(mode)
+                    .accessibilityLabel(Text(verbatim: mode.localizedTitle))
             }
         }
         .pickerStyle(.segmented)

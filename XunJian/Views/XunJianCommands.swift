@@ -1,13 +1,88 @@
 import SwiftUI
 
-private struct XunJianInspectorSupportKey: FocusedValueKey {
-    typealias Value = Bool
+struct XunJianCommandAvailability: Equatable, Sendable {
+    let canCreateCategory: Bool
+    let canAddFolder: Bool
+    let canActOnSelection: Bool
+    let canSelectAll: Bool
+    let canDeselect: Bool
+    let canSearch: Bool
+    let canChangeBrowseMode: Bool
+    let canToggleInspector: Bool
+    let canExport: Bool
+
+    static let unavailable = XunJianCommandAvailability(
+        canCreateCategory: false,
+        canAddFolder: false,
+        canActOnSelection: false,
+        canSelectAll: false,
+        canDeselect: false,
+        canSearch: false,
+        canChangeBrowseMode: false,
+        canToggleInspector: false,
+        canExport: false
+    )
+
+    static func resolve(
+        destination: NavigationDestination,
+        databaseAvailable: Bool,
+        hasSelectedFile: Bool,
+        selectedFileCount: Int,
+        hasCommandTargets: Bool,
+        canToggleInspector: Bool,
+        isExporting: Bool
+    ) -> XunJianCommandAvailability {
+        let isFilePage: Bool
+        switch destination {
+        case .allFiles, .category:
+            isFilePage = true
+        case .home, .categories, .settings:
+            isFilePage = false
+        }
+        return XunJianCommandAvailability(
+            canCreateCategory: databaseAvailable,
+            canAddFolder: databaseAvailable,
+            canActOnSelection: databaseAvailable && isFilePage && hasSelectedFile,
+            canSelectAll: databaseAvailable && isFilePage && hasCommandTargets,
+            canDeselect: isFilePage && selectedFileCount > 0,
+            canSearch: databaseAvailable,
+            canChangeBrowseMode: databaseAvailable,
+            canToggleInspector: databaseAvailable && canToggleInspector,
+            canExport: databaseAvailable && isFilePage && hasCommandTargets && !isExporting
+        )
+    }
+}
+
+struct XunJianCommandContext {
+    let availability: XunJianCommandAvailability
+    let createCategory: () -> Void
+    let addFolder: () -> Void
+    let openSelected: () -> Void
+    let quickLookSelected: () -> Void
+    let showSelectedInFinder: () -> Void
+    let renameSelected: () -> Void
+    let moveSelected: () -> Void
+    let trashSelection: () -> Void
+    let copySelectedPath: () -> Void
+    let selectAll: () -> Void
+    let deselectAll: () -> Void
+    let focusSearch: () -> Void
+    let setBrowseViewMode: (FileBrowseViewMode) -> Void
+    let toggleInspector: () -> Void
+    let showCommandPalette: () -> Void
+    let previewSelectedText: () -> Void
+    let showStorageInsights: () -> Void
+    let exportFileList: (FileListExport.Format) -> Void
+}
+
+private struct XunJianCommandContextKey: FocusedValueKey {
+    typealias Value = XunJianCommandContext
 }
 
 extension FocusedValues {
-    var xunJianSupportsInspector: Bool? {
-        get { self[XunJianInspectorSupportKey.self] }
-        set { self[XunJianInspectorSupportKey.self] = newValue }
+    var xunJianCommandContext: XunJianCommandContext? {
+        get { self[XunJianCommandContextKey.self] }
+        set { self[XunJianCommandContextKey.self] = newValue }
     }
 }
 
@@ -30,6 +105,12 @@ extension Notification.Name {
     )
 }
 
+enum XunJianSearchFieldScope: String, Sendable {
+    case home
+    case allFiles
+    case category
+}
+
 /// The app's menu bar.
 ///
 /// Every keyboard shortcut lives here rather than only on a control, so the
@@ -42,10 +123,11 @@ extension Notification.Name {
 struct XunJianCommands: Commands {
     @ObservedObject var appModel: AppModel
     @ObservedObject var undo: UndoCoordinator
-    @FocusedValue(\.xunJianSupportsInspector) private var supportsInspector
+    @FocusedValue(\.xunJianCommandContext) private var commandContext
 
-    private var selectedFile: IndexedFile? { appModel.selectedFile }
-    private var hasSelection: Bool { selectedFile != nil }
+    private var availability: XunJianCommandAvailability {
+        commandContext?.availability ?? .unavailable
+    }
 
     var body: some Commands {
         fileCommands
@@ -59,24 +141,26 @@ struct XunJianCommands: Commands {
     private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
             Button(AppLanguage.localized("新建分类…", english: "New Category…")) {
-                NotificationCenter.default.post(name: .xunJianRequestNewCategory, object: nil)
+                commandContext?.createCategory()
             }
             .keyboardShortcut("n", modifiers: .command)
+            .disabled(!availability.canCreateCategory)
 
             Button(AppLanguage.localized("添加文件夹…", english: "Add Folder…")) {
-                appModel.chooseFolder()
+                commandContext?.addFolder()
             }
             .keyboardShortcut("n", modifiers: [.command, .shift])
+            .disabled(!availability.canAddFolder)
         }
 
         CommandGroup(after: .newItem) {
             Divider()
 
             Button(AppLanguage.localized("打开", english: "Open")) {
-                selectedFile.map(appModel.open)
+                commandContext?.openSelected()
             }
             .keyboardShortcut(.downArrow, modifiers: .command)
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Menu(AppLanguage.localized("打开最近使用的文件", english: "Open Recent")) {
                 if appModel.recentFiles.isEmpty {
@@ -92,39 +176,35 @@ struct XunJianCommands: Commands {
             .disabled(appModel.recentFiles.isEmpty)
 
             Button(AppLanguage.localized("快速查看", english: "Quick Look")) {
-                selectedFile.map(appModel.quickLook)
+                commandContext?.quickLookSelected()
             }
             .keyboardShortcut("y", modifiers: .command)
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) {
-                selectedFile.map(appModel.showInFinder)
+                commandContext?.showSelectedInFinder()
             }
             .keyboardShortcut("r", modifiers: [.command, .shift])
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Divider()
 
             Button(AppLanguage.localized("重命名…", english: "Rename…")) {
-                selectedFile.map(appModel.requestRename)
+                commandContext?.renameSelected()
             }
             .keyboardShortcut("r", modifiers: .command)
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Button(AppLanguage.localized("移动到…", english: "Move To…")) {
-                selectedFile.map(appModel.chooseMoveDestination)
+                commandContext?.moveSelected()
             }
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Button(AppLanguage.localized("移到废纸篓", english: "Move to Trash")) {
-                if appModel.selectedFileIDs.count > 1 {
-                    appModel.requestBatchTrash()
-                } else {
-                    selectedFile.map(appModel.requestTrash)
-                }
+                commandContext?.trashSelection()
             }
             .keyboardShortcut(.delete, modifiers: .command)
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
         }
 
         CommandGroup(after: .saveItem) {
@@ -151,31 +231,32 @@ struct XunJianCommands: Commands {
 
         CommandGroup(after: .pasteboard) {
             Button(AppLanguage.localized("拷贝路径", english: "Copy Path")) {
-                selectedFile.map(appModel.copyPath)
+                commandContext?.copySelectedPath()
             }
             .keyboardShortcut("c", modifiers: [.command, .option])
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Divider()
 
             Button(AppLanguage.localized("全选文件", english: "Select All Files")) {
-                appModel.selectAllDisplayedFiles()
+                commandContext?.selectAll()
             }
             .keyboardShortcut("a", modifiers: [.command, .option])
-            .disabled(appModel.commandTargetFiles.isEmpty)
+            .disabled(!availability.canSelectAll)
 
             Button(AppLanguage.localized("取消选择", english: "Deselect All")) {
-                appModel.selectedFileIDs = []
+                commandContext?.deselectAll()
             }
             .keyboardShortcut("a", modifiers: [.command, .shift])
-            .disabled(appModel.selectedFileIDs.isEmpty)
+            .disabled(!availability.canDeselect)
         }
 
         CommandGroup(after: .textEditing) {
             Button(AppLanguage.localized("查找文件", english: "Find Files")) {
-                NotificationCenter.default.post(name: .xunJianFocusSearch, object: nil)
+                commandContext?.focusSearch()
             }
             .keyboardShortcut("f", modifiers: .command)
+            .disabled(!availability.canSearch)
         }
     }
 
@@ -185,55 +266,50 @@ struct XunJianCommands: Commands {
     private var viewCommands: some Commands {
         CommandGroup(after: .toolbar) {
             Button(AppLanguage.localized("以列表显示", english: "As List")) {
-                NotificationCenter.default.post(
-                    name: .xunJianSetBrowseViewMode,
-                    object: FileBrowseViewMode.list.rawValue
-                )
+                commandContext?.setBrowseViewMode(.list)
             }
             .keyboardShortcut("1", modifiers: .command)
+            .disabled(!availability.canChangeBrowseMode)
 
             Button(AppLanguage.localized("以图标显示", english: "As Icons")) {
-                NotificationCenter.default.post(
-                    name: .xunJianSetBrowseViewMode,
-                    object: FileBrowseViewMode.grid.rawValue
-                )
+                commandContext?.setBrowseViewMode(.grid)
             }
             .keyboardShortcut("2", modifiers: .command)
+            .disabled(!availability.canChangeBrowseMode)
 
             Divider()
 
             Button(AppLanguage.localized("显示或隐藏文件详情", english: "Show or Hide File Details")) {
-                NotificationCenter.default.post(name: .xunJianToggleInspector, object: nil)
+                commandContext?.toggleInspector()
             }
             .keyboardShortcut("i", modifiers: [.command, .option])
-            .disabled(supportsInspector != true)
+            .disabled(!availability.canToggleInspector)
 
             Divider()
 
             Button(AppLanguage.localized("命令面板…", english: "Command Palette…")) {
-                NotificationCenter.default.post(name: .xunJianShowCommandPalette, object: nil)
+                commandContext?.showCommandPalette()
             }
             .keyboardShortcut("k", modifiers: .command)
+            .disabled(commandContext == nil)
 
             Button(AppLanguage.localized("预览正文", english: "Preview Text")) {
-                NotificationCenter.default.post(name: .xunJianShowTextPreview, object: nil)
+                commandContext?.previewSelectedText()
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
-            .disabled(!hasSelection)
+            .disabled(!availability.canActOnSelection)
 
             Button(AppLanguage.localized("存储洞察…", english: "Storage Insights…")) {
-                NotificationCenter.default.post(name: .xunJianShowStorageInsights, object: nil)
+                commandContext?.showStorageInsights()
             }
+            .disabled(commandContext == nil)
         }
     }
 
     private func exportButton(_ format: FileListExport.Format) -> some View {
         Button("\(format.localizedTitle)…") {
-            NotificationCenter.default.post(
-                name: .xunJianExportFileList,
-                object: format.rawValue
-            )
+            commandContext?.exportFileList(format)
         }
-        .disabled(appModel.commandTargetFiles.isEmpty || appModel.isExportingFileList)
+        .disabled(!availability.canExport)
     }
 }

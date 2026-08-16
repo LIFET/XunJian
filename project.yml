@@ -18,8 +18,8 @@ settings:
     INFOPLIST_KEY_CFBundleName: 寻简
     INFOPLIST_KEY_CFBundleDisplayName: 寻简
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-    MARKETING_VERSION: 0.1.0
-    CURRENT_PROJECT_VERSION: 1
+    MARKETING_VERSION: 0.1.1
+    CURRENT_PROJECT_VERSION: 2
     XUNJIAN_UPDATE_FEED_URL: "https://lifet.github.io/XunJian/appcast.xml"
     XUNJIAN_UPDATE_PUBLIC_ED_KEY: "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q="
 packages:
@@ -47,6 +47,7 @@ targets:
       properties:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.productivity
         NSServices:
           - NSMenuItem:
               default: 用寻简打开
@@ -62,6 +63,7 @@ targets:
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.files.user-selected.read-write: true
+        com.apple.security.files.bookmarks.app-scope: true
         com.apple.security.network.client: true
         com.apple.security.temporary-exception.mach-lookup.global-name:
           - $(PRODUCT_BUNDLE_IDENTIFIER)-spks
@@ -72,6 +74,11 @@ targets:
   XunJianOAuthBridge:
     type: xpc-service
     platform: macOS
+    preBuildScripts:
+      - name: Verify Bundled OAuth Runtimes
+        script: |
+          /bin/zsh "$SRCROOT/scripts/verify-bundled-oauth-runtimes.sh"
+        basedOnDependencyAnalysis: false
     sources:
       - path: XunJianOAuthBridge
         excludes:

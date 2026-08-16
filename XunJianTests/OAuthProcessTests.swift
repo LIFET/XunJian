@@ -3,6 +3,30 @@ import Foundation
 import XCTest
 
 final class OAuthProcessTests: XCTestCase {
+    func testStoredCredentialDecisionRequiresMatchingProofForConnected() {
+        XCTAssertEqual(
+            OAuthStoredCredentialDecision.resolve(
+                credentialIsPresent: true,
+                verificationProofMatches: true
+            ),
+            .connected
+        )
+        XCTAssertEqual(
+            OAuthStoredCredentialDecision.resolve(
+                credentialIsPresent: true,
+                verificationProofMatches: false
+            ),
+            .signedInUnverified
+        )
+        XCTAssertEqual(
+            OAuthStoredCredentialDecision.resolve(
+                credentialIsPresent: false,
+                verificationProofMatches: true
+            ),
+            .signedOut
+        )
+    }
+
     func testCodexAppServerHomeIsPrivateStableAndDoesNotReuseSharedAuth() throws {
         let userHome = try makePrivateTemporaryDirectory(label: "codex-home-stable")
         defer { try? FileManager.default.removeItem(at: userHome) }
