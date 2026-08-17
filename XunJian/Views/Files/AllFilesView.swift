@@ -142,7 +142,6 @@ struct AllFilesView: View {
     private func content(filesSnapshot: [IndexedFile]) -> some View {
         VStack(spacing: 0) {
             fileHeader(filesSnapshot: filesSnapshot)
-            Divider().opacity(0.7)
             emptyState(files: filesSnapshot)
         }
     }
@@ -191,8 +190,17 @@ struct AllFilesView: View {
                 searchProgress
             }
         }
+        .padding(12)
+        .background(
+            XunJianUI.Fill.quiet,
+            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
+        }
         .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
     }
 
     /// Manual size/date filter entry point (N02). Highlighted while active so
@@ -700,6 +708,20 @@ struct AllFilesView: View {
                         .buttonStyle(.borderedProminent)
                     }
                 }
+                .padding(24)
+                .frame(maxWidth: 560, minHeight: 280)
+                .background(
+                    XunJianUI.Fill.quiet,
+                    in: RoundedRectangle(
+                        cornerRadius: XunJianUI.Radius.card,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                        .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
+                }
+                .padding(XunJianUI.pagePadding(for: contentWidth))
             }
         }
         .xunjianAnimation(

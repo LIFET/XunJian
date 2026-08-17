@@ -11,6 +11,7 @@ enum XunJianUI {
         static let pageCompact: CGFloat = 16
         static let section: CGFloat = 24
         static let sectionInner: CGFloat = 12
+        static let panel: CGFloat = 18
         static let row: CGFloat = 10
         static let tight: CGFloat = 4
         static let sheet: CGFloat = 24
@@ -40,6 +41,7 @@ enum XunJianUI {
         static let rowIcon: CGFloat = 20
         static let compactIcon: CGFloat = 16
         static let minimumHitTarget: CGFloat = 28
+        static let readableContentWidth: CGFloat = 760
     }
 
     /// Platform semantic surfaces remain legible in light, dark, inactive and
@@ -200,6 +202,7 @@ struct PageHeader: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
@@ -227,6 +230,37 @@ struct GroupedSurface<Content: View>: View {
                 XunJianUI.Fill.quiet,
                 in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
             )
+    }
+}
+
+/// A restrained, opaque grouping surface for page-level introductions and
+/// empty states. Unlike floating chrome it never uses blur or shadow.
+struct InsetSurface<Content: View>: View {
+    var padding: CGFloat = XunJianUI.Spacing.panel
+    var usesAccentWash = false
+    @ViewBuilder var content: () -> Content
+
+    var body: some View {
+        content()
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                    .fill(XunJianUI.Fill.quiet)
+                    .overlay {
+                        if usesAccentWash {
+                            RoundedRectangle(
+                                cornerRadius: XunJianUI.Radius.card,
+                                style: .continuous
+                            )
+                            .fill(XunJianUI.Fill.accentWash)
+                        }
+                    }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
+                    .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
+            }
     }
 }
 

@@ -44,7 +44,10 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        Form {
+        VStack(spacing: 0) {
+            settingsIntro
+            Divider()
+            Form {
             Section(AppLanguage.localized("通用", english: "General")) {
                 Picker(AppLanguage.localized("外观", english: "Appearance"), selection: $appearance) {
                     ForEach(AppAppearance.allCases) { option in
@@ -574,8 +577,11 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                 }
             }
+            }
+            .formStyle(.grouped)
+            .frame(maxWidth: XunJianUI.Size.readableContentWidth)
+            .frame(maxWidth: .infinity)
         }
-        .formStyle(.grouped)
         .id(language)
         .navigationTitle(AppLanguage.localized("设置", english: "Settings"))
         .onAppear {
@@ -626,6 +632,24 @@ struct SettingsView: View {
                 )
             )
         }
+    }
+
+    private var settingsIntro: some View {
+        PageHeader(
+            title: AppLanguage.localized(
+                "按你的工作方式设置寻简",
+                english: "Set up XunJian for your workflow"
+            ),
+            subtitle: AppLanguage.localized(
+                "管理浏览方式、文件授权、本地索引与 AI 连接。",
+                english: "Manage browsing, file access, local indexing, and AI connections."
+            )
+        )
+        .frame(maxWidth: XunJianUI.Size.readableContentWidth)
+        .padding(.horizontal, XunJianUI.Spacing.page)
+        .padding(.vertical, XunJianUI.Spacing.panel)
+        .frame(maxWidth: .infinity)
+        .background(XunJianUI.Surface.canvas)
     }
 
     private func addExclusion() {

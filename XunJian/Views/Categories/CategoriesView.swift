@@ -195,12 +195,30 @@ struct CategoriesView: View {
                 }
                 .controlSize(.regular)
             } else {
-                HStack {
-                    Spacer(minLength: 0)
-                    headerAction
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .center, spacing: XunJianUI.Spacing.sectionInner) {
+                        categoryOverviewHeading
+                            .layoutPriority(1)
+                        headerAction
+                    }
+
+                    VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+                        categoryOverviewHeading
+                        headerAction
+                    }
                 }
             }
         }
+    }
+
+    private var categoryOverviewHeading: some View {
+        PageHeader(
+            title: AppLanguage.localized("整理分类", english: "Organize with Categories"),
+            subtitle: AppLanguage.localized(
+                "创建自己的文件视图；分类不会移动或复制原文件。",
+                english: "Create personal file views without moving or copying the originals."
+            )
+        )
     }
 
     @ViewBuilder
@@ -214,32 +232,32 @@ struct CategoriesView: View {
                     systemImage: "plus"
                 )
             }
+            .labelStyle(.titleAndIcon)
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
+            .fixedSize(horizontal: true, vertical: false)
         }
     }
 
     @ViewBuilder
     private var categoryOverview: some View {
         if appModel.categories.isEmpty {
-            ContentUnavailableView(
-                AppLanguage.localized("还没有分类", english: "No Categories Yet"),
-                systemImage: "folder.badge.plus",
-                description: Text(
-                    AppLanguage.localized(
-                        "创建分类后，可以从文件右键菜单或详情栏添加。",
-                        english: "After you create a category, add files from the context menu or inspector."
+            InsetSurface(padding: 0) {
+                ContentUnavailableView(
+                    AppLanguage.localized("还没有分类", english: "No Categories Yet"),
+                    systemImage: "folder.badge.plus",
+                    description: Text(
+                        AppLanguage.localized(
+                            "创建分类后，可以从文件右键菜单或详情栏添加。",
+                            english: "After you create a category, add files from the context menu or inspector."
+                        )
                     )
                 )
-            )
-            .frame(
-                maxWidth: .infinity,
-                minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
-            )
-            .background(
-                XunJianUI.Fill.quiet,
-                in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-            )
+                .frame(
+                    maxWidth: .infinity,
+                    minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
+                )
+            }
         } else {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                 ForEach(appModel.categories) { category in
@@ -273,8 +291,8 @@ struct CategoriesView: View {
                                 .foregroundStyle(.tertiary)
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 12)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 14)
                         .background {
                             InteractiveCardBackground(
                                 isHovered: hoveredCategoryID == category.id

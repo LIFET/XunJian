@@ -28,13 +28,7 @@ struct HomeView: View {
         GeometryReader { geometry in
             ScrollView {
                 VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
-                    SearchField(
-                        text: $homeQuery,
-                        focusScope: .home,
-                        onHistorySelect: { query in
-                            searchAllFiles(query)
-                        }
-                    )
+                    searchHero
                     recentFiles
                     fileKinds
                     scanLocations
@@ -82,32 +76,53 @@ struct HomeView: View {
         }
     }
 
+    private var searchHero: some View {
+        InsetSurface(usesAccentWash: true) {
+            VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+                PageHeader(
+                    title: AppLanguage.localized(
+                        "在这台 Mac 上，快速找到文件",
+                        english: "Find files on this Mac, fast"
+                    ),
+                    subtitle: AppLanguage.localized(
+                        "搜索已授权位置中的文件名与本地索引内容。",
+                        english: "Search filenames and locally indexed content in authorized locations."
+                    )
+                )
+                SearchField(
+                    text: $homeQuery,
+                    focusScope: .home,
+                    onHistorySelect: { query in
+                        searchAllFiles(query)
+                    }
+                )
+            }
+        }
+    }
+
     private var recentFiles: some View {
         section(title: AppLanguage.localized("最近文件", english: "Recent Files")) {
             if appModel.recentFiles.isEmpty {
-                ContentUnavailableView {
-                    Label(
-                        AppLanguage.localized("还没有文件", english: "No Files Yet"),
-                        systemImage: "folder.badge.plus"
-                    )
-                } description: {
-                    Text(
-                        AppLanguage.localized(
-                            "选择一个文件夹开始建立本地文件索引。",
-                            english: "Choose a folder to start building a local file index."
-                        )
-                    )
-                } actions: {
-                    Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
-                        appModel.chooseFolder()
+                InsetSurface {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: XunJianUI.Spacing.sectionInner) {
+                            homeEmptyStateIdentity
+                            Spacer(minLength: XunJianUI.Spacing.sectionInner)
+                            Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
+                                appModel.chooseFolder()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
+
+                        VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+                            homeEmptyStateIdentity
+                            Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
+                                appModel.chooseFolder()
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
-                    .buttonStyle(.borderedProminent)
                 }
-                .frame(
-                    maxWidth: .infinity,
-                    minHeight: XunJianUI.Breakpoint.homeEmptyStateHeight,
-                    alignment: .center
-                )
             } else {
                 GroupedSurface(padding: 4) {
                     VStack(spacing: 0) {
@@ -159,7 +174,13 @@ struct HomeView: View {
     }
 
     private var fileKinds: some View {
-        section(title: AppLanguage.localized("文件分类概览", english: "File Types")) {
+        section(
+            title: AppLanguage.localized("按类型浏览", english: "Browse by Type"),
+            subtitle: AppLanguage.localized(
+                "直接进入常用文件类型，不改变文件在磁盘上的位置。",
+                english: "Jump to common file types without moving anything on disk."
+            )
+        ) {
             LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
                 ForEach(FileKind.allCases) { kind in
                     Button {
@@ -218,23 +239,41 @@ struct HomeView: View {
     }
 
     private var scanLocations: some View {
-        section(title: AppLanguage.localized("扫描位置", english: "Scan Locations")) {
+        section(
+            title: AppLanguage.localized("扫描位置", english: "Scan Locations"),
+            subtitle: AppLanguage.localized(
+                "寻简只会索引你明确授权的位置。",
+                english: "XunJian indexes only the locations you explicitly authorize."
+            )
+        ) {
             if appModel.sources.isEmpty {
-                GroupBox {
-                    LabeledContent {
-                        Text(verbatim: AppLanguage.localized(
-                            "可在设置中添加",
-                            english: "Add one in Settings"
-                        ))
-                        .foregroundStyle(.secondary)
-                    } label: {
-                        Label(
-                            AppLanguage.localized(
+                InsetSurface(padding: 14) {
+                    HStack(spacing: XunJianUI.Spacing.sectionInner) {
+                        Image(systemName: "folder.badge.questionmark")
+                            .font(.system(size: 18, weight: .medium))
+                            .foregroundStyle(.tint)
+                            .frame(width: 36, height: 36)
+                            .background(
+                                XunJianUI.Fill.accentWash,
+                                in: RoundedRectangle(
+                                    cornerRadius: XunJianUI.Radius.chip,
+                                    style: .continuous
+                                )
+                            )
+                            .accessibilityHidden(true)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(verbatim: AppLanguage.localized(
                                 "尚未添加扫描位置",
                                 english: "No scan locations yet"
-                            ),
-                            systemImage: "folder.badge.questionmark"
-                        )
+                            ))
+                            .font(XunJianUI.Typography.itemTitle)
+                            Text(verbatim: AppLanguage.localized(
+                                "可前往设置添加文件夹。",
+                                english: "Add folders from Settings."
+                            ))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        }
                     }
                 }
             } else {
@@ -270,12 +309,50 @@ struct HomeView: View {
 
     private func section<Content: View>(
         title: String,
+        subtitle: String? = nil,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-            SectionHeader(title: title)
+            VStack(alignment: .leading, spacing: 2) {
+                SectionHeader(title: title)
+                if let subtitle, !subtitle.isEmpty {
+                    Text(verbatim: subtitle)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
             content()
         }
+    }
+
+    private var homeEmptyStateIdentity: some View {
+        HStack(spacing: XunJianUI.Spacing.sectionInner) {
+            Image(systemName: "folder.badge.plus")
+                .font(.system(size: 20, weight: .medium))
+                .foregroundStyle(.tint)
+                .frame(width: 42, height: 42)
+                .background(
+                    XunJianUI.Fill.accentWash,
+                    in: RoundedRectangle(
+                        cornerRadius: XunJianUI.Radius.control,
+                        style: .continuous
+                    )
+                )
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(verbatim: AppLanguage.localized("还没有文件", english: "No Files Yet"))
+                    .font(XunJianUI.Typography.itemTitle)
+                Text(verbatim: AppLanguage.localized(
+                    "选择一个文件夹，开始建立本地文件索引。",
+                    english: "Choose a folder to start building a local file index."
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .accessibilityElement(children: .combine)
     }
 
     private func sourceIdentity(_ source: FileSource) -> some View {
