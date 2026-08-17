@@ -5,6 +5,10 @@ struct AppShellResponsiveLayoutState: Equatable {
     private(set) var prefersInspectorVisible = false
     private(set) var isSidebarForcedCollapsed = false
     private(set) var isInspectorForcedCollapsed = false
+    /// A deliberate open at a compact width stays authoritative. Without
+    /// this, the next layout measurement immediately re-applies the automatic
+    /// collapse and makes the Inspector button appear broken.
+    private(set) var isInspectorManuallyPresentedAtCompactWidth = false
 
     var showsSidebar: Bool {
         prefersSidebarVisible && !isSidebarForcedCollapsed
@@ -25,11 +29,19 @@ struct AppShellResponsiveLayoutState: Equatable {
             isSidebarForcedCollapsed = true
         }
 
-        if isInspectorForcedCollapsed {
+        if windowWidth < AppShellView.minimumInspectorWindowWidth {
+            isInspectorForcedCollapsed = true
+            isInspectorManuallyPresentedAtCompactWidth = false
+        } else if isInspectorForcedCollapsed {
             if windowWidth > XunJianUI.Breakpoint.inspectorRestore {
                 isInspectorForcedCollapsed = false
+                isInspectorManuallyPresentedAtCompactWidth = false
             }
-        } else if windowWidth < XunJianUI.Breakpoint.inspectorAutoCollapse {
+        } else if windowWidth > XunJianUI.Breakpoint.inspectorRestore {
+            isInspectorManuallyPresentedAtCompactWidth = false
+        } else if prefersInspectorVisible,
+                  !isInspectorManuallyPresentedAtCompactWidth,
+                  windowWidth < XunJianUI.Breakpoint.inspectorAutoCollapse {
             isInspectorForcedCollapsed = true
         }
     }
@@ -40,8 +52,18 @@ struct AppShellResponsiveLayoutState: Equatable {
     }
 
     mutating func setInspectorVisible(_ isVisible: Bool) {
+        if isVisible {
+            prefersInspectorVisible = true
+            isInspectorForcedCollapsed = false
+            isInspectorManuallyPresentedAtCompactWidth = true
+            return
+        }
+        // SwiftUI writes `false` when the responsive policy removes the
+        // Inspector. Preserve the user's preference so widening can restore
+        // it; a real manual close only arrives while the Inspector is shown.
         guard !isInspectorForcedCollapsed else { return }
         prefersInspectorVisible = isVisible
+        isInspectorManuallyPresentedAtCompactWidth = false
     }
 }
 
@@ -56,7 +78,7 @@ enum AppShellBrowseModeCommandRoute: Equatable {
 }
 
 struct AppShellView: View {
-    static let minimumInspectorWindowWidth: CGFloat = 720
+    nonisolated static let minimumInspectorWindowWidth: CGFloat = 720
 
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
@@ -484,7 +506,7 @@ struct AppShellView: View {
     }
 
     private var canToggleInspector: Bool {
-        supportsInspector && !responsiveLayout.isInspectorForcedCollapsed
+        supportsInspector
     }
 
     private var showsInspector: Bool {

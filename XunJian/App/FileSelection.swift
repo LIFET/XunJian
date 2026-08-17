@@ -295,17 +295,16 @@ struct NativeSelectionEchoGuard: Equatable, Sendable {
 
     /// Returns `true` only when AppKit should apply the external value.
     mutating func shouldApplyExternalSelection(_ ids: Set<String>) -> Bool {
-        guard let pendingIDs, let phase else { return true }
+        guard let pendingIDs, phase != nil else { return true }
         if ids == pendingIDs {
             cancelPendingNativeSelection()
             return false
         }
-        if phase == .awaitingPublication {
-            return false
-        }
-        // The model intentionally normalized or replaced the native value.
-        cancelPendingNativeSelection()
-        return true
+        // Several already-enqueued representable updates can arrive here
+        // after publication (for example empty, then A, after a native A→B
+        // click). None is authoritative until the binding echoes B itself.
+        // Programmatic selection changes are accepted again after that echo.
+        return false
     }
 
     mutating func cancelPendingNativeSelection() {

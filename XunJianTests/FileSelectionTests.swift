@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import XCTest
 @testable import XunJian
 
@@ -170,15 +171,19 @@ final class FileSelectionTests: XCTestCase {
 
         XCTAssertFalse(guardState.shouldApplyExternalSelection(["a"]))
         guardState.nativeSelectionPublicationDidComplete()
+        XCTAssertFalse(guardState.shouldApplyExternalSelection(["a"]))
+        XCTAssertFalse(guardState.shouldApplyExternalSelection([]))
         XCTAssertFalse(guardState.shouldApplyExternalSelection(["b"]))
         XCTAssertTrue(guardState.shouldApplyExternalSelection(["c"]))
     }
 
-    func testNativeSelectionEchoGuardAcceptsModelNormalizationAfterPublication() {
+    func testNativeSelectionEchoGuardDefersModelNormalizationUntilNativeEcho() {
         var guardState = NativeSelectionEchoGuard()
         guardState.nativeSelectionDidChange(to: ["a", "b"])
         guardState.nativeSelectionPublicationDidComplete()
 
+        XCTAssertFalse(guardState.shouldApplyExternalSelection(["b"]))
+        XCTAssertFalse(guardState.shouldApplyExternalSelection(["a", "b"]))
         XCTAssertTrue(guardState.shouldApplyExternalSelection(["b"]))
     }
 
@@ -297,11 +302,17 @@ final class FileSelectionTests: XCTestCase {
         tableView.allowsMultipleSelection = true
         tableView.reloadData()
 
-        func event(modifiers: NSEvent.ModifierFlags = []) throws -> NSEvent {
+        func event(
+            row: Int,
+            modifiers: NSEvent.ModifierFlags = []
+        ) throws -> NSEvent {
             try XCTUnwrap(
                 NSEvent.mouseEvent(
                     with: .leftMouseDown,
-                    location: .zero,
+                    location: NSPoint(
+                        x: 80,
+                        y: tableView.rect(ofRow: row).midY
+                    ),
                     modifierFlags: modifiers,
                     timestamp: 0,
                     windowNumber: 0,
@@ -319,8 +330,9 @@ final class FileSelectionTests: XCTestCase {
         )
         rowOneCell.layoutSubtreeIfNeeded()
         try XCTUnwrap(rowOneCell.textField)
-            .mouseDown(with: event())
+            .mouseDown(with: event(row: 1))
         XCTAssertEqual(tableView.selectedRowIndexes, [1])
+        XCTAssertEqual(dataSource.selectionChangeCount, 1)
 
         let rowThreeCell = try XCTUnwrap(
             tableView.view(atColumn: 0, row: 3, makeIfNecessary: true)
@@ -328,16 +340,307 @@ final class FileSelectionTests: XCTestCase {
         )
         rowThreeCell.layoutSubtreeIfNeeded()
         try XCTUnwrap(rowThreeCell.imageView)
-            .mouseDown(with: event(modifiers: .command))
+            .mouseDown(with: event(row: 3, modifiers: .command))
         XCTAssertEqual(tableView.selectedRowIndexes, [1, 3])
+        XCTAssertEqual(dataSource.selectionChangeCount, 2)
 
         let rowZeroCell = try XCTUnwrap(
             tableView.view(atColumn: 0, row: 0, makeIfNecessary: true)
                 as? LargeFileNameCellView
         )
-        rowZeroCell.mouseDown(with: try event(modifiers: .shift))
+        rowZeroCell.mouseDown(with: try event(row: 0, modifiers: .shift))
         XCTAssertEqual(tableView.selectedRowIndexes, [0, 1, 2, 3])
-        XCTAssertGreaterThanOrEqual(dataSource.selectionChangeCount, 3)
+        XCTAssertEqual(dataSource.selectionChangeCount, 3)
+    }
+
+    @MainActor
+    func testMountedLargeTableNameHitSelectsFirstRowOnFirstClick() throws {
+        let dataSource = NativeTableTestDataSource(rowCount: 2)
+        let tableView = LargeFileNSTableView(
+            frame: NSRect(x: 0, y: 0, width: 340, height: 100)
+        )
+        let column = NSTableColumn(identifier: LargeFileTableColumn.name.identifier)
+        column.width = 340
+        tableView.addTableColumn(column)
+        tableView.dataSource = dataSource
+        tableView.delegate = dataSource
+        tableView.allowsEmptySelection = true
+        tableView.reloadData()
+
+        let scrollView = NSScrollView(frame: tableView.frame)
+        scrollView.documentView = tableView
+        scrollView.layoutSubtreeIfNeeded()
+        tableView.layoutSubtreeIfNeeded()
+
+        let cell = try XCTUnwrap(
+            tableView.view(atColumn: 0, row: 0, makeIfNecessary: true)
+                as? LargeFileNameCellView
+        )
+        cell.layoutSubtreeIfNeeded()
+        let label = try XCTUnwrap(cell.textField)
+        let clipView = try XCTUnwrap(tableView.superview)
+        let hitPoint = label.convert(
+            NSPoint(x: label.bounds.midX, y: label.bounds.midY),
+            to: clipView
+        )
+        let hitView = try XCTUnwrap(tableView.hitTest(hitPoint))
+        XCTAssertTrue(hitView === tableView)
+        XCTAssertEqual(tableView.row(for: cell), 0)
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: NSPoint(x: 80, y: tableView.rect(ofRow: 0).midY),
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
+
+        hitView.mouseDown(with: event)
+        hitView.mouseUp(with: try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseUp,
+                location: event.locationInWindow,
+                modifierFlags: [],
+                timestamp: 0.01,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 2,
+                clickCount: 1,
+                pressure: 0
+            )
+        ))
+
+        XCTAssertEqual(tableView.selectedRowIndexes, [0])
+        XCTAssertEqual(dataSource.selectionChangeCount, 1)
+    }
+
+    @MainActor
+    func testMountedLargeTableNameClickPublishesOnlyFinalB() async throws {
+        let sourceID = UUID()
+        let indexedFiles = ["a", "b"].map { id in
+            IndexedFile(
+                id: id,
+                sourceID: sourceID,
+                name: "\(id).txt",
+                path: "/tmp/\(id).txt",
+                fileExtension: "txt",
+                kind: .document,
+                size: 1,
+                createdAt: nil,
+                modifiedAt: nil,
+                indexedAt: .distantPast
+            )
+        }
+        var selection: Set<String> = ["a"]
+        var publicationHistory: [Set<String>] = []
+        let publishedB = expectation(description: "Publishes only final native row B")
+        let binding = Binding<Set<String>>(
+            get: { selection },
+            set: { newValue in
+                selection = newValue
+                publicationHistory.append(newValue)
+                if newValue == ["b"] {
+                    publishedB.fulfill()
+                }
+            }
+        )
+        func parent() -> LargeFileTableView {
+            LargeFileTableView(
+                files: indexedFiles,
+                idIndex: ["a": 0, "b": 1],
+                contentVersion: 1,
+                selection: binding,
+                categoryText: { _ in "" },
+                onSelectionLeadChange: { _ in },
+                onDoubleClick: { _ in },
+                onQuickLook: { _ in },
+                onDelete: {}
+            )
+        }
+
+        let tableView = LargeFileNSTableView(
+            frame: NSRect(x: 0, y: 0, width: 340, height: 100)
+        )
+        tableView.addTableColumn(
+            NSTableColumn(identifier: LargeFileTableColumn.name.identifier)
+        )
+        tableView.allowsEmptySelection = true
+        let coordinator = parent().makeCoordinator()
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        let scrollView = NSScrollView(frame: tableView.frame)
+        scrollView.documentView = tableView
+        scrollView.layoutSubtreeIfNeeded()
+        tableView.layoutSubtreeIfNeeded()
+        coordinator.replaceSnapshot(with: parent(), in: tableView, force: true)
+        publicationHistory.removeAll()
+        XCTAssertEqual(tableView.selectedRowIndexes, [0])
+
+        let cell = try XCTUnwrap(
+            tableView.view(atColumn: 0, row: 1, makeIfNecessary: true)
+                as? LargeFileNameCellView
+        )
+        cell.layoutSubtreeIfNeeded()
+        let label = try XCTUnwrap(cell.textField)
+        let imageView = try XCTUnwrap(cell.imageView)
+        let cellSuperview = try XCTUnwrap(cell.superview)
+        let clipView = try XCTUnwrap(tableView.superview)
+
+        let labelCenter = NSPoint(x: label.bounds.midX, y: label.bounds.midY)
+        let imageCenter = NSPoint(x: imageView.bounds.midX, y: imageView.bounds.midY)
+        let blankPoint = NSPoint(x: cell.bounds.maxX - 4, y: cell.bounds.midY)
+        XCTAssertTrue(
+            label.hitTest(label.convert(labelCenter, to: cell)) === cell
+        )
+        XCTAssertTrue(
+            imageView.hitTest(imageView.convert(imageCenter, to: cell)) === cell
+        )
+        XCTAssertTrue(
+            cell.hitTest(cell.convert(blankPoint, to: cellSuperview)) === cell
+        )
+
+        let labelHitPoint = label.convert(labelCenter, to: clipView)
+        let imageHitPoint = imageView.convert(imageCenter, to: clipView)
+        let blankHitPoint = cell.convert(blankPoint, to: clipView)
+        XCTAssertTrue(tableView.hitTest(imageHitPoint) === tableView)
+        XCTAssertTrue(tableView.hitTest(blankHitPoint) === tableView)
+        let hitView = try XCTUnwrap(tableView.hitTest(labelHitPoint))
+        XCTAssertTrue(hitView === tableView)
+        XCTAssertEqual(tableView.row(for: cell), 1)
+        let locationInTable = label.convert(labelCenter, to: tableView)
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: locationInTable,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
+
+        hitView.mouseDown(with: event)
+        hitView.mouseUp(with: try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseUp,
+                location: event.locationInWindow,
+                modifierFlags: [],
+                timestamp: 0.01,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 2,
+                clickCount: 1,
+                pressure: 0
+            )
+        ))
+        XCTAssertEqual(tableView.selectedRowIndexes, [1])
+        XCTAssertTrue(publicationHistory.isEmpty)
+
+        // The binding still says A until next-turn publication. An unrelated
+        // representable update in this window must not restore the old row.
+        coordinator.replaceSnapshot(with: parent(), in: tableView, force: false)
+        XCTAssertEqual(tableView.selectedRowIndexes, [1])
+
+        await fulfillment(of: [publishedB], timeout: 1)
+
+        XCTAssertEqual(tableView.selectedRowIndexes, [1])
+        XCTAssertEqual(selection, ["b"])
+        XCTAssertEqual(publicationHistory, [["b"]])
+
+        try await Task.sleep(nanoseconds: 2_000_000_000)
+        XCTAssertEqual(tableView.selectedRowIndexes, [1])
+        XCTAssertEqual(selection, ["b"])
+        XCTAssertEqual(publicationHistory, [["b"]])
+    }
+
+    @MainActor
+    func testLargeTableNameCellDoesNotCreateNestedAccessibilityElement() throws {
+        let sourceID = UUID()
+        let indexedFiles = ["a", "b"].map { id in
+            IndexedFile(
+                id: id,
+                sourceID: sourceID,
+                name: "\(id).txt",
+                path: "/tmp/\(id).txt",
+                fileExtension: "txt",
+                kind: .document,
+                size: 1,
+                createdAt: nil,
+                modifiedAt: nil,
+                indexedAt: .distantPast
+            )
+        }
+        let parent = LargeFileTableView(
+            files: indexedFiles,
+            idIndex: ["a": 0, "b": 1],
+            contentVersion: 1,
+            selection: .constant([]),
+            categoryText: { _ in "" },
+            onSelectionLeadChange: { _ in },
+            onDoubleClick: { _ in },
+            onQuickLook: { _ in },
+            onDelete: {}
+        )
+        let tableView = LargeFileNSTableView(
+            frame: NSRect(x: 0, y: 0, width: 340, height: 100)
+        )
+        tableView.addTableColumn(
+            NSTableColumn(identifier: LargeFileTableColumn.name.identifier)
+        )
+        let coordinator = parent.makeCoordinator()
+        tableView.dataSource = coordinator
+        tableView.delegate = coordinator
+        let scrollView = NSScrollView(frame: tableView.frame)
+        scrollView.documentView = tableView
+        coordinator.replaceSnapshot(with: parent, in: tableView, force: true)
+
+        let cell = try XCTUnwrap(
+            tableView.view(atColumn: 0, row: 1, makeIfNecessary: true)
+                as? LargeFileNameCellView
+        )
+        cell.layoutSubtreeIfNeeded()
+        let label = try XCTUnwrap(cell.textField)
+        let imageView = try XCTUnwrap(cell.imageView)
+        XCTAssertFalse(cell.isAccessibilityElement())
+        XCTAssertFalse(label.isAccessibilityElement())
+        XCTAssertFalse(imageView.isAccessibilityElement())
+        XCTAssertEqual(cell.accessibilityChildren()?.count, 0)
+
+        func accessibilityChildren(of element: AnyObject) -> [AnyObject] {
+            let selector = NSSelectorFromString("accessibilityChildren")
+            guard let object = element as? NSObject,
+                  object.responds(to: selector),
+                  let rawChildren = object.perform(selector)?
+                      .takeUnretainedValue() as? NSArray else {
+                return []
+            }
+            return rawChildren.map { $0 as AnyObject }
+        }
+
+        // Use Objective-C arrays here: AppKit returns private `NSTableRow`
+        // objects that the Swift accessibilityRows overlay can miscast.
+        let rawRows = try XCTUnwrap(
+            tableView.perform(
+                NSSelectorFromString("accessibilityRows")
+            )?.takeUnretainedValue() as? NSArray
+        )
+        let rows = rawRows.map { $0 as AnyObject }
+        XCTAssertFalse(rows.isEmpty)
+        let outerCells = rows.flatMap(accessibilityChildren(of:))
+        let nestedChildren = outerCells.flatMap(accessibilityChildren(of:))
+        XCTAssertFalse(
+            (rows + outerCells + nestedChildren).contains {
+                $0 === cell
+            }
+        )
     }
 
     func testInactiveNativeRendererCannotClearSelectionDuringViewSwitch() {
@@ -428,6 +731,48 @@ final class FileSelectionTests: XCTestCase {
         )
         XCTAssertEqual(collectionView.leadItem, 0)
         XCTAssertEqual(collectionView.selectionAnchorItem, 3)
+    }
+
+    @MainActor
+    func testNativeGridSingleClickPublishesOnlyTheFinalSelectionOnce() throws {
+        let dataSource = NativeGridTestDataSource(itemCount: 3)
+        let collectionView = LargeFileNSCollectionView(
+            frame: NSRect(x: 0, y: 0, width: 500, height: 250)
+        )
+        collectionView.collectionViewLayout = NSCollectionViewFlowLayout()
+        collectionView.dataSource = dataSource
+        collectionView.isSelectable = true
+        collectionView.allowsMultipleSelection = true
+        collectionView.reloadData()
+        collectionView.selectionIndexPaths = [IndexPath(item: 0, section: 0)]
+        collectionView.leadItem = 0
+        collectionView.selectionAnchorItem = 0
+
+        var publications: [Set<IndexPath>] = []
+        collectionView.selectionLeadHandler = { _ in
+            publications.append(collectionView.selectionIndexPaths)
+        }
+        let event = try XCTUnwrap(
+            NSEvent.mouseEvent(
+                with: .leftMouseDown,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: 0,
+                windowNumber: 0,
+                context: nil,
+                eventNumber: 1,
+                clickCount: 1,
+                pressure: 1
+            )
+        )
+
+        collectionView.handleItemMouseDown(item: 1, event: event)
+
+        let expected = Set([IndexPath(item: 1, section: 0)])
+        XCTAssertEqual(collectionView.selectionIndexPaths, expected)
+        XCTAssertEqual(publications, [expected])
+        XCTAssertEqual(collectionView.leadItem, 1)
+        XCTAssertEqual(collectionView.selectionAnchorItem, 1)
     }
 }
 

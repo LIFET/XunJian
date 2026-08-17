@@ -1441,12 +1441,14 @@ struct AllFilesView: View {
         Binding(
             get: { tableSelectedIDs },
             set: { newValue in
-                guard FileBrowseSelection.shouldAcceptNativeSelectionPublication(
+                let accepts = FileBrowseSelection.shouldAcceptNativeSelectionPublication(
                     from: sourceMode,
                     currentMode: viewMode
-                ) else { return }
+                )
+                guard accepts else { return }
                 guard newValue != tableSelectedIDs else { return }
                 tableSelectedIDs = newValue
+                tableSelectionEpoch &+= 1
                 let modifiers = NSApp.currentEvent?.modifierFlags ?? []
                 appModel.applyNativeTableSelection(
                     newValue,

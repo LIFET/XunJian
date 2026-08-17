@@ -131,6 +131,7 @@ struct LargeFileTableView: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.cancelPendingSelectionPublication()
         if let tableView = scrollView.documentView as? NSTableView {
             coordinator.cancelVisibleCellRequests(in: tableView)
         }
@@ -155,6 +156,7 @@ extension LargeFileTableView {
         private var appliedLocaleIdentifier = ""
         private var isApplyingSelection = false
         private var selectionEchoGuard = NativeSelectionEchoGuard()
+        private var selectionPublicationTask: Task<Void, Never>?
         private var observesFinderTagChanges = false
 
         init(parent: LargeFileTableView) {
@@ -163,7 +165,7 @@ extension LargeFileTableView {
             startObservingFinderTagChanges()
         }
 
-        fileprivate func replaceSnapshot(
+        func replaceSnapshot(
             with newParent: LargeFileTableView,
             in tableView: LargeFileNSTableView,
             force: Bool
@@ -175,6 +177,7 @@ extension LargeFileTableView {
                 || appliedLocaleIdentifier != newParent.locale.identifier
 
             if contentChanged {
+                cancelPendingSelectionPublication()
                 cancelVisibleCellRequests(in: tableView)
                 files = newParent.files
                 idIndex = newParent.idIndex
@@ -291,13 +294,21 @@ extension LargeFileTableView {
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard let tableView = notification.object as? NSTableView,
                   !isApplyingSelection else { return }
-            let selectedIDs = selectedFileIDs(in: tableView)
-            selectionEchoGuard.nativeSelectionDidChange(to: selectedIDs)
-            if parent.selection != selectedIDs {
-                parent.selection = selectedIDs
+            // NSTableView can report one ordinary A → B click as two delegate
+            // callbacks: first an empty selection, then B. Mark the native
+            // gesture authoritative immediately so an unrelated SwiftUI
+            // update cannot restore A between those callbacks, but publish
+            // only the final state on the next main-actor turn.
+            selectionEchoGuard.nativeSelectionDidChange(
+                to: selectedFileIDs(in: tableView)
+            )
+            selectionPublicationTask?.cancel()
+            selectionPublicationTask = Task { @MainActor [weak self, weak tableView] in
+                await Task.yield()
+                guard !Task.isCancelled, let self, let tableView else { return }
+                self.publishSelectionAndLead(in: tableView)
+                self.selectionPublicationTask = nil
             }
-            selectionEchoGuard.nativeSelectionPublicationDidComplete()
-            publishLead(row: tableView.selectedRow)
         }
 
         func tableView(
@@ -362,6 +373,11 @@ extension LargeFileTableView {
             parent.onSelectionLeadChange(files[row])
         }
 
+        fileprivate func cancelPendingSelectionPublication() {
+            selectionPublicationTask?.cancel()
+            selectionPublicationTask = nil
+        }
+
         fileprivate func contextMenu(for row: Int) -> NSMenu? {
             guard row >= 0, row < files.count,
                   let contextMenuProvider = parent.contextMenuProvider else { return nil }
@@ -419,7 +435,8 @@ extension LargeFileTableView {
         }
 
         private func synchronizeSelection(in tableView: NSTableView) {
-            guard selectionEchoGuard.shouldApplyExternalSelection(parent.selection) else {
+            let shouldApply = selectionEchoGuard.shouldApplyExternalSelection(parent.selection)
+            guard shouldApply else {
                 return
             }
             var rows = IndexSet()
@@ -441,6 +458,19 @@ extension LargeFileTableView {
                 result.insert(files[row].id)
             }
             return result
+        }
+
+        private func publishSelectionAndLead(in tableView: NSTableView) {
+            guard !isApplyingSelection else { return }
+            let selectedIDs = selectedFileIDs(in: tableView)
+            selectionEchoGuard.nativeSelectionDidChange(
+                to: selectedIDs
+            )
+            if parent.selection != selectedIDs {
+                parent.selection = selectedIDs
+            }
+            selectionEchoGuard.nativeSelectionPublicationDidComplete()
+            publishLead(row: tableView.selectedRow)
         }
 
         private func reloadVisibleMetadata(in tableView: NSTableView) {
@@ -606,6 +636,10 @@ extension LargeFileTableView {
 
 @MainActor
 final class LargeFileNSTableView: NSTableView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool {
+        return true
+    }
+
     var activationHandler: ((Int) -> Void)?
     var quickLookHandler: ((Int) -> Void)?
     var deleteHandler: (() -> Void)?
@@ -613,25 +647,53 @@ final class LargeFileNSTableView: NSTableView {
     var contextMenuHandler: ((Int) -> NSMenu?)?
     private(set) var leadRow: Int?
     private(set) var selectionAnchorRow: Int?
+    private var pendingMouseDownEvent: NSEvent?
+    private var pendingMouseDownRow: Int?
+
+    /// Route every visible data-row hit to NSTableView itself. Read-only cell
+    /// labels and images must not consume the first click merely to establish
+    /// focus; Finder-style selection is an atomic row operation.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        let hitRow = row(at: localPoint)
+        if hitRow >= 0 { return self }
+        return super.hitTest(point)
+    }
 
     override func mouseDown(with event: NSEvent) {
-        let clickedRow = row(at: convert(event.locationInWindow, from: nil))
-        super.mouseDown(with: event)
-        guard clickedRow >= 0 else { return }
-        let effectiveLead = selectedRowIndexes.contains(clickedRow)
-            ? clickedRow
-            : selectedRowIndexes.last
-        leadRow = effectiveLead
-        if !event.modifierFlags.contains(.shift) {
-            selectionAnchorRow = effectiveLead
+        let localPoint = event.window == nil
+            ? event.locationInWindow
+            : convert(event.locationInWindow, from: nil)
+        let clickedRow = row(at: localPoint)
+        guard clickedRow >= 0 else {
+            super.mouseDown(with: event)
+            return
         }
-        selectionLeadHandler?(effectiveLead ?? -1)
+        pendingMouseDownEvent = event
+        pendingMouseDownRow = clickedRow
+        handleNameCellMouseDown(row: clickedRow, event: event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let mouseDownEvent = pendingMouseDownEvent,
+              let row = pendingMouseDownRow else {
+            super.mouseDragged(with: event)
+            return
+        }
+        pendingMouseDownEvent = nil
+        pendingMouseDownRow = nil
+        continueNativeDragTracking(row: row, mouseDownEvent: mouseDownEvent)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pendingMouseDownEvent = nil
+        pendingMouseDownRow = nil
     }
 
     /// Handles a left click whose original AppKit hit target was a visual
-    /// child of the name cell. Apply the Finder-style selection explicitly so
-    /// it is published through NSTableViewDelegate, then keep native tracking
-    /// alive for double-click and drag initiation.
+    /// child of the name cell. Apply one atomic Finder-style mutation instead
+    /// of replaying this event through NSTableView's two-phase deselect/select
+    /// tracker. Double-click and drag continuation are handled separately.
     func handleNameCellMouseDown(row: Int, event: NSEvent) {
         guard row >= 0, row < numberOfRows else { return }
         let intendedSelection = applyRowSelectionGesture(
@@ -639,12 +701,24 @@ final class LargeFileNSTableView: NSTableView {
             modifiers: event.modifierFlags
         )
         selectionLeadHandler?(leadRow ?? -1)
-
-        super.mouseDown(with: event)
-        if selectedRowIndexes != intendedSelection {
-            selectRowIndexes(intendedSelection, byExtendingSelection: false)
-            selectionLeadHandler?(leadRow ?? -1)
+        if event.clickCount == 2, intendedSelection.contains(row) {
+            activationHandler?(row)
         }
+    }
+
+    /// Enter AppKit's blocking drag tracker only after the name cell has
+    /// actually received a drag event. The original mouse-down has already
+    /// selected exactly once, so any tracking-only mutation is restored.
+    func continueNativeDragTracking(row: Int, mouseDownEvent: NSEvent) {
+        guard row >= 0, row < numberOfRows else { return }
+        let intendedSelection = selectedRowIndexes
+        super.mouseDown(with: mouseDownEvent)
+        guard selectedRowIndexes != intendedSelection else { return }
+        selectRowIndexes(intendedSelection, byExtendingSelection: false)
+        if intendedSelection.contains(row) {
+            leadRow = row
+        }
+        selectionLeadHandler?(leadRow ?? -1)
     }
 
     @discardableResult
@@ -653,41 +727,19 @@ final class LargeFileNSTableView: NSTableView {
         modifiers: NSEvent.ModifierFlags
     ) -> IndexSet {
         guard row >= 0, row < numberOfRows else { return selectedRowIndexes }
-        let previousSelection = selectedRowIndexes
-        let command = modifiers.contains(.command)
-        let shift = modifiers.contains(.shift)
-        var updatedSelection: IndexSet
-
-        if shift {
-            let anchor = selectionAnchorRow ?? leadRow ?? selectedRow ?? row
-            updatedSelection = IndexSet(
-                integersIn: min(anchor, row)..<(max(anchor, row) + 1)
-            )
-            if command {
-                updatedSelection.formUnion(previousSelection)
-            }
-            selectionAnchorRow = anchor
-            leadRow = row
-        } else if command {
-            updatedSelection = previousSelection
-            if updatedSelection.contains(row) {
-                updatedSelection.remove(row)
-                leadRow = updatedSelection.integerLessThan(row)
-                    ?? updatedSelection.integerGreaterThan(row)
-                selectionAnchorRow = leadRow
-            } else {
-                updatedSelection.insert(row)
-                leadRow = row
-                selectionAnchorRow = row
-            }
-        } else {
-            updatedSelection = IndexSet(integer: row)
-            leadRow = row
-            selectionAnchorRow = row
+        let result = LargeFileTableSelectionPolicy.result(
+            previousSelection: selectedRowIndexes,
+            row: row,
+            previousLead: leadRow,
+            previousAnchor: selectionAnchorRow,
+            modifiers: modifiers
+        )
+        leadRow = result.leadRow
+        selectionAnchorRow = result.anchorRow
+        if selectedRowIndexes != result.rows {
+            selectRowIndexes(result.rows, byExtendingSelection: false)
         }
-
-        selectRowIndexes(updatedSelection, byExtendingSelection: false)
-        return updatedSelection
+        return result.rows
     }
 
     override func keyDown(with event: NSEvent) {
@@ -714,6 +766,59 @@ final class LargeFileNSTableView: NSTableView {
             selectRowIndexes(IndexSet(integer: clicked), byExtendingSelection: false)
         }
         return contextMenuHandler?(clicked) ?? super.menu(for: event)
+    }
+}
+
+struct LargeFileTableSelectionResult: Equatable {
+    let rows: IndexSet
+    let leadRow: Int?
+    let anchorRow: Int?
+}
+
+enum LargeFileTableSelectionPolicy {
+    static func result(
+        previousSelection: IndexSet,
+        row: Int,
+        previousLead: Int?,
+        previousAnchor: Int?,
+        modifiers: NSEvent.ModifierFlags
+    ) -> LargeFileTableSelectionResult {
+        let command = modifiers.contains(.command)
+        let shift = modifiers.contains(.shift)
+
+        if shift {
+            let anchor = previousAnchor ?? previousLead ?? previousSelection.first ?? row
+            var rows = IndexSet(integersIn: min(anchor, row)..<(max(anchor, row) + 1))
+            if command {
+                rows.formUnion(previousSelection)
+            }
+            return LargeFileTableSelectionResult(
+                rows: rows,
+                leadRow: row,
+                anchorRow: anchor
+            )
+        }
+
+        if command {
+            var rows = previousSelection
+            if rows.contains(row) {
+                rows.remove(row)
+                let lead = rows.integerLessThan(row) ?? rows.integerGreaterThan(row)
+                return LargeFileTableSelectionResult(
+                    rows: rows,
+                    leadRow: lead,
+                    anchorRow: lead
+                )
+            }
+            rows.insert(row)
+            return LargeFileTableSelectionResult(rows: rows, leadRow: row, anchorRow: row)
+        }
+
+        return LargeFileTableSelectionResult(
+            rows: IndexSet(integer: row),
+            leadRow: row,
+            anchorRow: row
+        )
     }
 }
 
@@ -827,16 +932,19 @@ final class LargeFileNameCellView: NSTableCellView {
     private let label = LargeFileNameTextField(labelWithString: "")
     private var representedFileID: String?
     private var thumbnailTask: Task<Void, Never>?
+    private var pendingMouseDownEvent: NSEvent?
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+        setAccessibilityElement(false)
 
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.imageScaling = .scaleProportionallyUpOrDown
         iconView.setAccessibilityElement(false)
 
         label.translatesAutoresizingMaskIntoConstraints = false
+        label.setAccessibilityElement(false)
         label.lineBreakMode = .byTruncatingTail
         label.maximumNumberOfLines = 1
         label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
@@ -846,10 +954,10 @@ final class LargeFileNameCellView: NSTableCellView {
         imageView = iconView
         textField = label
         iconView.routedMouseDown = { [weak self] event in
-            self?.routeMouseDownToTable(event) ?? false
+            self?.beginMouseDown(event) ?? false
         }
         label.routedMouseDown = { [weak self] event in
-            self?.routeMouseDownToTable(event) ?? false
+            self?.beginMouseDown(event) ?? false
         }
         NSLayoutConstraint.activate([
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
@@ -867,16 +975,52 @@ final class LargeFileNameCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// Treat the thumbnail, label, and remaining name-column space as one
+    /// native table cell. This keeps the first click from being consumed by
+    /// NSTextField/NSImageView before the row gesture is applied.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        guard !isHidden,
+              alphaValue > 0,
+              bounds.contains(localPoint) else { return nil }
+        return self
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard routeMouseDownToTable(event) else {
+        guard beginMouseDown(event) else {
             super.mouseDown(with: event)
             return
         }
     }
 
+    override func mouseDragged(with event: NSEvent) {
+        guard let mouseDownEvent = pendingMouseDownEvent,
+              routeMouseDragToTable(mouseDownEvent) else {
+            super.mouseDragged(with: event)
+            return
+        }
+        pendingMouseDownEvent = nil
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pendingMouseDownEvent = nil
+        super.mouseUp(with: event)
+    }
+
+    /// NSTableCellView otherwise synthesizes its `textField` and `imageView`
+    /// back into the AX tree even when both views are individually ignored.
+    /// Keep this implementation view out of the AX tree so NSTableView's
+    /// native outer cell remains the sole selectable accessibility element.
+    override func accessibilityChildren() -> [Any]? {
+        []
+    }
+
     func configure(file: IndexedFile, accessibilityLabel: String) {
         thumbnailTask?.cancel()
         representedFileID = file.id
+        toolTip = file.name
         label.stringValue = file.name
         label.toolTip = file.name
         iconView.image = NSImage(systemSymbolName: file.kind.symbolName, accessibilityDescription: nil)
@@ -905,6 +1049,13 @@ final class LargeFileNameCellView: NSTableCellView {
     }
 
     @discardableResult
+    private func beginMouseDown(_ event: NSEvent) -> Bool {
+        guard routeMouseDownToTable(event) else { return false }
+        pendingMouseDownEvent = event
+        return true
+    }
+
+    @discardableResult
     private func routeMouseDownToTable(_ event: NSEvent) -> Bool {
         var ancestor = superview
         while let view = ancestor {
@@ -918,17 +1069,57 @@ final class LargeFileNameCellView: NSTableCellView {
         }
         return false
     }
+
+    @discardableResult
+    private func routeMouseDragToTable(_ mouseDownEvent: NSEvent) -> Bool {
+        var ancestor = superview
+        while let view = ancestor {
+            if let tableView = view as? LargeFileNSTableView {
+                let row = tableView.row(for: self)
+                guard row >= 0 else { return false }
+                tableView.continueNativeDragTracking(
+                    row: row,
+                    mouseDownEvent: mouseDownEvent
+                )
+                return true
+            }
+            ancestor = view.superview
+        }
+        return false
+    }
 }
 
 @MainActor
 private final class LargeFileNameImageView: NSImageView {
     var routedMouseDown: ((NSEvent) -> Bool)?
 
+    /// Route thumbnail hits to the enclosing name cell instead of letting the
+    /// image view consume the row's first click.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard containsHit(point) else { return nil }
+        return enclosingNameCell
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard routedMouseDown?(event) == true else {
-            super.mouseDown(with: event)
-            return
+        _ = routedMouseDown?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // Selection and pointer state are owned by LargeFileNameCellView.
+    }
+
+    private var enclosingNameCell: LargeFileNameCellView? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let cell = view as? LargeFileNameCellView { return cell }
+            ancestor = view.superview
         }
+        return nil
+    }
+
+    private func containsHit(_ point: NSPoint) -> Bool {
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        return !isHidden && alphaValue > 0 && bounds.contains(localPoint)
     }
 }
 
@@ -936,11 +1127,33 @@ private final class LargeFileNameImageView: NSImageView {
 private final class LargeFileNameTextField: NSTextField {
     var routedMouseDown: ((NSEvent) -> Bool)?
 
+    /// A label is presentation only; route glyph hits to the enclosing name
+    /// cell so NSTextField never starts its own mouse tracking/field editor.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard containsHit(point) else { return nil }
+        return enclosingNameCell
+    }
+
     override func mouseDown(with event: NSEvent) {
-        guard routedMouseDown?(event) == true else {
-            super.mouseDown(with: event)
-            return
+        _ = routedMouseDown?(event)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        // Selection and pointer state are owned by LargeFileNameCellView.
+    }
+
+    private var enclosingNameCell: LargeFileNameCellView? {
+        var ancestor = superview
+        while let view = ancestor {
+            if let cell = view as? LargeFileNameCellView { return cell }
+            ancestor = view.superview
         }
+        return nil
+    }
+
+    private func containsHit(_ point: NSPoint) -> Bool {
+        let localPoint = superview.map { convert(point, from: $0) } ?? point
+        return !isHidden && alphaValue > 0 && bounds.contains(localPoint)
     }
 }
 

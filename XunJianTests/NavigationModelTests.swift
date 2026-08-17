@@ -952,6 +952,7 @@ final class NavigationModelTests: XCTestCase {
 
         state.setInspectorVisible(true)
         XCTAssertTrue(state.showsInspector)
+        state.update(windowWidth: XunJianUI.Breakpoint.inspectorRestore + 1)
         state.update(windowWidth: XunJianUI.Breakpoint.inspectorAutoCollapse - 1)
         XCTAssertTrue(state.isInspectorForcedCollapsed)
         XCTAssertFalse(state.showsInspector)
@@ -979,6 +980,39 @@ final class NavigationModelTests: XCTestCase {
         state.setSidebarVisible(true)
         state.update(windowWidth: XunJianUI.Breakpoint.sidebarRestore + 1)
         XCTAssertFalse(state.showsSidebar, "A forced-width toggle must not overwrite user intent")
+    }
+
+    @MainActor
+    func testCompactInspectorCanBeOpenedManuallyWithoutImmediateRecollapse() {
+        var state = AppShellResponsiveLayoutState()
+        let compactWidth = XunJianUI.Breakpoint.inspectorAutoCollapse - 1
+
+        state.update(windowWidth: compactWidth)
+        XCTAssertFalse(state.isInspectorForcedCollapsed)
+
+        state.setInspectorVisible(true)
+        XCTAssertTrue(state.showsInspector)
+        XCTAssertTrue(state.isInspectorManuallyPresentedAtCompactWidth)
+
+        state.update(windowWidth: compactWidth)
+        XCTAssertTrue(state.showsInspector, "A repeated compact measurement must not undo a manual open")
+
+        state.update(windowWidth: AppShellView.minimumInspectorWindowWidth - 1)
+        XCTAssertFalse(state.showsInspector, "The hard minimum width still protects the content layout")
+    }
+
+    @MainActor
+    func testForcedInspectorCanBeReopenedByExplicitUserIntent() {
+        var state = AppShellResponsiveLayoutState()
+        state.setInspectorVisible(true)
+        state.update(windowWidth: XunJianUI.Breakpoint.inspectorRestore + 1)
+        state.update(windowWidth: XunJianUI.Breakpoint.inspectorAutoCollapse - 1)
+        XCTAssertTrue(state.isInspectorForcedCollapsed)
+
+        state.setInspectorVisible(true)
+        XCTAssertTrue(state.showsInspector)
+        state.update(windowWidth: XunJianUI.Breakpoint.inspectorAutoCollapse - 1)
+        XCTAssertTrue(state.showsInspector)
     }
 
     @MainActor

@@ -2,7 +2,7 @@
 
 ## 当前项目状态
 
-Phase 8Q 原生控件生命周期与 OAuth 启动安全已完成源码收口；本轮尚未提交、打包或发布，未运行真实 OAuth/AI 或文件扫描。
+Phase 8Q 原生控件生命周期、OAuth 启动安全、列表/网格选择闪回与紧凑窗口 Inspector 已完成源码收口；版本源为 0.1.1（build 2），正在执行正式签名、公证与 GitHub 发布，未运行真实 OAuth/AI 或文件扫描。
 
 ## 已完成内容
 
@@ -55,7 +55,7 @@ Phase 8Q 原生控件生命周期与 OAuth 启动安全已完成源码收口；�
 
 ## 验证
 
-- Phase 8Q：FileSelection 24/24、LagIsolation 26/26、NavigationModel 46/46、OAuthBridge 67/67、OAuth Process 38/38，共 201/201；arm64 Debug、XPC Runtime 构建门禁、整包深层签名均通过。
+- Phase 8Q 最终回归：App 363 项（2 项发布级大数据门禁按设计跳过）与 OAuth Process 38 项，合计 401 项、0 失败；FileSelection 28/28、NavigationModel 48/48。XPC Runtime 构建门禁通过，未启动真实 OAuth/AI。
 - 最终 QA 单实例确认：默认列显隐、跨列表/网格选择、菜单动作、搜索焦点、侧边栏偏好往返与 AI 状态均正确；启动仅 App/XPC 存活，未出现 `xunjian-connection-verifier` 或 Codex/Grok Provider Runtime。最终第四版在 96,148 条真实索引中实点名称文字、缩略图与网格卡片，选中即时迁移且等待 3 秒不回退。
 
 - Phase 8P 合并回归：LagIsolation、FileSelection、RemainingReview、NavigationModel 共 113/113，0 失败；网格布局最终回归 26/26，0 失败；arm64 Release 与签名 Debug 构建成功。

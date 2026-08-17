@@ -282,7 +282,9 @@ extension LargeFileGridView {
         fileprivate func publishSelectionAndLead(item: Int?) {
             guard let collectionView, !isApplyingSelection else { return }
             let selectedIDs = selectedFileIDs(in: collectionView)
-            selectionEchoGuard.nativeSelectionDidChange(to: selectedIDs)
+            selectionEchoGuard.nativeSelectionDidChange(
+                to: selectedIDs
+            )
             if parent.selection != selectedIDs {
                 parent.selection = selectedIDs
             }
@@ -557,6 +559,8 @@ private final class LargeFileGridLayout: NSCollectionViewLayout {
 
 @MainActor
 final class LargeFileNSCollectionView: NSCollectionView {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     var activationHandler: ((Int) -> Void)?
     var quickLookHandler: ((Int) -> Void)?
     var deleteHandler: (() -> Void)?
@@ -579,25 +583,31 @@ final class LargeFileNSCollectionView: NSCollectionView {
     /// is insufficient here: AppKit sees the nested view as the hit target and
     /// may leave the collection selection unchanged.
     func handleItemMouseDown(item: Int, event: NSEvent) {
-        let intendedSelection = applyItemSelectionGesture(
+        applyItemSelectionGesture(
             item: item,
             modifiers: event.modifierFlags
         )
         selectionLeadHandler?(leadItem)
-
-        // Keep AppKit's native tracking alive for drag initiation. Some
-        // macOS versions ignore selection when the original hit view is a
-        // nested image/label, so restore the explicit result afterwards.
-        super.mouseDown(with: event)
-        if selectionIndexPaths != intendedSelection {
-            selectionIndexPaths = intendedSelection
-            selectionLeadHandler?(leadItem)
-        }
         if event.clickCount == 2, selectionIndexPaths.contains(
             IndexPath(item: item, section: 0)
         ) {
             activationHandler?(item)
         }
+    }
+
+    /// Enter AppKit's blocking drag tracker only after the pointer has moved.
+    /// Calling `super.mouseDown` for an ordinary click lets AppKit replay a
+    /// second selection mutation after our binding has already published,
+    /// which is the visible select-then-rollback race.
+    func continueNativeDragTracking(item: Int, mouseDownEvent: NSEvent) {
+        let intendedSelection = selectionIndexPaths
+        super.mouseDown(with: mouseDownEvent)
+        guard selectionIndexPaths != intendedSelection else { return }
+        selectionIndexPaths = intendedSelection
+        leadItem = intendedSelection.contains(IndexPath(item: item, section: 0))
+            ? item
+            : leadItem
+        selectionLeadHandler?(leadItem)
     }
 
     @discardableResult
@@ -785,6 +795,9 @@ private final class LargeFileGridItem: NSCollectionViewItem {
         itemView.mouseDownHandler = { [weak self] event in
             self?.handleMouseDown(event)
         }
+        itemView.mouseDragHandler = { [weak self] event in
+            self?.continueNativeDragTracking(event)
+        }
         itemView.contextMenuHandler = { [weak self] event in
             self?.contextMenu(for: event)
         }
@@ -828,7 +841,7 @@ private final class LargeFileGridItem: NSCollectionViewItem {
     }
 
     private func handleMouseDown(_ event: NSEvent) {
-        guard let collectionView = enclosingCollectionView,
+        guard let collectionView = collectionView as? LargeFileNSCollectionView,
               let indexPath = collectionView.indexPath(for: self) else {
             view.nextResponder?.mouseDown(with: event)
             return
@@ -836,23 +849,21 @@ private final class LargeFileGridItem: NSCollectionViewItem {
         collectionView.handleItemMouseDown(item: indexPath.item, event: event)
     }
 
+    private func continueNativeDragTracking(_ mouseDownEvent: NSEvent) {
+        guard let collectionView = collectionView as? LargeFileNSCollectionView,
+              let indexPath = collectionView.indexPath(for: self) else { return }
+        collectionView.continueNativeDragTracking(
+            item: indexPath.item,
+            mouseDownEvent: mouseDownEvent
+        )
+    }
+
     private func contextMenu(for event: NSEvent) -> NSMenu? {
-        guard let collectionView = enclosingCollectionView,
+        guard let collectionView = collectionView as? LargeFileNSCollectionView,
               let indexPath = collectionView.indexPath(for: self) else {
             return nil
         }
         return collectionView.menu(forItem: indexPath.item, event: event)
-    }
-
-    private var enclosingCollectionView: LargeFileNSCollectionView? {
-        var candidate = view.superview
-        while let view = candidate {
-            if let collectionView = view as? LargeFileNSCollectionView {
-                return collectionView
-            }
-            candidate = view.superview
-        }
-        return nil
     }
 
 }
@@ -865,7 +876,9 @@ final class LargeFileGridItemView: NSView {
     private var selected = false
     var accessibilityActivation: (() -> Void)?
     var mouseDownHandler: ((NSEvent) -> Void)?
+    var mouseDragHandler: ((NSEvent) -> Void)?
     var contextMenuHandler: ((NSEvent) -> NSMenu?)?
+    private var pendingMouseDownEvent: NSEvent?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -918,6 +931,8 @@ final class LargeFileGridItemView: NSView {
         fatalError("init(coder:) has not been implemented")
     }
 
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         updateAppearance()
@@ -937,7 +952,23 @@ final class LargeFileGridItemView: NSView {
             super.mouseDown(with: event)
             return
         }
+        pendingMouseDownEvent = event
         mouseDownHandler(event)
+    }
+
+    override func mouseDragged(with event: NSEvent) {
+        guard let mouseDownEvent = pendingMouseDownEvent,
+              let mouseDragHandler else {
+            super.mouseDragged(with: event)
+            return
+        }
+        pendingMouseDownEvent = nil
+        mouseDragHandler(mouseDownEvent)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        pendingMouseDownEvent = nil
+        super.mouseUp(with: event)
     }
 
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -969,7 +1000,9 @@ final class LargeFileGridItemView: NSView {
     func reset() {
         accessibilityActivation = nil
         mouseDownHandler = nil
+        mouseDragHandler = nil
         contextMenuHandler = nil
+        pendingMouseDownEvent = nil
         toolTip = nil
         imageView.image = nil
         nameLabel.stringValue = ""
