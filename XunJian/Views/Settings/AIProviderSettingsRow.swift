@@ -96,9 +96,7 @@ struct AIProviderSettingsRow: View {
                 }
 
                 if case let .failed(message) = connectionState {
-                    Text(verbatim: AppLanguage.localizedRuntimeMessage(message))
-                        .font(.caption)
-                        .foregroundStyle(XunJianUI.Semantic.danger)
+                    ErrorMessageRow(message: message)
                 }
                 if showsSavedConfirmation {
                     Label(
@@ -114,7 +112,7 @@ struct AIProviderSettingsRow: View {
         } label: {
             HStack(spacing: 8) {
                 Text(verbatim: providerTitle)
-                    .font(.body.weight(.medium))
+                    .font(XunJianUI.Typography.itemTitle)
                     .layoutPriority(1)
                 Spacer()
                 if ai.activeProviderKind == kind {
@@ -122,11 +120,17 @@ struct AIProviderSettingsRow: View {
                         .foregroundStyle(.tint)
                 }
                 if !isExpanded {
-                    Text(verbatim: providerStatusTitle)
-                        .foregroundStyle(providerStatusColor)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                    Label {
+                        Text(verbatim: providerStatusTitle)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    } icon: {
+                        Image(systemName: providerStatusPresentation.tone.symbolName)
+                            .accessibilityHidden(true)
+                    }
+                    .foregroundStyle(providerStatusColor)
+                    .font(XunJianUI.Typography.status)
+                    .help(providerStatusTitle)
                 }
             }
             .padding(.vertical, 5)
@@ -763,200 +767,6 @@ struct AIProviderSettingsRow: View {
                 Text(verbatim: title)
                 content()
             }
-        }
-    }
-}
-
-/// Keeps the native disclosure semantics while making the complete provider
-/// header — not only the tiny chevron — the click target. A single custom
-/// button also avoids stacking a second tap gesture on top of DisclosureGroup.
-private struct FullRowDisclosureGroupStyle: DisclosureGroupStyle {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    func makeBody(configuration: Configuration) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button {
-                if reduceMotion {
-                    configuration.isExpanded.toggle()
-                } else {
-                    withAnimation(.easeInOut(duration: 0.16)) {
-                        configuration.isExpanded.toggle()
-                    }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .rotationEffect(.degrees(configuration.isExpanded ? 90 : 0))
-                        .frame(width: 12)
-                    configuration.label
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if configuration.isExpanded {
-                configuration.content
-                    .padding(.leading, 20)
-            }
-        }
-    }
-}
-
-struct AIProviderCollapsedStatusPresentation: Equatable {
-    enum Tone: Equatable {
-        case secondary
-        case green
-        case orange
-        case red
-
-        var color: Color {
-            switch self {
-            case .secondary: XunJianUI.Semantic.neutral
-            case .green: XunJianUI.Semantic.success
-            case .orange: XunJianUI.Semantic.warning
-            case .red: XunJianUI.Semantic.danger
-            }
-        }
-    }
-
-    let title: String
-    let tone: Tone
-
-    static func make(
-        supportsOAuth: Bool,
-        isCurrentProvider: Bool,
-        activeMode: AIAuthenticationMode?,
-        hasAPIKey: Bool,
-        apiKeyState: AIConnectionState,
-        hasCredentialError: Bool,
-        hasUnsavedConfigurationChanges: Bool,
-        oauthState: AIOAuthState
-    ) -> Self {
-        let apiKey = apiKeyPresentation(
-            hasAPIKey: hasAPIKey,
-            state: apiKeyState,
-            hasCredentialError: hasCredentialError,
-            hasUnsavedConfigurationChanges: hasUnsavedConfigurationChanges
-        )
-        guard supportsOAuth else { return apiKey }
-
-        let oauth = Self(
-            title: AppLanguage.localized(
-                "OAuth：\(oauthState.localizedTitle)",
-                english: "OAuth: \(oauthState.localizedTitle)"
-            ),
-            tone: oauthTone(for: oauthState)
-        )
-        if isCurrentProvider {
-            switch activeMode {
-            case .apiKey:
-                return apiKey
-            case .oauth:
-                return oauth
-            case nil:
-                break
-            }
-        }
-
-        return Self(
-            title: "\(oauth.title) · \(apiKey.title)",
-            tone: hasCredentialError
-                ? .red
-                : hasUnsavedConfigurationChanges ? .orange : .secondary
-        )
-    }
-
-    private static func apiKeyPresentation(
-        hasAPIKey: Bool,
-        state: AIConnectionState,
-        hasCredentialError: Bool,
-        hasUnsavedConfigurationChanges: Bool
-    ) -> Self {
-        if hasCredentialError {
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：文件不可用",
-                    english: "API Key: File Unavailable"
-                ),
-                tone: .red
-            )
-        }
-        if hasUnsavedConfigurationChanges {
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：配置已修改，需保存后重测",
-                    english: "API Key: Changed; Save and Retest"
-                ),
-                tone: .orange
-            )
-        }
-        guard hasAPIKey else {
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：未保存",
-                    english: "API Key: Not Saved"
-                ),
-                tone: .secondary
-            )
-        }
-
-        switch state {
-        case .notConfigured:
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：未保存",
-                    english: "API Key: Not Saved"
-                ),
-                tone: .secondary
-            )
-        case .saved:
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：已保存，需验证",
-                    english: "API Key: Saved; Verification Required"
-                ),
-                tone: .orange
-            )
-        case .testing:
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：正在验证",
-                    english: "API Key: Verifying"
-                ),
-                tone: .orange
-            )
-        case .verified:
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：已验证",
-                    english: "API Key: Verified"
-                ),
-                tone: .green
-            )
-        case .failed:
-            return Self(
-                title: AppLanguage.localized(
-                    "API Key：验证失败",
-                    english: "API Key: Verification Failed"
-                ),
-                tone: .red
-            )
-        }
-    }
-
-    private static func oauthTone(for state: AIOAuthState) -> Tone {
-        switch state {
-        case .connected:
-            .green
-        case .starting, .authenticating, .signedInDisconnected, .signedInUnverified:
-            .orange
-        case .unavailable, .failed:
-            .red
-        case .statusUnknown, .disconnected:
-            .secondary
         }
     }
 }

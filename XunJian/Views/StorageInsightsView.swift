@@ -410,9 +410,7 @@ struct StorageInsightsView: View {
                 .foregroundStyle(.secondary)
             } else if !duplicateGroups.isEmpty {
                 if let duplicateCleanupError {
-                    Text(verbatim: duplicateCleanupError)
-                        .font(.caption)
-                        .foregroundStyle(XunJianUI.Semantic.danger)
+                    ErrorMessageRow(message: duplicateCleanupError)
                 }
                 if duplicateUnreadCount > 0 {
                     Text(verbatim: AppLanguage.localized(

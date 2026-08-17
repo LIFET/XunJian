@@ -52,21 +52,26 @@ struct CommandPaletteView: View {
     private static let maximumFileResults = 8
 
     var body: some View {
-        ZStack(alignment: .top) {
-            // Click-away scrim. A subtle darkening reads as "focus mode"
-            // without the muddy grey that a heavier black overlay produces
-            // on top of a material panel. `ContentShape` keeps the whole
-            // area hittable even though the fill is nearly transparent.
-            Color.black.opacity(0.08)
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .onTapGesture { dismiss() }
-                .accessibilityHidden(true)
+        GeometryReader { geometry in
+            let compactHeight = geometry.size.height < XunJianUI.Breakpoint.compactOverlayHeight
+            let topPadding: CGFloat = compactHeight ? XunJianUI.Spacing.page : 96
+            let resultHeight = max(
+                160,
+                min(340, geometry.size.height - topPadding - 150)
+            )
 
-            panel
-                .frame(maxWidth: 560)
-                .padding(.top, 96)
-                .padding(.horizontal, 24)
+            ZStack(alignment: .top) {
+                Color.black.opacity(0.08)
+                    .ignoresSafeArea()
+                    .contentShape(Rectangle())
+                    .onTapGesture { dismiss() }
+                    .accessibilityHidden(true)
+
+                panel(maximumResultHeight: resultHeight)
+                    .frame(maxWidth: 560)
+                    .padding(.top, topPadding)
+                    .padding(.horizontal, XunJianUI.Spacing.page)
+            }
         }
         .onExitCommand(perform: dismiss)
         .onAppear {
@@ -85,9 +90,9 @@ struct CommandPaletteView: View {
     }
 
     @ViewBuilder
-    private var panel: some View {
+    private func panel(maximumResultHeight: CGFloat) -> some View {
         let visibleCommands = displayedCommands
-        VStack(spacing: 0) {
+        return VStack(spacing: 0) {
             queryField
 
             if visibleCommands.isEmpty {
@@ -102,18 +107,10 @@ struct CommandPaletteView: View {
                 .padding(.vertical, 18)
             } else {
                 Divider()
-                resultList(visibleCommands)
+                resultList(visibleCommands, maximumHeight: maximumResultHeight)
             }
         }
-        .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.regularMaterial)
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
-        }
-        // Lifts the panel off the page. Without this the material blends into
-        // whatever is behind it and the palette reads as a flat grey box.
-        .shadow(radius: 28, y: 10)
+        .xunjianFloatingSurface()
         .accessibilityElement(children: .contain)
         .accessibilityLabel(Text(verbatim: AppLanguage.localized(
             "命令面板",
@@ -162,7 +159,10 @@ struct CommandPaletteView: View {
         }
     }
 
-    private func resultList(_ visibleCommands: [PaletteCommand]) -> some View {
+    private func resultList(
+        _ visibleCommands: [PaletteCommand],
+        maximumHeight: CGFloat
+    ) -> some View {
         List(selection: commandSelection) {
             ForEach(Array(commandGroups.enumerated()), id: \.offset) { _, group in
                 let commands = visibleCommands.filter { $0.group == group }
@@ -184,7 +184,7 @@ struct CommandPaletteView: View {
             }
         }
         .listStyle(.inset)
-        .frame(maxHeight: 340)
+        .frame(maxHeight: maximumHeight)
     }
 
     private var commandGroups: [PaletteCommand.Group] {
@@ -229,6 +229,7 @@ struct CommandPaletteView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
+        .help(command.subtitle ?? command.title)
         .accessibilityLabel(Text(verbatim: command.subtitle.map {
             AppLanguage.joinedForAccessibility([command.title, $0])
         } ?? command.title))

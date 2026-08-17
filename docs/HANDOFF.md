@@ -2,9 +2,15 @@
 
 ## 当前项目状态
 
-Phase 8Q 原生控件生命周期、OAuth 启动安全、列表/网格选择闪回与紧凑窗口 Inspector 已完成源码收口；版本源为 0.1.1（build 2），正在执行正式签名、公证与 GitHub 发布，未运行真实 OAuth/AI 或文件扫描。
+Phase 8R 设计系统、适配与辅助功能源码收口已在独立 `codex/ui-polish-0.1.2` worktree 完成；0.1.1 发布分支与待公证 DMG 未改动。版本源暂仍为 0.1.1（build 2），未运行真实 OAuth/AI 或文件扫描。
 
 ## 已完成内容
+
+- 跨页面 Token、通用表面与交互样式从搜索组件独立；补齐字体、平台语义表面、控件尺寸、浮层阴影、非活跃窗口、高对比度与 Reduce Transparency 降级。
+- 命令面板改为按窗口高度自适应，菜单栏搜索使用 min/ideal/max 尺寸与窄宽操作回退；卡片补非颜色选中边框并减轻按压反馈。
+- AI Sheet 复用统一标题、尺寸、操作区与错误行；Provider 折叠状态同时使用图标、文字和语义色；关键截断文件名、路径与状态补完整 Hover 提示。
+- `AppLanguage` 优先读取 String Catalog，现有英文参数仅在目录缺翻译时回退；设计系统新增浅/深色及实体浮层 Preview。
+- `AISheets`、AI Provider 状态及 All Files 支撑类型按职责拆分；AppKit 虚拟化、选择所有权、OAuth/AI、文件和索引逻辑未改。XcodeGen、arm64 Debug build、App 363 项（2 项设计跳过）与 OAuth Process 38 项共 401 项、0 失败，`git diff --check` 通过。
 
 - 四个内置 Runtime 已从本地 LFS 对象恢复为真实 Mach-O，并新增构建前大小、架构、SHA-256、官方签名门禁；状态探针只读安全元数据/proof，启动不再自动发模型验证。
 - 原生列表/网格的选择 echo 与 renderer 所有权闭环；名称单元格及网格卡片子视图统一进入原生选择路径；列偏好迁移 v4 并修正 AppKit 列 ID 前缀；侧边栏偏好/窄窗强制收起分离，菜单按当前窗口真实路由。

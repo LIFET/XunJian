@@ -697,7 +697,7 @@ private struct RenameFileSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(AppLanguage.localized("重命名文件", english: "Rename File"))
-                .font(.title2.weight(.semibold))
+                .font(XunJianUI.Typography.sheetTitle)
             Text(verbatim: file.parentPath)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -711,9 +711,7 @@ private struct RenameFileSheet: View {
                 .focused($isNameFocused)
                 .onSubmit(rename)
             if let failure {
-                Text(AppLanguage.localizedRuntimeMessage(failure))
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.danger)
+                ErrorMessageRow(message: failure)
             }
             HStack {
                 Spacer()

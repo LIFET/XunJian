@@ -45,7 +45,15 @@ enum AppLanguage: String, CaseIterable, Identifiable {
     }
 
     static func localized(_ chinese: String, english: String) -> String {
-        selected.usesEnglish ? english : chinese
+        let localizedValue = String(
+            localized: String.LocalizationValue(chinese),
+            bundle: .main,
+            locale: selected.locale
+        )
+        if selected.usesEnglish, localizedValue == chinese {
+            return english
+        }
+        return localizedValue
     }
 
     static func fileCount(_ count: Int) -> String {

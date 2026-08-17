@@ -64,7 +64,14 @@ struct MenuBarSearchView: View {
             Divider()
             footer
         }
-        .frame(width: 340, height: 480)
+        .frame(
+            minWidth: 320,
+            idealWidth: 340,
+            maxWidth: 420,
+            minHeight: 380,
+            idealHeight: 480,
+            maxHeight: 620
+        )
         .environment(
             \.locale,
             AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
@@ -109,8 +116,8 @@ struct MenuBarSearchView: View {
                 }
             }
         )
-        .frame(height: 30)
-        .padding(10)
+        .frame(height: XunJianUI.Size.compactControlHeight)
+        .padding(XunJianUI.Spacing.row)
     }
 
     private var emptyMessage: String {
@@ -146,6 +153,7 @@ struct MenuBarSearchView: View {
                     Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
+                .help(AppLanguage.joinedForAccessibility([file.name, resultSubtitle(for: file)]))
                 .tag(file.id)
                 .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                     "在寻简中显示“\(file.name)”",
@@ -165,27 +173,46 @@ struct MenuBarSearchView: View {
     }
 
     private var footer: some View {
-        HStack(spacing: 10) {
-            Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
-                revealHighlighted()
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: XunJianUI.Spacing.row) {
+                revealButton
+                openFileButton
+                Spacer(minLength: 0)
+                openAppButton
             }
-            .disabled(!displayedResults.indices.contains(highlightedIndex))
 
-            Button(AppLanguage.localized("打开文件", english: "Open File")) {
-                openHighlightedFile()
-            }
-            .disabled(!displayedResults.indices.contains(highlightedIndex))
-
-            Spacer(minLength: 0)
-
-            Button(AppLanguage.localized("打开寻简", english: "Open XunJian")) {
-                activateMainWindow()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: XunJianUI.Spacing.row) {
+                    revealButton
+                    openFileButton
+                }
+                openAppButton
             }
         }
         .controlSize(.small)
         .font(.callout)
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
+    }
+
+    private var revealButton: some View {
+        Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
+            revealHighlighted()
+        }
+        .disabled(!displayedResults.indices.contains(highlightedIndex))
+    }
+
+    private var openFileButton: some View {
+        Button(AppLanguage.localized("打开文件", english: "Open File")) {
+            openHighlightedFile()
+        }
+        .disabled(!displayedResults.indices.contains(highlightedIndex))
+    }
+
+    private var openAppButton: some View {
+        Button(AppLanguage.localized("打开寻简", english: "Open XunJian")) {
+            activateMainWindow()
+        }
     }
 
     private func resultSubtitle(for file: IndexedFile) -> String {

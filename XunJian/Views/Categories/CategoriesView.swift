@@ -260,8 +260,9 @@ struct CategoriesView: View {
                                 )
                             VStack(alignment: .leading, spacing: 3) {
                                 Text(verbatim: category.localizedDisplayName)
-                                    .font(.body.weight(.semibold))
+                                    .font(XunJianUI.Typography.itemTitle)
                                     .lineLimit(1)
+                                    .help(category.localizedDisplayName)
                                 Text(verbatim: AppLanguage.fileCount(appModel.fileCount(in: category)))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
@@ -480,6 +481,7 @@ struct CategoriesView: View {
                             .accessibilityHidden(true)
                         Text(verbatim: file.name)
                             .lineLimit(1)
+                            .help(file.name)
                     }
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel(Text(verbatim: categoryRowAccessibilityLabel(file)))
@@ -508,6 +510,7 @@ struct CategoriesView: View {
                     Text(verbatim: file.parentPath)
                         .lineLimit(1)
                         .truncationMode(.middle)
+                        .help(file.parentPath)
                 }
             }
             .width(min: 100, ideal: 240, max: 420)
@@ -793,7 +796,7 @@ struct CategoryEditorSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
             Text(verbatim: title)
-                .font(.title2.weight(.semibold))
+                .font(XunJianUI.Typography.sheetTitle)
             TextField(
                 AppLanguage.localized("分类名称", english: "Category Name"),
                 text: $name
@@ -802,9 +805,7 @@ struct CategoryEditorSheet: View {
                 .focused($isNameFocused)
                 .onSubmit(save)
             if let failure {
-                Text(AppLanguage.localizedRuntimeMessage(failure))
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.danger)
+                ErrorMessageRow(message: failure)
             }
 
             if allowsSymbolEditing {

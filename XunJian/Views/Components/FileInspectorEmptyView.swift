@@ -44,7 +44,7 @@ struct FileInspectorView: View {
                                     )
                                 )
                             Text(verbatim: file.name)
-                                .font(.headline)
+                                .font(XunJianUI.Typography.sectionTitle)
                                 .multilineTextAlignment(.center)
                                 .lineLimit(3)
                                 .textSelection(.enabled)
@@ -164,6 +164,7 @@ struct FileInspectorView: View {
                                 Text(verbatim: categorySummary(for: file))
                                     .lineLimit(1)
                                     .truncationMode(.tail)
+                                    .help(categorySummary(for: file))
                             } icon: {
                                 Image(systemName: "folder.badge.plus")
                             }

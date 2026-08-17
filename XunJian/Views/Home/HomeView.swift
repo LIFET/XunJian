@@ -108,10 +108,6 @@ struct HomeView: View {
                     minHeight: XunJianUI.Breakpoint.homeEmptyStateHeight,
                     alignment: .center
                 )
-                .background(
-                    XunJianUI.Fill.quiet,
-                    in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                )
             } else {
                 GroupedSurface(padding: 4) {
                     VStack(spacing: 0) {
@@ -184,15 +180,15 @@ struct HomeView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(kind.localizedTitle)
-                                    .font(.body.weight(.medium))
+                                    .font(XunJianUI.Typography.itemTitle)
                                 Text(AppLanguage.fileCount(appModel.fileCount(for: kind)))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 11)
+                        .padding(.horizontal, XunJianUI.Spacing.sectionInner)
+                        .padding(.vertical, XunJianUI.Spacing.row)
                         .background {
                             InteractiveCardBackground(
                                 isSelected: appModel.selectedKind == kind,
@@ -210,6 +206,11 @@ struct HomeView: View {
                             kind.localizedTitle,
                             AppLanguage.fileCount(appModel.fileCount(for: kind))
                         ])
+                    )
+                    .accessibilityValue(
+                        Text(verbatim: appModel.selectedKind == kind
+                             ? AppLanguage.localized("已选择", english: "Selected")
+                             : AppLanguage.localized("未选择", english: "Not Selected"))
                     )
                 }
             }
@@ -291,13 +292,15 @@ struct HomeView: View {
                 .frame(width: 22)
             VStack(alignment: .leading, spacing: 2) {
                 Text(source.displayName)
-                    .font(.body.weight(.medium))
+                    .font(XunJianUI.Typography.itemTitle)
                     .lineLimit(1)
+                    .help(source.displayName)
                 Text(source.path)
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
+                    .help(source.path)
             }
         }
     }
