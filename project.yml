@@ -19,8 +19,8 @@ settings:
     INFOPLIST_KEY_CFBundleName: 寻简
     INFOPLIST_KEY_CFBundleDisplayName: 寻简
     INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
-    MARKETING_VERSION: 0.1.1
-    CURRENT_PROJECT_VERSION: 2
+    MARKETING_VERSION: 0.1.2
+    CURRENT_PROJECT_VERSION: 3
     XUNJIAN_UPDATE_FEED_URL: "https://lifet.github.io/XunJian/appcast.xml"
     XUNJIAN_UPDATE_PUBLIC_ED_KEY: "ZYFomhdgXrbr3EfU48QESGuhKDhA5PuqEehJSzXPU1Q="
 packages:

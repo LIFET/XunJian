@@ -18,7 +18,11 @@
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载 `XunJian-0.1.1-macOS.dmg`。发布包为 Universal App，支持 Apple silicon 与 Intel Mac，要求 macOS 14 或更高版本。
+前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载适合当前 Mac 的安装包，要求 macOS 14 或更高版本：
+
+- `XunJian-0.1.2-macOS.dmg`：Universal，兼容 Apple silicon 与 Intel。
+- `XunJian-0.1.2-Apple-Silicon.dmg`：仅 Apple silicon（M 系列芯片）。
+- `XunJian-0.1.2-Intel.dmg`：仅 Intel。
 
 ## 为什么做寻简
 
