@@ -2,7 +2,7 @@
 
 ## 发布状态
 
-- [ ] 0.1.3（build 4）发布中：Universal 与 Intel 已完成公证、装订和门禁；Apple Silicon 公证仍由 Apple 处理。Sparkle 使用 Universal DMG，独立 Apple Silicon 资产待 Accepted 后补充。
+- [ ] 0.1.4（build 5）发布中：修复旧整机索引迁移清理的 FTS5 性能问题；三架构签名、公证、Release 与 Sparkle 验收待完成。
 
 ## 产品目标
 

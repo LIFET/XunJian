@@ -1450,27 +1450,50 @@ actor FileIndexDatabase {
         guard !removedFileIDs.isEmpty else { return [] }
 
         try transaction {
-            let deleteSearchStatement = try prepare(
-                "DELETE FROM file_search WHERE file_id = ?;"
+            try Self.execute(
+                """
+                CREATE TEMP TABLE IF NOT EXISTS stale_scope_file_ids (
+                    id TEXT PRIMARY KEY
+                );
+                DELETE FROM stale_scope_file_ids;
+                """,
+                on: connection.pointer
             )
-            defer { sqlite3_finalize(deleteSearchStatement) }
+            let staleIDStatement = try prepare(
+                "INSERT OR IGNORE INTO stale_scope_file_ids (id) VALUES (?);"
+            )
+            defer { sqlite3_finalize(staleIDStatement) }
+            for fileID in removedFileIDs {
+                sqlite3_reset(staleIDStatement)
+                sqlite3_clear_bindings(staleIDStatement)
+                try bind(fileID, at: 1, to: staleIDStatement)
+                try stepDone(staleIDStatement)
+            }
+
+            // `file_id` is UNINDEXED in FTS5. Deleting one ID at a time made
+            // every stale row rescan the complete FTS table, which could pin
+            // a 100k-file upgrade cleanup at 100% CPU for hours. Scan FTS once
+            // against the indexed temporary ID set instead.
+            let deleteSearchStatement = try prepare(
+                """
+                DELETE FROM file_search
+                WHERE file_id IN (SELECT id FROM stale_scope_file_ids);
+                """
+            )
+            do {
+                defer { sqlite3_finalize(deleteSearchStatement) }
+                try stepDone(deleteSearchStatement)
+            }
             let deleteFileStatement = try prepare(
-                "DELETE FROM files WHERE id = ? AND source_id = ?;"
+                """
+                DELETE FROM files
+                WHERE source_id = ?
+                  AND id IN (SELECT id FROM stale_scope_file_ids);
+                """
             )
             defer { sqlite3_finalize(deleteFileStatement) }
-
-            for fileID in removedFileIDs {
-                sqlite3_reset(deleteSearchStatement)
-                sqlite3_clear_bindings(deleteSearchStatement)
-                try bind(fileID, at: 1, to: deleteSearchStatement)
-                try stepDone(deleteSearchStatement)
-
-                sqlite3_reset(deleteFileStatement)
-                sqlite3_clear_bindings(deleteFileStatement)
-                try bind(fileID, at: 1, to: deleteFileStatement)
-                try bind(sourceID.uuidString, at: 2, to: deleteFileStatement)
-                try stepDone(deleteFileStatement)
-            }
+            try bind(sourceID.uuidString, at: 1, to: deleteFileStatement)
+            try stepDone(deleteFileStatement)
         }
         return removedFileIDs
     }
