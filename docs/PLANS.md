@@ -2,7 +2,7 @@
 
 ## 发布状态
 
-- [ ] 0.1.4（build 5）发布中：修复旧整机索引迁移清理的 FTS5 性能问题；三架构签名、公证、Release 与 Sparkle 验收待完成。
+- [x] 0.1.4（build 5）已完成索引迁移性能修复、三架构签名/公证/门禁、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 
 ## 产品目标
 
@@ -128,7 +128,7 @@
 - [x] 7B-3E-1B（6 文件）：新增 OAuth `AIProvider` 与持久化认证模式，让 `.signedInUnverified/.connected` 可独立设为当前 AI；搜索、解释、问答与分类通过现有 `AIService` 走 OAuth Chat IPC，API Key 本地凭据与 Provider 路径保持独立。OAuth 失效只清除 OAuth 当前项；设置页显示/切换当前模式。新增聚焦 5/5、OAuthBridge 51/51、Swift 语法检查与 Debug App/XPC build 均通过；未启动真实 CLI、OAuth、网络或模型。
 - [x] 7B-3E-2A（10 文件）：Codex App Server 0.147.0 的 arm64/x86_64 官方签名产物已随 XPC Bundle 打包；状态、登录和 AI 请求只解析当前架构资源，并复验固定 SHA256、OpenAI Team/Identifier、权限与链接，Codex 登录下载路径已移除。Resolver/Bundle 4/4、Swift 6 strict typecheck、Debug App/XPC build 与产物签名/SHA 均通过。Release 已使用 Team `76V7CQ4T45` 的 Developer ID 签名并经 Apple 公证接受、stapling 与 Gatekeeper 验证；可分享 ZIP 位于 `Release/寻简-0.1.0-macOS.zip`。未启动 Runtime、OAuth、网络或模型。
 - [x] 7B-3E-2B（10 文件）：Grok Build 1.0.0 的 arm64/x86_64 官方签名产物已随 XPC Bundle 打包；状态、登录、验证、AI 请求与 Session 删除只解析当前架构资源，并复验固定 SHA256、xAI Team/Identifier、权限与链接，Grok 登录下载路径已移除。App/XPC Release 均为 `arm64+x86_64`；Resolver/Bundle 3/3、Release Universal build、资源 SHA 与供应商签名检查均通过。未启动 Runtime、OAuth、网络或模型；2A 的旧 ZIP 尚未包含本阶段产物，不作为最终分发包。
-- [x] 7B-3E-3：删除不可达下载器/旧 smoke/误导文案；Codex、Grok 生产路径与离线回归已闭环。0.1.2（build 3）三种 Developer ID DMG 均完成公证、staple/validate、Gatekeeper、挂载签名/架构与官方 Runtime 验收；GitHub Release 三项资产及 Sparkle HTTPS appcast 完成发布验证。0.1.3（build 4）Universal 与 Intel 已完成相同门禁，Apple Silicon 公证处理中。
+- [x] 7B-3E-3：删除不可达下载器/旧 smoke/误导文案；Codex、Grok 生产路径与离线回归已闭环。0.1.2（build 3）及 0.1.4（build 5）三架构均完成 Developer ID、公证、staple/validate、Gatekeeper、挂载签名/架构、官方 Runtime、GitHub Release 与 Sparkle HTTPS 验收。
 
 ### 7B-4 API Key 本地持久化（已完成）
 
