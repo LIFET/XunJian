@@ -6,6 +6,22 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.2</title>
+            <pubDate>Tue, 18 Aug 2026 02:35:29 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.2</link>
+            <sparkle:version>3</sparkle:version>
+            <sparkle:shortVersionString>0.1.2</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.2
+
+- 重塑首页、所有文件、分类与设置页的可见层级，并完善浅色、深色、窄窗口及无障碍表现。
+- 大文件库列表与网格改用原生虚拟化，优化搜索、筛选、排序、缩略图与选择交互。
+- 收紧整台 Mac 扫描与敏感路径边界，完善索引一致性、取消、恢复和失败保护。
+- 修复文件选中闪回、侧栏无法展开，以及 Codex/Grok OAuth XPC 并发与 Runtime 校验问题。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.2/XunJian-0.1.2-macOS.dmg" length="278160602" type="application/octet-stream" sparkle:edSignature="K8VddaBMeQTw3phCYZ+Eu8Zryqhk1lXsVq0MkrIQu2wPzzUCoaZi12om3nYmJXRfBF4CkBABx2L6xbvlkiwuDA=="/>
+        </item>
+        <item>
             <title>0.1.0</title>
             <pubDate>Sun, 16 Aug 2026 18:49:37 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.0</link>

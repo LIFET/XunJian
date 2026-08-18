@@ -1,5 +1,9 @@
 # 寻简开发计划
 
+## 发布状态
+
+- [x] 0.1.2（build 3）已完成三架构公证、装订、Gatekeeper、挂载签名/架构验收、Sparkle EdDSA、GitHub Release 与 HTTPS 资产验证。
+
 ## 产品目标
 
 以原生 macOS SwiftUI 应用统一展示用户主动授权目录中的文件，通过本地索引、快速搜索与最小必要的 AI 能力帮助用户找到、理解和简单管理文件。默认不复制、不移动、不改变原目录结构。
@@ -124,7 +128,7 @@
 - [x] 7B-3E-1B（6 文件）：新增 OAuth `AIProvider` 与持久化认证模式，让 `.signedInUnverified/.connected` 可独立设为当前 AI；搜索、解释、问答与分类通过现有 `AIService` 走 OAuth Chat IPC，API Key 本地凭据与 Provider 路径保持独立。OAuth 失效只清除 OAuth 当前项；设置页显示/切换当前模式。新增聚焦 5/5、OAuthBridge 51/51、Swift 语法检查与 Debug App/XPC build 均通过；未启动真实 CLI、OAuth、网络或模型。
 - [x] 7B-3E-2A（10 文件）：Codex App Server 0.147.0 的 arm64/x86_64 官方签名产物已随 XPC Bundle 打包；状态、登录和 AI 请求只解析当前架构资源，并复验固定 SHA256、OpenAI Team/Identifier、权限与链接，Codex 登录下载路径已移除。Resolver/Bundle 4/4、Swift 6 strict typecheck、Debug App/XPC build 与产物签名/SHA 均通过。Release 已使用 Team `76V7CQ4T45` 的 Developer ID 签名并经 Apple 公证接受、stapling 与 Gatekeeper 验证；可分享 ZIP 位于 `Release/寻简-0.1.0-macOS.zip`。未启动 Runtime、OAuth、网络或模型。
 - [x] 7B-3E-2B（10 文件）：Grok Build 1.0.0 的 arm64/x86_64 官方签名产物已随 XPC Bundle 打包；状态、登录、验证、AI 请求与 Session 删除只解析当前架构资源，并复验固定 SHA256、xAI Team/Identifier、权限与链接，Grok 登录下载路径已移除。App/XPC Release 均为 `arm64+x86_64`；Resolver/Bundle 3/3、Release Universal build、资源 SHA 与供应商签名检查均通过。未启动 Runtime、OAuth、网络或模型；2A 的旧 ZIP 尚未包含本阶段产物，不作为最终分发包。
-- [ ] 7B-3E-3：删除不可达下载器/旧 smoke/误导文案；Codex、Grok 的真实 OAuth 与真实 AI 请求已通过，离线 OAuthProtocol 59/59、OAuthBridge 51/51、OAuthProcess 34/34 通过；Universal Developer ID DMG 已去除调试权限、补齐安全时间戳并提交 Apple 公证。原任务 `73c2c479-c04f-4ef5-89e8-7896289000e2` 长时间停留 `In Progress`，已做一次受控重试 `a3d982f4-b286-4b31-a43f-880277570f13`；任一 Accepted 后执行 staple 与 Gatekeeper 完成。
+- [x] 7B-3E-3：删除不可达下载器/旧 smoke/误导文案；Codex、Grok 生产路径与离线回归已闭环。0.1.2（build 3）三种 Developer ID DMG 均完成公证、staple/validate、Gatekeeper、挂载签名/架构与官方 Runtime 验收；GitHub Release 三项资产及 Sparkle HTTPS appcast 完成发布验证。
 
 ### 7B-4 API Key 本地持久化（已完成）
 
