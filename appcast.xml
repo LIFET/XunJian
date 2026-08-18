@@ -6,6 +6,21 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.3</title>
+            <pubDate>Tue, 18 Aug 2026 22:00:29 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.3</link>
+            <sparkle:version>4</sparkle:version>
+            <sparkle:shortVersionString>0.1.3</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.3
+
+- OAuth 登录后自动加载账号可用模型，并支持选择与独立持久化。
+- 修正设置页、文件详情栏及窄窗口菜单的布局与交互。
+- 完善文件预览、滚动区域和原生 macOS 操作体验。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.3/XunJian-0.1.3-macOS.dmg" length="277353009" type="application/octet-stream" sparkle:edSignature="dcRH0R2eF/649uVijrGUUVo/0VHbFBjxobymR4YTs1e2krjc1G4gg6popKf+VRuxdEQF3ZBl7flVNvm0YQ5lCA=="/>
+        </item>
+        <item>
             <title>0.1.2</title>
             <pubDate>Tue, 18 Aug 2026 02:35:29 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.2</link>
