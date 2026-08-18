@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum OAuthBridgeConstants {
-    static let protocolVersion = 6
+    static let protocolVersion = 7
     static let serviceName = "com.xingmingbo.XunJian.OAuthBridge"
     static let trustedApplicationIdentifier = "com.xingmingbo.XunJian"
     static let maximumPayloadBytes = 1_048_576
@@ -27,6 +27,8 @@ enum OAuthBridgeTiming {
             maximumProbeServiceSeconds + requestOverheadSeconds
         case .authenticationStatus:
             15
+        case .listModels:
+            70
         case .startLogin:
             700
         case .verifyConnection:
@@ -63,6 +65,7 @@ enum OAuthBridgeOperation: String, CaseIterable, Codable, Sendable {
     case startLogin
     case cancelLogin
     case verifyConnection
+    case listModels
     case generateText
     case disconnectProvider
     case logoutProvider
@@ -74,6 +77,7 @@ enum OAuthBridgeOperation: String, CaseIterable, Codable, Sendable {
         .startLogin,
         .cancelLogin,
         .verifyConnection,
+        .listModels,
         .generateText,
         .disconnectProvider,
         .logoutProvider
@@ -266,6 +270,12 @@ struct OAuthBridgeGeneratedText: Codable, Equatable, Sendable {
     let text: String
 }
 
+struct OAuthBridgeModel: Codable, Equatable, Identifiable, Sendable {
+    let provider: OAuthBridgeProvider
+    let id: String
+    let isDefault: Bool
+}
+
 protocol OAuthBridgeServicing: Sendable {
     func authenticationStatus(
         for provider: OAuthBridgeProvider
@@ -284,6 +294,10 @@ protocol OAuthBridgeServicing: Sendable {
     func verifyConnection(
         _ provider: OAuthBridgeProvider
     ) async throws -> OAuthBridgeAuthStatus
+
+    func listModels(
+        for provider: OAuthBridgeProvider
+    ) async throws -> [OAuthBridgeModel]
 
     func generateText(
         provider: OAuthBridgeProvider,
@@ -314,6 +328,7 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
     let cliProbes: [OAuthCLIProbe]?
     let authStatus: OAuthBridgeAuthStatus?
     let loginAttempt: OAuthBridgeLoginAttempt?
+    let models: [OAuthBridgeModel]?
     let generatedText: OAuthBridgeGeneratedText?
 
     static func capabilities(_ value: OAuthBridgeCapabilities) -> Self {
@@ -322,6 +337,7 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
             cliProbes: nil,
             authStatus: nil,
             loginAttempt: nil,
+            models: nil,
             generatedText: nil
         )
     }
@@ -332,6 +348,7 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
             cliProbes: value,
             authStatus: nil,
             loginAttempt: nil,
+            models: nil,
             generatedText: nil
         )
     }
@@ -342,6 +359,7 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
             cliProbes: nil,
             authStatus: value,
             loginAttempt: nil,
+            models: nil,
             generatedText: nil
         )
     }
@@ -352,6 +370,18 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
             cliProbes: nil,
             authStatus: nil,
             loginAttempt: value,
+            models: nil,
+            generatedText: nil
+        )
+    }
+
+    static func models(_ value: [OAuthBridgeModel]) -> Self {
+        Self(
+            capabilities: nil,
+            cliProbes: nil,
+            authStatus: nil,
+            loginAttempt: nil,
+            models: value,
             generatedText: nil
         )
     }
@@ -362,6 +392,7 @@ struct OAuthBridgeResult: Codable, Equatable, Sendable {
             cliProbes: nil,
             authStatus: nil,
             loginAttempt: nil,
+            models: nil,
             generatedText: value
         )
     }

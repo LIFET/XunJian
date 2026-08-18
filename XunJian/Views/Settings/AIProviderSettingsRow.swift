@@ -159,6 +159,10 @@ struct AIProviderSettingsRow: View {
             guard oldValue != newValue else { return }
             announceAccessibility("\(providerTitle)：\(newValue.localizedTitle)")
         }
+        .task(id: canLoadOAuthModels) {
+            guard canLoadOAuthModels else { return }
+            await oauth.refreshModels(for: kind)
+        }
         .background { providerConfirmationDialogs }
     }
 
@@ -287,6 +291,10 @@ struct AIProviderSettingsRow: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
+                if canLoadOAuthModels {
+                    oauthModelSelection
+                }
+
                 if isOAuthVerificationInFlight {
                     HStack(spacing: 7) {
                         ProgressView()
@@ -329,6 +337,61 @@ struct AIProviderSettingsRow: View {
                 .lineLimit(1)
         }
         .fixedSize(horizontal: true, vertical: false)
+    }
+
+    @ViewBuilder
+    private var oauthModelSelection: some View {
+        switch oauth.modelLoadStates[kind] ?? .idle {
+        case .idle, .loading:
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(
+                    verbatim: AppLanguage.localized(
+                        "正在加载可用模型…",
+                        english: "Loading available models…"
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            }
+
+        case .loaded:
+            responsiveField(AppLanguage.localized("OAuth 模型", english: "OAuth Model")) {
+                Picker(
+                    AppLanguage.localized("OAuth 模型", english: "OAuth Model"),
+                    selection: Binding(
+                        get: { oauth.selectedModel(for: kind) },
+                        set: { oauth.selectModel($0, for: kind) }
+                    )
+                ) {
+                    ForEach(oauth.models[kind] ?? []) { model in
+                        Text(verbatim: model.id).tag(model.id)
+                    }
+                }
+                .labelsHidden()
+                .pickerStyle(.menu)
+                .frame(maxWidth: 320, alignment: .leading)
+            }
+
+        case let .failed(message):
+            VStack(alignment: .leading, spacing: 6) {
+                Label(message, systemImage: "exclamationmark.triangle")
+                    .font(.caption)
+                    .foregroundStyle(XunJianUI.Semantic.warning)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button(AppLanguage.localized("重新加载模型", english: "Reload Models")) {
+                    Task {
+                        await oauth.refreshModels(
+                            for: kind,
+                            force: true,
+                            presentsFailure: true
+                        )
+                    }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
     }
 
     @ViewBuilder
@@ -595,6 +658,16 @@ struct AIProviderSettingsRow: View {
 
     private var supportsOAuth: Bool {
         kind == .codex || kind == .grok
+    }
+
+    private var canLoadOAuthModels: Bool {
+        switch currentOAuthState {
+        case .signedInDisconnected, .signedInUnverified, .connected:
+            true
+        case .unavailable, .statusUnknown, .starting, .disconnected,
+             .authenticating, .failed:
+            false
+        }
     }
 
     private var loginButtonTitle: String {

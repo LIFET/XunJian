@@ -164,30 +164,31 @@ struct AppShellView: View {
                 .background(Color(nsColor: .controlBackgroundColor))
         }
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    setInspectorVisible(!showsInspector)
-                } label: {
-                    Label(
-                        AppLanguage.localized("文件详情", english: "File Details"),
-                        systemImage: "sidebar.right"
+            if supportsInspector {
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
+                        setInspectorVisible(!showsInspector)
+                    } label: {
+                        Label(
+                            AppLanguage.localized("文件详情", english: "File Details"),
+                            systemImage: "sidebar.right"
+                        )
+                        .symbolVariant(showsInspector ? .fill : .none)
+                    }
+                    .accessibilityValue(
+                        AppLanguage.localized(
+                            showsInspector ? "已显示" : "已隐藏",
+                            english: showsInspector ? "Shown" : "Hidden"
+                        )
                     )
-                    .symbolVariant(showsInspector ? .fill : .none)
+                    .accessibilityAddTraits(showsInspector ? .isSelected : [])
+                    .help(
+                        AppLanguage.localized(
+                            showsInspector ? "隐藏文件详情" : "显示文件详情",
+                            english: showsInspector ? "Hide File Details" : "Show File Details"
+                        )
+                    )
                 }
-                .disabled(!canToggleInspector)
-                .accessibilityValue(
-                    AppLanguage.localized(
-                        showsInspector ? "已显示" : "已隐藏",
-                        english: showsInspector ? "Shown" : "Hidden"
-                    )
-                )
-                .accessibilityAddTraits(showsInspector ? .isSelected : [])
-                .help(
-                    AppLanguage.localized(
-                        showsInspector ? "隐藏文件详情" : "显示文件详情",
-                        english: showsInspector ? "Hide File Details" : "Show File Details"
-                    )
-                )
             }
         }
         .focusedSceneValue(\.xunJianCommandContext, commandContext)

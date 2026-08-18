@@ -415,12 +415,19 @@ struct FileBrowseToolbar: View {
                 )
             }
 
-            Picker(
-                AppLanguage.localized("显示方式", english: "View"),
-                selection: $viewMode
-            ) {
+            Section(AppLanguage.localized("显示方式", english: "View")) {
                 ForEach(FileBrowseViewMode.allCases) { mode in
-                    Label(mode.localizedTitle, systemImage: mode.symbolName).tag(mode)
+                    Toggle(
+                        isOn: Binding(
+                            get: { viewMode == mode },
+                            set: { isSelected in
+                                guard isSelected else { return }
+                                viewMode = mode
+                            }
+                        )
+                    ) {
+                        Label(mode.localizedTitle, systemImage: mode.symbolName)
+                    }
                 }
             }
         } label: {

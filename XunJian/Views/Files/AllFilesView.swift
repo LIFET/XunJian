@@ -581,20 +581,20 @@ struct AllFilesView: View {
                 .disabled(activeSortOrder == .relevance)
             }
             if includesViewMode {
-                Picker(
-                    AppLanguage.localized("显示方式", english: "View"),
-                    selection: $viewMode
-                ) {
-                    Label(
-                        AppLanguage.localized("列表", english: "List"),
-                        systemImage: ViewMode.list.symbolName
-                    )
-                        .tag(ViewMode.list)
-                    Label(
-                        AppLanguage.localized("图标", english: "Icons"),
-                        systemImage: ViewMode.grid.symbolName
-                    )
-                        .tag(ViewMode.grid)
+                Section(AppLanguage.localized("显示方式", english: "View")) {
+                    ForEach(ViewMode.allCases) { mode in
+                        Toggle(
+                            isOn: Binding(
+                                get: { viewMode == mode },
+                                set: { isSelected in
+                                    guard isSelected else { return }
+                                    viewMode = mode
+                                }
+                            )
+                        ) {
+                            Label(mode.localizedTitle, systemImage: mode.symbolName)
+                        }
+                    }
                 }
             }
         } label: {

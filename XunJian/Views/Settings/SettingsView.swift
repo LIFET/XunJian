@@ -44,10 +44,11 @@ struct SettingsView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            settingsIntro
-            Divider()
-            Form {
+        GeometryReader { geometry in
+            VStack(spacing: 0) {
+                settingsIntro(contentWidth: geometry.size.width)
+                Divider()
+                Form {
             Section(AppLanguage.localized("通用", english: "General")) {
                 Picker(AppLanguage.localized("外观", english: "Appearance"), selection: $appearance) {
                     ForEach(AppAppearance.allCases) { option in
@@ -576,11 +577,15 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 }
+                }
+                }
+                .formStyle(.grouped)
+                .contentMargins(
+                    .horizontal,
+                    settingsContentMargin(for: geometry.size.width),
+                    for: .scrollContent
+                )
             }
-            }
-            .formStyle(.grouped)
-            .frame(maxWidth: XunJianUI.Size.readableContentWidth)
-            .frame(maxWidth: .infinity)
         }
         .id(language)
         .navigationTitle(AppLanguage.localized("设置", english: "Settings"))
@@ -634,7 +639,7 @@ struct SettingsView: View {
         }
     }
 
-    private var settingsIntro: some View {
+    private func settingsIntro(contentWidth: CGFloat) -> some View {
         PageHeader(
             title: AppLanguage.localized(
                 "按你的工作方式设置寻简",
@@ -645,11 +650,17 @@ struct SettingsView: View {
                 english: "Manage browsing, file access, local indexing, and AI connections."
             )
         )
-        .frame(maxWidth: XunJianUI.Size.readableContentWidth)
-        .padding(.horizontal, XunJianUI.Spacing.page)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, settingsContentMargin(for: contentWidth))
         .padding(.vertical, XunJianUI.Spacing.panel)
-        .frame(maxWidth: .infinity)
         .background(XunJianUI.Surface.canvas)
+    }
+
+    private func settingsContentMargin(for width: CGFloat) -> CGFloat {
+        max(
+            XunJianUI.pagePadding(for: width),
+            (width - XunJianUI.Size.readableContentWidth) / 2
+        )
     }
 
     private func addExclusion() {

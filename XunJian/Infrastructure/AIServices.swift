@@ -328,6 +328,7 @@ struct AIConfigurationStore {
     private let defaults: UserDefaults
     private let prefix = "ai.provider."
     private let apiKeyVerificationPrefix = "ai.verification.apiKey."
+    private let oauthModelPrefix = "ai.oauth.model."
     private let activeKey = "ai.activeProvider"
     private let activeAuthenticationModeKey = "ai.activeAuthenticationMode"
 
@@ -357,6 +358,14 @@ struct AIConfigurationStore {
 
     func setAPIKeyVerificationFingerprint(_ fingerprint: String?, for kind: AIProviderKind) {
         defaults.set(fingerprint, forKey: apiKeyVerificationPrefix + kind.rawValue)
+    }
+
+    func oauthModel(for kind: AIProviderKind) -> String? {
+        defaults.string(forKey: oauthModelPrefix + kind.rawValue)
+    }
+
+    func setOAuthModel(_ model: String, for kind: AIProviderKind) {
+        defaults.set(model, forKey: oauthModelPrefix + kind.rawValue)
     }
 
     static func apiKeyVerificationFingerprint(

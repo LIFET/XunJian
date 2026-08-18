@@ -1,5 +1,12 @@
 import Foundation
 
+enum AIOAuthModelLoadState: Equatable, Sendable {
+    case idle
+    case loading
+    case loaded
+    case failed(String)
+}
+
 /// Owns the OAuth state machine for AI providers that authenticate through the
 /// companion bridge process.
 ///
@@ -18,6 +25,12 @@ final class OAuthCoordinator: ObservableObject {
         AIProviderKind: AIOAuthDeviceCodePresentation
     ] = [:]
     @Published private(set) var verificationsInFlight = Set<AIProviderKind>()
+    @Published private(set) var models: [AIProviderKind: [OAuthBridgeModel]] = [:]
+    @Published private(set) var selectedModels: [AIProviderKind: String] = [:]
+    @Published private(set) var modelLoadStates: [AIProviderKind: AIOAuthModelLoadState] = [
+        .codex: .idle,
+        .grok: .idle
+    ]
 
     // MARK: - Hooks into the AI layer
 
@@ -30,6 +43,7 @@ final class OAuthCoordinator: ObservableObject {
     var onFailure: ((String) -> Void)?
 
     private let bridgeService: any OAuthBridgeServicing
+    private let aiConfigurationStore: AIConfigurationStore
     private let isRunningTests: Bool
 
     /// Called by the AI layer after a successful generation via OAuth, which
@@ -49,12 +63,18 @@ final class OAuthCoordinator: ObservableObject {
     private var statusInFlight = Set<AIProviderKind>()
     private var statusWaiters: [AIProviderKind: [WaiterBox]] = [:]
     private var providerRequestCounts: [AIProviderKind: Int] = [:]
+    private var modelLoadGenerations: [AIProviderKind: UUID] = [:]
     private var pollingTask: Task<Void, Never>?
     private var isApplicationActive = false
     private var isPollingPausedForVerification = false
 
-    init(bridgeService: any OAuthBridgeServicing, isRunningTests: Bool) {
+    init(
+        bridgeService: any OAuthBridgeServicing,
+        aiConfigurationStore: AIConfigurationStore = AIConfigurationStore(),
+        isRunningTests: Bool
+    ) {
         self.bridgeService = bridgeService
+        self.aiConfigurationStore = aiConfigurationStore
         self.isRunningTests = isRunningTests
     }
 
@@ -126,6 +146,90 @@ final class OAuthCoordinator: ObservableObject {
             providerRequestCounts[kind] = remaining
         } else {
             providerRequestCounts.removeValue(forKey: kind)
+        }
+    }
+
+    // MARK: - Models
+
+    func selectedModel(for kind: AIProviderKind) -> String {
+        selectedModels[kind]
+            ?? aiConfigurationStore.oauthModel(for: kind)
+            ?? kind.defaultModel
+    }
+
+    func selectModel(_ modelID: String, for kind: AIProviderKind) {
+        guard models[kind]?.contains(where: { $0.id == modelID }) == true else { return }
+        selectedModels[kind] = modelID
+        aiConfigurationStore.setOAuthModel(modelID, for: kind)
+    }
+
+    func refreshModels(
+        for kind: AIProviderKind,
+        force: Bool = false,
+        presentsFailure: Bool = false
+    ) async {
+        guard let provider = Self.oauthProvider(for: kind),
+              Self.canLoadModels(from: states[kind]) else {
+            clearModels(for: kind)
+            return
+        }
+        guard force || models[kind] == nil else { return }
+        guard modelLoadGenerations[kind] == nil else { return }
+
+        let generation = UUID()
+        modelLoadGenerations[kind] = generation
+        modelLoadStates[kind] = .loading
+        defer {
+            if modelLoadGenerations[kind] == generation {
+                modelLoadGenerations.removeValue(forKey: kind)
+            }
+        }
+        do {
+            try await beginProviderRequest(kind)
+            defer { endProviderRequest(kind) }
+            let availableModels = try await bridgeService.listModels(for: provider)
+            try Task.checkCancellation()
+            guard modelLoadGenerations[kind] == generation,
+                  Self.canLoadModels(from: states[kind]) else { return }
+
+            let storedModel = aiConfigurationStore.oauthModel(for: kind)
+            let selectedModel = availableModels.first(where: { $0.id == storedModel })?.id
+                ?? availableModels.first(where: \.isDefault)?.id
+                ?? availableModels.first?.id
+            guard let selectedModel else {
+                throw OAuthStateError.noModelsAvailable
+            }
+            models[kind] = availableModels
+            selectedModels[kind] = selectedModel
+            aiConfigurationStore.setOAuthModel(selectedModel, for: kind)
+            modelLoadStates[kind] = .loaded
+        } catch is CancellationError {
+            if modelLoadGenerations[kind] == generation {
+                modelLoadStates[kind] = .idle
+            }
+            return
+        } catch {
+            guard modelLoadGenerations[kind] == generation else { return }
+            let message = Self.message(for: error)
+            modelLoadStates[kind] = .failed(message)
+            if presentsFailure { onFailure?(message) }
+        }
+    }
+
+    private func clearModels(for kind: AIProviderKind) {
+        modelLoadGenerations.removeValue(forKey: kind)
+        models.removeValue(forKey: kind)
+        selectedModels.removeValue(forKey: kind)
+        modelLoadStates[kind] = .idle
+    }
+
+    private static func canLoadModels(from state: AIOAuthState?) -> Bool {
+        switch state {
+        case .signedInDisconnected, .signedInUnverified, .connected:
+            true
+        case .none, .unavailable, .statusUnknown, .starting, .disconnected,
+             .authenticating, .failed:
+            false
         }
     }
 
@@ -223,6 +327,7 @@ final class OAuthCoordinator: ObservableObject {
               loginAttemptIDs[kind] == nil else { return nil }
         let generation = beginOperation(for: kind)
         loginStartGenerations[kind] = generation
+        clearModels(for: kind)
         loginAttemptIDs.removeValue(forKey: kind)
         deviceCodePresentations.removeValue(forKey: kind)
         states[kind] = .starting
@@ -544,6 +649,7 @@ final class OAuthCoordinator: ObservableObject {
         }
 
         guard status.cliStatus == .available else {
+            clearModels(for: kind)
             loginAttemptIDs.removeValue(forKey: kind)
             deviceCodePresentations.removeValue(forKey: kind)
             states[kind] = .unavailable(status.cliStatus)
@@ -574,9 +680,11 @@ final class OAuthCoordinator: ObservableObject {
         deviceCodePresentations.removeValue(forKey: kind)
         switch status.credentialState {
         case .unknown:
+            clearModels(for: kind)
             states[kind] = .statusUnknown
             onProviderUnavailable?(kind, true)
         case .signedOut:
+            clearModels(for: kind)
             states[kind] = .disconnected
             onProviderUnavailable?(kind, false)
         case .signedIn:
@@ -627,6 +735,7 @@ final class OAuthCoordinator: ObservableObject {
     enum OAuthStateError: LocalizedError {
         case providerMismatch
         case invalidLoginPresentation
+        case noModelsAvailable
 
         var errorDescription: String? {
             switch self {
@@ -634,6 +743,11 @@ final class OAuthCoordinator: ObservableObject {
                 AppLanguage.localized("OAuth 伴随服务返回了不匹配的 AI 提供商。", english: "The OAuth helper returned a different AI provider.")
             case .invalidLoginPresentation:
                 AppLanguage.localized("OAuth 伴随服务返回了无效的登录信息。", english: "The OAuth helper returned invalid sign-in information.")
+            case .noModelsAvailable:
+                AppLanguage.localized(
+                    "此 OAuth 账号没有可用模型。",
+                    english: "No models are available for this OAuth account."
+                )
             }
         }
     }

@@ -565,6 +565,7 @@ final class AppModel: ObservableObject {
         self.isRunningTests = isRunningTests
         self.oauth = OAuthCoordinator(
             bridgeService: oauthBridgeService,
+            aiConfigurationStore: aiConfigurationStore,
             isRunningTests: isRunningTests
         )
         self.ai = AISessionCoordinator(

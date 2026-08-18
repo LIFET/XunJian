@@ -192,6 +192,7 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         case start(OAuthBridgeProvider, OAuthBridgeLoginMethod)
         case cancel(OAuthBridgeProvider, UUID)
         case verify(OAuthBridgeProvider)
+        case listModels(OAuthBridgeProvider)
         case generate(OAuthBridgeProvider, String, String, String)
         case disconnect(OAuthBridgeProvider)
         case logout(OAuthBridgeProvider)
@@ -210,6 +211,8 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
     private var cancelResult: Result<OAuthBridgeAuthStatus, FakeOAuthBridgeError> =
         .failure(.missingStub)
     private var verificationResult: Result<OAuthBridgeAuthStatus, FakeOAuthBridgeError> =
+        .failure(.missingStub)
+    private var modelListResult: Result<[OAuthBridgeModel], FakeOAuthBridgeError> =
         .failure(.missingStub)
     private var generationResult: Result<String, FakeOAuthBridgeError> =
         .failure(.missingStub)
@@ -281,6 +284,12 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         generationResult = result
     }
 
+    func configureModels(
+        _ result: Result<[OAuthBridgeModel], FakeOAuthBridgeError>
+    ) {
+        modelListResult = result
+    }
+
     func calls() -> [Call] {
         recordedCalls
     }
@@ -331,6 +340,13 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
             await verificationGate.wait()
         }
         return try verificationResult.get()
+    }
+
+    func listModels(
+        for provider: OAuthBridgeProvider
+    ) async throws -> [OAuthBridgeModel] {
+        recordedCalls.append(.listModels(provider))
+        return try modelListResult.get()
     }
 
     func generateText(
@@ -421,7 +437,7 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertFalse(statusSource.contains("performGrokVerification"))
     }
 
-    func testProtocolV6GenerationRequestRoundTripPreservesTypedArguments() throws {
+    func testProtocolV7GenerationRequestRoundTripPreservesTypedArguments() throws {
         let attemptID = UUID(uuidString: "991E6827-4F90-4980-963C-BF9AA5736571")!
         let cancelRequest = OAuthBridgeRequest(
             operation: .cancelLogin,
@@ -456,7 +472,7 @@ final class OAuthBridgeTests: XCTestCase {
             requestID: UUID(uuidString: "C6257F3C-8947-4485-8F87-B9B0306A290C")!
         )
 
-        XCTAssertEqual(OAuthBridgeConstants.protocolVersion, 6)
+        XCTAssertEqual(OAuthBridgeConstants.protocolVersion, 7)
         XCTAssertEqual(
             try OAuthBridgeCodec.decode(
                 OAuthBridgeRequest.self,
@@ -571,6 +587,7 @@ final class OAuthBridgeTests: XCTestCase {
                 "cliProbes",
                 "authStatus",
                 "loginAttempt",
+                "models",
                 "generatedText"
             ])
         )
@@ -624,6 +641,30 @@ final class OAuthBridgeTests: XCTestCase {
             repeating: "a",
             count: OAuthBridgeGenerationPolicy.maximumOutputBytes + 1
         )))
+    }
+
+    func testModelListIPCRequiresProviderOnlyAndValidUniqueModels() {
+        let request = OAuthBridgeRequest(
+            operation: .listModels,
+            arguments: OAuthBridgeRequestArguments(provider: .codex)
+        )
+        let validModels = [
+            OAuthBridgeModel(provider: .codex, id: "gpt-5.6-sol", isDefault: true),
+            OAuthBridgeModel(provider: .codex, id: "gpt-5.5", isDefault: false)
+        ]
+
+        XCTAssertTrue(OAuthBridgeClient.argumentsAreValid(
+            request.arguments,
+            for: .listModels
+        ))
+        XCTAssertTrue(OAuthBridgeClient.resultIsValid(.models(validModels), for: request))
+        XCTAssertFalse(OAuthBridgeClient.resultIsValid(.models([]), for: request))
+        XCTAssertFalse(OAuthBridgeClient.resultIsValid(.models([
+            OAuthBridgeModel(provider: .grok, id: "grok-4.6", isDefault: true)
+        ]), for: request))
+        XCTAssertFalse(OAuthBridgeClient.resultIsValid(.models([
+            validModels[0], validModels[0]
+        ]), for: request))
     }
 
     func testClientRejectsInvalidGenerationArgumentsBeforeConnecting() async {
@@ -826,6 +867,7 @@ final class OAuthBridgeTests: XCTestCase {
                 loginAttemptID: nil
             ),
             loginAttempt: nil,
+            models: nil,
             generatedText: OAuthBridgeGeneratedText(provider: .codex, text: "answer")
         )
         XCTAssertFalse(OAuthBridgeClient.resultIsValid(multiplePayloads, for: request))
@@ -879,6 +921,7 @@ final class OAuthBridgeTests: XCTestCase {
                 .startLogin,
                 .cancelLogin,
                 .verifyConnection,
+                .listModels,
                 .generateText,
                 .disconnectProvider,
                 .logoutProvider
@@ -2262,11 +2305,17 @@ final class OAuthBridgeTests: XCTestCase {
             credentialState: .signedIn,
             connectionState: .connected
         )))
+        await fake.configureModels(.success([
+            OAuthBridgeModel(provider: .codex, id: "gpt-5.6-sol", isDefault: true),
+            OAuthBridgeModel(provider: .codex, id: "gpt-5.5", isDefault: false)
+        ]))
         await fake.configureGeneration(.success(
             #"{"keywords":[],"fileKinds":[],"modifiedAfter":null,"modifiedBefore":null}"#
         ))
 
         await model.refreshOAuthStatus(for: .codex)
+        await model.oauth.refreshModels(for: .codex)
+        model.oauth.selectModel("gpt-5.5", for: .codex)
         await model.verifyOAuthConnection(for: .codex)
         model.setActiveOAuthAIProvider(.codex)
         try await model.performAISearch("合同")
@@ -2276,12 +2325,13 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(model.aiSearchPlan?.keywords, [])
         XCTAssertEqual(model.aiOAuthStates[.codex], .connected)
         let calls = await fake.calls()
-        XCTAssertEqual(calls.count, 3)
-        guard case let .generate(provider, modelID, systemPrompt, userPrompt) = calls[2] else {
+        XCTAssertEqual(calls.count, 4)
+        XCTAssertEqual(calls[1], .listModels(.codex))
+        guard case let .generate(provider, modelID, systemPrompt, userPrompt) = calls[3] else {
             return XCTFail("Expected OAuth generation call")
         }
         XCTAssertEqual(provider, .codex)
-        XCTAssertEqual(modelID, "gpt-5.6-sol")
+        XCTAssertEqual(modelID, "gpt-5.5")
         XCTAssertTrue(systemPrompt.contains("JSON"))
         XCTAssertEqual(userPrompt, "合同")
     }

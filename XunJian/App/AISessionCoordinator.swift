@@ -305,8 +305,10 @@ final class AISessionCoordinator: ObservableObject {
             guard oauth.states[kind] == .connected else {
                 throw AIServiceError.notConfigured
             }
+            var oauthSettings = settings(for: kind)
+            oauthSettings.model = oauth.selectedModel(for: kind)
             return try AIProviderFactory.makeOAuth(
-                settings: settings(for: kind),
+                settings: oauthSettings,
                 bridge: oauthBridgeService
             )
         }

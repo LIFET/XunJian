@@ -155,6 +155,19 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
         return status
     }
 
+    func listModels(
+        for provider: OAuthBridgeProvider
+    ) async throws -> [OAuthBridgeModel] {
+        let result = try await perform(
+            .listModels,
+            arguments: OAuthBridgeRequestArguments(provider: provider)
+        )
+        guard let models = result.models else {
+            throw OAuthBridgeClientError.invalidResponse
+        }
+        return models
+    }
+
     func generateText(
         provider: OAuthBridgeProvider,
         model: String,
@@ -278,7 +291,8 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
         switch operation {
         case .capabilities, .probeOfficialCLIs:
             return arguments == nil
-        case .authenticationStatus, .verifyConnection, .disconnectProvider, .logoutProvider:
+        case .authenticationStatus, .verifyConnection, .listModels,
+             .disconnectProvider, .logoutProvider:
             return arguments?.provider != nil
                 && arguments?.loginAttemptID == nil
                 && arguments?.loginMethod == nil
@@ -323,6 +337,7 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
             result.cliProbes != nil,
             result.authStatus != nil,
             result.loginAttempt != nil,
+            result.models != nil,
             result.generatedText != nil
         ].filter { $0 }.count
         guard payloadCount == 1 else { return false }
@@ -406,6 +421,24 @@ actor OAuthBridgeClient: OAuthBridgeServicing {
                 && status.credentialState == .signedIn
                 && status.connectionState == .connected
                 && status.loginAttemptID == nil
+
+        case .listModels:
+            guard let provider = request.arguments?.provider,
+                  let models = result.models,
+                  !models.isEmpty,
+                  models.count <= 2_000,
+                  Set(models.map(\.id)).count == models.count else {
+                return false
+            }
+            return models.allSatisfy { model in
+                model.provider == provider
+                    && OAuthBridgeGenerationPolicy.requestIsValid(
+                        provider: provider,
+                        model: model.id,
+                        systemPrompt: "model-list-validation",
+                        userPrompt: "model-list-validation"
+                    )
+            }
 
         case .generateText:
             guard let provider = request.arguments?.provider,

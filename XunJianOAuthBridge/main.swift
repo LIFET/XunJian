@@ -533,6 +533,10 @@ private actor OAuthBridgeCoordinator {
                 result = .authenticationStatus(try await verifyConnection(
                     request.arguments!.provider!
                 ))
+            case .listModels:
+                result = .models(try await listModels(
+                    for: request.arguments!.provider!
+                ))
             case .generateText:
                 let provider = request.arguments!.provider!
                 result = .generatedText(OAuthBridgeGeneratedText(
@@ -606,7 +610,8 @@ private actor OAuthBridgeCoordinator {
         switch operation {
         case .capabilities, .probeOfficialCLIs:
             return arguments == nil
-        case .authenticationStatus, .verifyConnection, .disconnectProvider, .logoutProvider:
+        case .authenticationStatus, .verifyConnection, .listModels,
+             .disconnectProvider, .logoutProvider:
             return arguments?.provider != nil
                 && arguments?.loginAttemptID == nil
                 && arguments?.loginMethod == nil
@@ -1153,6 +1158,79 @@ private actor OAuthBridgeCoordinator {
                 .generationFailed,
                 "AI generation failed."
             )
+        }
+    }
+
+    private func listModels(
+        for provider: OAuthBridgeProvider
+    ) async throws -> [OAuthBridgeModel] {
+        switch provider {
+        case .codex:
+            guard codexLogin == nil else {
+                throw Failure.response(
+                    .loginAlreadyInProgress,
+                    "An OAuth login is already in progress."
+                )
+            }
+            guard managedCodexProbe().status == .available else {
+                throw Failure.response(
+                    .cliUnavailable,
+                    "XunJian's bundled Codex App Server is unavailable."
+                )
+            }
+            let runtime = try await ensureCodexRuntime(
+                executableURL: bundledCodexExecutable()
+            )
+            do {
+                guard case let .signedIn(type, _, _) = try await runtime.client.readAccount(),
+                      type.lowercased() == "chatgpt" else {
+                    codexCredentialState = .signedOut
+                    throw Failure.response(
+                        .authenticationFailed,
+                        "ChatGPT authentication is required."
+                    )
+                }
+                codexCredentialState = .signedIn
+                let models = try await runtime.client.listModels()
+                await discardCodexRuntime()
+                guard !models.isEmpty else {
+                    throw Failure.response(
+                        .authenticationFailed,
+                        "No models are available for this ChatGPT account."
+                    )
+                }
+                return models.map {
+                    OAuthBridgeModel(
+                        provider: .codex,
+                        id: $0.id,
+                        isDefault: $0.isDefault
+                    )
+                }
+            } catch {
+                await discardCodexRuntime()
+                throw error
+            }
+
+        case .grok:
+            guard grokLogin == nil, grokLoginFinalization == nil else {
+                throw Failure.response(
+                    .loginAlreadyInProgress,
+                    "An OAuth login is already in progress."
+                )
+            }
+            guard grokCredentialState == .signedIn else {
+                throw Failure.response(
+                    .authenticationFailed,
+                    "Grok authentication is required."
+                )
+            }
+            // The bundled Grok ACP runtime is deliberately pinned to the only
+            // model this safety profile can launch and validate end to end.
+            return [OAuthBridgeModel(
+                provider: .grok,
+                id: GrokACPClient.fixedModelID,
+                isDefault: true
+            )]
         }
     }
 

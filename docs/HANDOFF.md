@@ -6,6 +6,9 @@
 
 ## 已完成内容
 
+- 设置页滚动容器恢复全宽、正文保持 760pt 可读宽度并与页头对齐；非文件页隐藏详情栏按钮；分类窄窗显示方式改为一级菜单；详情栏分类与更多操作同排，信息和内容预览占满栏宽，预览正文恢复系统正文字号。
+- “所有文件”窄窗口的“更多工具”菜单已将显示方式改为同层“列表 / 图标”选项，移除二级子菜单并保留当前项勾选状态。
+- OAuth 登录态现会通过受限 XPC 加载账号可用模型；设置页可选择并独立持久化 OAuth 模型，后续 OAuth AI 请求使用该选择，不再复用 API Key 的手填模型。
 - 三种 DMG 均通过 Apple 公证、staple/validate、Gatekeeper 与 `hdiutil verify`。
 - 挂载验收确认版本 0.1.2/build 3；Universal App/XPC 为 `x86_64 arm64`，Apple Silicon 为 `arm64`，Intel 为 `x86_64`。
 - App 深层签名有效；Sparkle 内嵌代码均为 Team `76V7CQ4T45` 且带时间戳；OpenAI/xAI Runtime 分别为官方 Team `2DC432GLL2`、`5Y6N3AJ54S`。
