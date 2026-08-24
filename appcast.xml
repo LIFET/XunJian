@@ -18,7 +18,7 @@
 - 将 SQLite 打开与迁移移出主线程，并区分索引打开、可用与失败状态。
 - 恢复全局细型原生滚动条，并消除布局阶段重复遍历。
 ]]></description>
-            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.6/XunJian-0.1.6-macOS.dmg" length="303454725" type="application/octet-stream" sparkle:edSignature="wr9tzIqB8yFhcLxU/Fi1DaFAMtgJWVVJQAu1Q9KZZwUMk9y+L72ujGrrzCWqrA24h6Qfc4U3tsh2ze4RNIsBDw=="/>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.6/XunJian-0.1.6-macOS.dmg" length="303317645" type="application/octet-stream" sparkle:edSignature="i5oWfF+EZ2IcK8wRjfI5n8aJH9oyXycsfE0t7H9FXC7SE178uA7Vmj1k1anHuVa/yq0rS2ZFrcFuuHk/xkI6BQ=="/>
         </item>
         <item>
             <title>0.1.5</title>

@@ -2,7 +2,7 @@
 
 ## 当前项目状态
 
-寻简 0.1.6（build 7）已直接发布：源码、annotated tag、三架构 Developer ID DMG、GitHub Release 与 Sparkle 更新源均已上线；本次按用户指令未执行 Apple 公证。
+寻简 0.1.6（build 7）修复版三架构 DMG 已替换到 GitHub Release，Universal Sparkle 更新包已重新签名。Universal 与 Intel 已完成 Apple 公证、staple、Gatekeeper 和挂载复验；Apple Silicon 已重新提交公证，当前等待 Apple 处理。
 
 ## 已完成内容
 
@@ -14,9 +14,9 @@
 - 主工程 406 项执行、2 项大型门禁跳过、0 失败；OAuth Process 38 项、0 失败。
 - 5 万/10 万门禁 2/2 通过，分别 0.831s / 4.129s。
 - `xcodebuild analyze`、`xmllint`、`plutil`、`git diff --check` 通过；仅有 macOS 测试宿主 `linkd` 环境噪声。
-- Universal、Apple Silicon、Intel 归档和 DMG 均通过 0.1.6/build 7、App/XPC 精确架构、深层签名、Sparkle Team/时间戳及 OpenAI/xAI 官方 Runtime 签名验证；DMG `hdiutil verify` 通过。
+- 三架构 DMG 均通过 0.1.6/build 7、App/XPC 精确架构、深层签名、Sparkle Team/时间戳、OpenAI/xAI 官方 Runtime 签名与 `hdiutil verify`；Universal、Intel 另通过 Apple 公证、staple 与 Gatekeeper。
 - 未运行真实 OAuth、AI 或付费请求；真实 UI、VoiceOver 与系统集成项仍以 `docs/MANUAL_ACCEPTANCE.md` 为准。
 
 ## 下一步
 
-后续版本如需 Apple 公证，先保存可用的 `notarytool` Keychain profile，再执行提交、staple 与 Gatekeeper 门禁。
+等待 Apple Silicon 公证任务完成；Accepted 后执行 staple、Gatekeeper、挂载复验并再次替换对应 Release 资产。
