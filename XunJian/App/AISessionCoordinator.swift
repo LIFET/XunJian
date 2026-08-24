@@ -161,7 +161,8 @@ final class AISessionCoordinator: ObservableObject {
 
     func setActiveOAuthProvider(_ kind: AIProviderKind) {
         guard OAuthCoordinator.oauthProvider(for: kind) != nil,
-              oauth.states[kind] == .connected else {
+              oauth.states[kind] == .connected,
+              oauth.modelCatalogIsReady(for: kind) else {
             onError?(AIServiceError.notConfigured.localizedDescription)
             return
         }
@@ -305,8 +306,11 @@ final class AISessionCoordinator: ObservableObject {
             guard oauth.states[kind] == .connected else {
                 throw AIServiceError.notConfigured
             }
+            guard let selectedModel = oauth.validatedSelectedModel(for: kind) else {
+                throw AIServiceError.notConfigured
+            }
             var oauthSettings = settings(for: kind)
-            oauthSettings.model = oauth.selectedModel(for: kind)
+            oauthSettings.model = selectedModel
             return try AIProviderFactory.makeOAuth(
                 settings: oauthSettings,
                 bridge: oauthBridgeService
@@ -337,6 +341,12 @@ final class AISessionCoordinator: ObservableObject {
         }
         activeProviderKind = nil
         activeAuthenticationMode = nil
+    }
+
+    func needsOAuthModelCatalog(for kind: AIProviderKind) -> Bool {
+        (activeProviderKind == kind && activeAuthenticationMode == .oauth)
+            || (pendingActiveProviderKind == kind
+                && pendingActiveAuthenticationMode == .oauth)
     }
 
     static func shouldDeactivateActiveAPIKeyForVerification(
@@ -407,7 +417,8 @@ final class AISessionCoordinator: ObservableObject {
             }
         case .oauth:
             guard OAuthCoordinator.oauthProvider(for: activeKind) != nil,
-                  oauth.states[activeKind] == .connected else {
+                  oauth.states[activeKind] == .connected,
+                  oauth.modelCatalogIsReady(for: activeKind) else {
                 deactivateCurrentProvider(preservingPreference: true)
                 return
             }
@@ -436,7 +447,8 @@ final class AISessionCoordinator: ObservableObject {
         case .apiKey:
             guard connectionStates[pendingKind] == .verified else { return }
         case .oauth:
-            guard oauth.states[pendingKind] == .connected else { return }
+            guard oauth.states[pendingKind] == .connected,
+                  oauth.modelCatalogIsReady(for: pendingKind) else { return }
         }
         activeProviderKind = pendingKind
         activeAuthenticationMode = pendingMode

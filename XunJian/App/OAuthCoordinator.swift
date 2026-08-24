@@ -39,6 +39,10 @@ final class OAuthCoordinator: ObservableObject {
     var onProviderUnavailable: ((AIProviderKind, Bool) -> Void)?
     /// A provider reached a fully connected state.
     var onProviderConnected: (() -> Void)?
+    /// A persisted/current OAuth provider must resolve a live model catalog
+    /// before the AI layer can reactivate it. Other connected accounts can
+    /// stay lightweight until their Settings row becomes visible.
+    var shouldLoadModelsOnConnection: ((AIProviderKind) -> Bool)?
     /// A failure the user should see.
     var onFailure: ((String) -> Void)?
 
@@ -50,6 +54,9 @@ final class OAuthCoordinator: ObservableObject {
     /// proves the credential works and lets polling wind down.
     func markConnected(_ kind: AIProviderKind) {
         states[kind] = .connected
+        if modelCatalogIsReady(for: kind) {
+            onProviderConnected?()
+        }
     }
 
     private var operationGenerations: [AIProviderKind: UUID] = [:]
@@ -87,13 +94,14 @@ final class OAuthCoordinator: ObservableObject {
               providerRequestCounts[kind, default: 0] == 0,
               !statusInFlight.contains(kind) else { return }
         statusInFlight.insert(kind)
-        defer { finishStatus(for: kind) }
         let generation = beginOperation(for: kind)
+        let didConnect: Bool
 
         do {
             let status = try await bridgeService.authenticationStatus(for: provider)
-            applyStatus(status, to: kind, generation: generation)
+            didConnect = applyStatus(status, to: kind, generation: generation)
         } catch is CancellationError {
+            finishStatus(for: kind)
             return
         } catch {
             applyFailure(
@@ -102,6 +110,12 @@ final class OAuthCoordinator: ObservableObject {
                 generation: generation,
                 presentsFailure: presentsFailure
             )
+            finishStatus(for: kind)
+            return
+        }
+        finishStatus(for: kind)
+        if didConnect {
+            await finishConnectedState(for: kind, presentsFailure: presentsFailure)
         }
     }
 
@@ -155,6 +169,17 @@ final class OAuthCoordinator: ObservableObject {
         selectedModels[kind]
             ?? aiConfigurationStore.oauthModel(for: kind)
             ?? kind.defaultModel
+    }
+
+    func validatedSelectedModel(for kind: AIProviderKind) -> String? {
+        guard modelCatalogIsReady(for: kind) else { return nil }
+        return selectedModels[kind]
+    }
+
+    func modelCatalogIsReady(for kind: AIProviderKind) -> Bool {
+        guard modelLoadStates[kind] == .loaded,
+              let selectedModel = selectedModels[kind] else { return false }
+        return models[kind]?.contains(where: { $0.id == selectedModel }) == true
     }
 
     func selectModel(_ modelID: String, for kind: AIProviderKind) {
@@ -221,6 +246,23 @@ final class OAuthCoordinator: ObservableObject {
         models.removeValue(forKey: kind)
         selectedModels.removeValue(forKey: kind)
         modelLoadStates[kind] = .idle
+    }
+
+    private func finishConnectedState(
+        for kind: AIProviderKind,
+        presentsFailure: Bool
+    ) async {
+        guard shouldLoadModelsOnConnection?(kind) == true else {
+            onProviderConnected?()
+            return
+        }
+        await refreshModels(for: kind, presentsFailure: presentsFailure)
+        guard states[kind] == .connected,
+              modelCatalogIsReady(for: kind) else {
+            onProviderUnavailable?(kind, true)
+            return
+        }
+        onProviderConnected?()
     }
 
     private static func canLoadModels(from state: AIOAuthState?) -> Bool {
@@ -416,7 +458,9 @@ final class OAuthCoordinator: ObservableObject {
                 for: provider,
                 attemptID: attemptID
             )
-            applyStatus(status, to: kind, generation: generation)
+            if applyStatus(status, to: kind, generation: generation) {
+                await finishConnectedState(for: kind, presentsFailure: true)
+            }
         } catch {
             applyFailure(error, to: kind, generation: generation)
         }
@@ -464,7 +508,9 @@ final class OAuthCoordinator: ObservableObject {
         do {
             let status = try await bridgeService.verifyConnection(provider)
             guard !Task.isCancelled else { return }
-            applyStatus(status, to: kind, generation: generation)
+            if applyStatus(status, to: kind, generation: generation) {
+                await finishConnectedState(for: kind, presentsFailure: true)
+            }
         } catch {
             guard !Task.isCancelled else { return }
             applyFailure(error, to: kind, generation: generation)
@@ -484,7 +530,9 @@ final class OAuthCoordinator: ObservableObject {
 
         do {
             let status = try await bridgeService.disconnect(provider)
-            applyStatus(status, to: kind, generation: generation)
+            if applyStatus(status, to: kind, generation: generation) {
+                await finishConnectedState(for: kind, presentsFailure: true)
+            }
         } catch {
             applyFailure(error, to: kind, generation: generation)
         }
@@ -502,7 +550,9 @@ final class OAuthCoordinator: ObservableObject {
 
         do {
             let status = try await bridgeService.logout(provider)
-            applyStatus(status, to: kind, generation: generation)
+            if applyStatus(status, to: kind, generation: generation) {
+                await finishConnectedState(for: kind, presentsFailure: true)
+            }
         } catch {
             applyFailure(error, to: kind, generation: generation)
         }
@@ -640,12 +690,12 @@ final class OAuthCoordinator: ObservableObject {
         _ status: OAuthBridgeAuthStatus,
         to kind: AIProviderKind,
         generation: UUID
-    ) {
+    ) -> Bool {
         guard operationGenerations[kind] == generation,
-              let expectedProvider = Self.oauthProvider(for: kind) else { return }
+              let expectedProvider = Self.oauthProvider(for: kind) else { return false }
         guard status.provider == expectedProvider else {
             applyFailure(OAuthStateError.providerMismatch, to: kind, generation: generation)
-            return
+            return false
         }
 
         guard status.cliStatus == .available else {
@@ -654,7 +704,7 @@ final class OAuthCoordinator: ObservableObject {
             deviceCodePresentations.removeValue(forKey: kind)
             states[kind] = .unavailable(status.cliStatus)
             onProviderUnavailable?(kind, true)
-            return
+            return false
         }
         if let attemptID = status.loginAttemptID {
             onProviderUnavailable?(kind, true)
@@ -673,7 +723,7 @@ final class OAuthCoordinator: ObservableObject {
                 attemptID: attemptID,
                 authorizationURL: authorizationURL
             )
-            return
+            return false
         }
 
         loginAttemptIDs.removeValue(forKey: kind)
@@ -683,24 +733,29 @@ final class OAuthCoordinator: ObservableObject {
             clearModels(for: kind)
             states[kind] = .statusUnknown
             onProviderUnavailable?(kind, true)
+            return false
         case .signedOut:
             clearModels(for: kind)
             states[kind] = .disconnected
             onProviderUnavailable?(kind, false)
+            return false
         case .signedIn:
             switch status.connectionState {
             case .disconnected:
                 states[kind] = .signedInDisconnected
                 onProviderUnavailable?(kind, true)
+                return false
             case .authorizing:
                 states[kind] = .statusUnknown
                 onProviderUnavailable?(kind, true)
+                return false
             case .authenticated:
                 states[kind] = .signedInUnverified
                 onProviderUnavailable?(kind, true)
+                return false
             case .connected:
                 states[kind] = .connected
-                onProviderConnected?()
+                return true
             }
         }
     }

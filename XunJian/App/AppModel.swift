@@ -104,6 +104,9 @@ final class AppModel: ObservableObject {
     private var selectionAnchorID: String?
     /// The file the inspector and keyboard treat as current.
     private var selectionLeadID: String?
+    /// Preserves unloaded IDs selected by a paginated ⌘A until the user
+    /// changes the query/filters or makes another explicit selection.
+    private var paginatedSelectionContext: PaginatedSelectAllContext?
     private var fileSelection: FileSelection {
         FileSelection(
             ids: selectedFileIDs,
@@ -297,19 +300,11 @@ final class AppModel: ObservableObject {
             let context = paginatedSelectAllContext
             Task { [weak self] in
                 guard let self else { return }
-                guard await self.index.loadAllSearchResults(query: context.query),
+                guard let ids = await self.allFilteredSearchResultIDs(context: context),
                       self.paginatedSelectAllContext == context,
                       self.hasPublishedCommandTarget,
                       self.commandTargetUsesGlobalSearchPagination else { return }
-                let files = await self.filesMatchingCurrentBrowseFilters()
-                guard self.paginatedSelectAllContext == context,
-                      self.hasPublishedCommandTarget,
-                      self.commandTargetUsesGlobalSearchPagination else { return }
-                self.updateCommandTargetFiles(
-                    files,
-                    usesGlobalSearchPagination: true
-                )
-                self.applySelectAll(to: files)
+                self.applySelectAll(toIDs: ids, paginatedContext: context)
             }
             return
         }
@@ -324,13 +319,6 @@ final class AppModel: ObservableObject {
             minimumDate: filterMinDate,
             aiSearchRevision: aiSearchRevision
         )
-    }
-
-    func loadAllSearchResults() async -> Bool {
-        let query = searchText
-        guard await index.loadAllSearchResults(query: query) else { return false }
-        return searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-            == query.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     func searchFiles(matching query: String, limit: Int) async throws -> [IndexedFile] {
@@ -354,30 +342,51 @@ final class AppModel: ObservableObject {
     }
 
     private func applySelectAll(to files: [IndexedFile]) {
-        var next = FileSelection()
-        next.selectAll(orderedIDs: files.map(\.id))
-        applyFileSelection(next)
+        applySelectAll(toIDs: files.map(\.id), paginatedContext: nil)
     }
 
-    func filesMatchingCurrentBrowseFilters() async -> [IndexedFile] {
-        let minSize = Int64(filterMinSizeMB * 1_024 * 1_024)
-        let minDate = filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil
-        let kind = selectedKind
-        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        let indexedFiles = files
-        let aiResults = aiSearchResults
-        let localResults = searchResults
-        return await Task.detached(priority: .userInitiated) {
-            Self.filesMatchingBrowseFilters(
-                indexedFiles: indexedFiles,
-                aiSearchResults: aiResults,
-                searchResults: localResults,
-                query: query,
-                kind: kind,
-                minimumSize: minSize,
-                minimumDate: minDate
+    private func applySelectAll(
+        toIDs orderedIDs: [String],
+        paginatedContext: PaginatedSelectAllContext?
+    ) {
+        var next = FileSelection()
+        next.selectAll(orderedIDs: orderedIDs)
+        applyFileSelection(next)
+        self.paginatedSelectionContext = paginatedContext
+    }
+
+    func allFilteredSearchResultIDs() async -> [String]? {
+        await allFilteredSearchResultIDs(context: paginatedSelectAllContext)
+    }
+
+    private func allFilteredSearchResultIDs(
+        context: PaginatedSelectAllContext
+    ) async -> [String]? {
+        do {
+            var ids = try await index.searchFileIDs(
+                matching: context.query,
+                kind: context.kind,
+                minimumSize: Int64(context.minimumSizeMB * 1_024 * 1_024),
+                minimumDate: context.minimumDate > 0
+                    ? Date(timeIntervalSince1970: context.minimumDate)
+                    : nil
             )
-        }.value
+            try Task.checkCancellation()
+            if let aiSearchResults {
+                let allowedIDs = Set(aiSearchResults.map(\.id))
+                let candidateIDs = ids
+                ids = await Task.detached(priority: .userInitiated) { @Sendable in
+                    candidateIDs.filter { allowedIDs.contains($0) }
+                }.value
+            }
+            guard paginatedSelectAllContext == context else { return nil }
+            return ids
+        } catch is CancellationError {
+            return nil
+        } catch {
+            reportError(Self.message(for: error))
+            return nil
+        }
     }
 
     nonisolated static func filesMatchingBrowseFilters(
@@ -429,6 +438,14 @@ final class AppModel: ObservableObject {
                 orderByID: orderByID
             )
         }.value
+    }
+
+    func fileExportPage(for orderedIDs: [String]) async -> FileExportPage {
+        let files = index.files(orderedIDs: orderedIDs)
+        return FileExportPage(
+            files: files,
+            categoryNames: await categoryNamesForExport(files)
+        )
     }
 
     /// Click in a custom list or grid. Reads ⌘/⇧ from the current event so
@@ -506,6 +523,7 @@ final class AppModel: ObservableObject {
     }
 
     private func applyFileSelection(_ next: FileSelection) {
+        paginatedSelectionContext = nil
         selectionLeadID = next.leadID
         selectionAnchorID = next.anchorID
         selectedFileIDs = next.ids
@@ -906,6 +924,9 @@ final class AppModel: ObservableObject {
     /// Connects the OAuth coordinator to the AI layer. Settings observes
     /// `oauth` directly, so polling does not redraw the rest of the window.
     private func wireOAuthCoordinator() {
+        oauth.shouldLoadModelsOnConnection = { [weak self] kind in
+            self?.ai.needsOAuthModelCatalog(for: kind) == true
+        }
         oauth.onProviderUnavailable = { [weak self] kind, preservingPreference in
             self?.ai.clearActiveOAuthProviderIfNeeded(
                 kind,
@@ -944,8 +965,14 @@ final class AppModel: ObservableObject {
             guard let self else { return }
             // Keep selection and AI results consistent with the new file set.
             if !selectedFileIDs.isEmpty {
-                clearSelectionIfHidden(from: index.allFileIDs)
+                let remaining = selectedFileIDs.intersection(index.allFileIDs)
+                if remaining.count != selectedFileIDs.count {
+                    selectedFileIDs = remaining
+                }
             }
+            // Metadata updates can change size without changing the selected
+            // IDs, so the inspector summary must follow every index publish.
+            selectedFileTotalSize = index.totalSize(of: selectedFileIDs)
             if let aiSearchResults {
                 let resultIDs = Set(aiSearchResults.map(\.id))
                 self.aiSearchResults = self.index.files(ids: resultIDs)
@@ -1092,6 +1119,10 @@ final class AppModel: ObservableObject {
         index.refreshAllSources()
     }
 
+    func applyScanExclusions() {
+        index.applyScanExclusions()
+    }
+
     func setIncludesHiddenFiles(_ includesHiddenFiles: Bool) {
         index.setIncludesHiddenFiles(includesHiddenFiles)
     }
@@ -1151,8 +1182,8 @@ final class AppModel: ObservableObject {
                 isCancelled: { Task.isCancelled }
             )
         }
-        return try await withTaskCancellationHandler {
-            try await extraction.value
+        return await withTaskCancellationHandler {
+            await extraction.value
         } onCancel: {
             extraction.cancel()
         }
@@ -1549,6 +1580,11 @@ final class AppModel: ObservableObject {
     /// Checking only the first selection left stale IDs in the set, so the
     /// batch bar could claim "3 selected" while showing two rows.
     func clearSelectionIfHidden(from visibleFileIDs: Set<String>) {
+        if commandTargetUsesGlobalSearchPagination,
+           paginatedSelectionContext == paginatedSelectAllContext {
+            return
+        }
+        paginatedSelectionContext = nil
         let remaining = selectedFileIDs.intersection(visibleFileIDs)
         guard remaining.count != selectedFileIDs.count else { return }
         selectedFileIDs = remaining
@@ -1558,6 +1594,11 @@ final class AppModel: ObservableObject {
     /// avoids allocating a second 100k-entry Set only to retain the usually
     /// one- or two-item selection.
     func clearSelectionIfHidden(using visibleFileIndex: [String: Int]) {
+        if commandTargetUsesGlobalSearchPagination,
+           paginatedSelectionContext == paginatedSelectAllContext {
+            return
+        }
+        paginatedSelectionContext = nil
         let remaining = selectedFileIDs.filter { visibleFileIndex[$0] != nil }
         guard remaining.count != selectedFileIDs.count else { return }
         selectedFileIDs = Set(remaining)

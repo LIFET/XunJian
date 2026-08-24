@@ -1,10 +1,57 @@
+import Darwin
 import Foundation
 
-/// User-configurable folder names skipped during scanning.
+/// The user's account home, not the App Sandbox container returned by
+/// `FileManager.homeDirectoryForCurrentUser` inside a sandboxed process.
+enum SystemUserHomeDirectory {
+    static var current: URL {
+        resolved(
+            accountHomePath: accountHomePath(),
+            fallback: FileManager.default.homeDirectoryForCurrentUser
+        )
+    }
+
+    static func resolved(accountHomePath: String?, fallback: URL) -> URL {
+        guard let accountHomePath,
+              accountHomePath.hasPrefix("/"),
+              accountHomePath != "/" else {
+            return fallback.resolvingSymlinksInPath().standardizedFileURL
+        }
+        return URL(fileURLWithPath: accountHomePath, isDirectory: true)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+    }
+
+    private static func accountHomePath() -> String? {
+        var record = passwd()
+        var result: UnsafeMutablePointer<passwd>?
+        let recommendedCapacity = sysconf(_SC_GETPW_R_SIZE_MAX)
+        let capacity = recommendedCapacity > 0
+            ? min(Int(recommendedCapacity), 1_048_576)
+            : 16_384
+        var buffer = [CChar](repeating: 0, count: capacity)
+        let lookupResult = buffer.withUnsafeMutableBufferPointer { pointer in
+            getpwuid_r(
+                getuid(),
+                &record,
+                pointer.baseAddress,
+                pointer.count,
+                &result
+            )
+        }
+        guard lookupResult == 0,
+              result != nil,
+              let directory = record.pw_dir else { return nil }
+        return String(cString: directory)
+    }
+}
+
+/// User-configurable file or folder names skipped during scanning.
 ///
 /// The built-in list covers build output and caches that would otherwise
 /// dominate an index. Users can add project-specific names (`vendor`,
-/// `Pods`, …) without the app shipping an ever-growing hard-coded list.
+/// `Pods`, `index.sqlite3`, …) without the app shipping an ever-growing
+/// hard-coded list.
 enum ScanExclusions {
     static let storageKey = "scan.additionalExcludedNames"
 
@@ -21,6 +68,16 @@ enum ScanExclusions {
     /// explicit AI/text reads.
     private static let sensitiveComponentSequences: [[String]] = [
         [".ssh"], [".gnupg"], [".aws"], [".azure"], [".kube"],
+        [".docker"],
+        [".config", "gcloud"],
+        [".config", "gh"],
+        [".config", "glab"],
+        [".config", "glab-cli"],
+        [".config", "op"],
+        [".config", "1password"],
+        [".config", "rclone"],
+        [".password-store"],
+        [".local", "share", "keyrings"],
         ["library", "keychains"],
         ["library", "cookies"],
         ["library", "mail"],
@@ -67,17 +124,22 @@ enum ScanExclusions {
     /// iCloud Drive is added explicitly because it lives below Library.
     static func wholeMacScopes(
         rootURL: URL,
-        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        homeDirectory: URL = SystemUserHomeDirectory.current,
+        includesHiddenFiles: Bool = false,
+        excludedItemNames: Set<String> = [],
         fileManager: FileManager = .default
     ) throws -> [URL] {
         let canonicalRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL
         let canonicalHome = homeDirectory.resolvingSymlinksInPath().standardizedFileURL
         guard isSameOrDescendant(canonicalHome, of: canonicalRoot) else { return [] }
 
+        let directoryOptions: FileManager.DirectoryEnumerationOptions = includesHiddenFiles
+            ? []
+            : [.skipsHiddenFiles]
         var candidates = try fileManager.contentsOfDirectory(
             at: canonicalHome,
             includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-            options: [.skipsHiddenFiles]
+            options: directoryOptions
         ).filter { $0.lastPathComponent.caseInsensitiveCompare("Library") != .orderedSame }
 
         candidates.append(
@@ -91,12 +153,54 @@ enum ScanExclusions {
         var seen = Set<String>()
         return candidates.compactMap { candidate in
             let canonical = candidate.resolvingSymlinksInPath().standardizedFileURL
-            guard !isSensitivePath(canonical),
+            let itemName = canonical.lastPathComponent.lowercased()
+            guard !builtIn.contains(itemName),
+                  !excludedItemNames.contains(itemName),
+                  !isSensitivePath(canonical),
                   seen.insert(canonical.path).inserted,
                   let values = try? canonical.resourceValues(
                     forKeys: [.isDirectoryKey, .isSymbolicLinkKey]
                   ),
                   values.isDirectory == true,
+                  values.isSymbolicLink != true else {
+                return nil
+            }
+            return canonical
+        }.sorted { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+    }
+
+    /// Visible regular files stored directly in the current user's home.
+    /// They cannot be represented by the recursive directory scopes above:
+    /// scanning the home itself would also enter Library and duplicate every
+    /// top-level directory scan.
+    static func wholeMacTopLevelFiles(
+        rootURL: URL,
+        homeDirectory: URL = SystemUserHomeDirectory.current,
+        includesHiddenFiles: Bool = false,
+        excludedItemNames: Set<String> = [],
+        fileManager: FileManager = .default
+    ) throws -> [URL] {
+        let canonicalRoot = rootURL.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalHome = homeDirectory.resolvingSymlinksInPath().standardizedFileURL
+        guard isSameOrDescendant(canonicalHome, of: canonicalRoot) else { return [] }
+
+        let options: FileManager.DirectoryEnumerationOptions = includesHiddenFiles
+            ? []
+            : [.skipsHiddenFiles]
+        return try fileManager.contentsOfDirectory(
+            at: canonicalHome,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: options
+        ).compactMap { candidate in
+            let canonical = candidate.resolvingSymlinksInPath().standardizedFileURL
+            let itemName = canonical.lastPathComponent.lowercased()
+            guard !builtIn.contains(itemName),
+                  !excludedItemNames.contains(itemName),
+                  !isSensitivePath(canonical),
+                  let values = try? canonical.resourceValues(
+                    forKeys: [.isRegularFileKey, .isSymbolicLinkKey]
+                  ),
+                  values.isRegularFile == true,
                   values.isSymbolicLink != true else {
                 return nil
             }

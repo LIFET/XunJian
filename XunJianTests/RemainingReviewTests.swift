@@ -204,6 +204,99 @@ final class RemainingReviewTests: XCTestCase {
         )
     }
 
+    @MainActor
+    func testPagedCSVExportResolvesOnlyBoundedMetadataBatches() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-paged-export-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("files.csv")
+        let files = (0..<1_001).map { index in
+            makeFile(
+                name: "file-\(index).pdf",
+                path: "/docs/file-\(index).pdf",
+                size: Int64(index)
+            )
+        }
+        let filesByID = Dictionary(uniqueKeysWithValues: files.map { ($0.id, $0) })
+        let orderedIDs = files.map(\.id)
+        let probe = ExportPageProbe()
+
+        try await FileListExport.writePaged(
+            orderedIDs: orderedIDs,
+            format: .csv,
+            to: destination
+        ) { ids in
+            await probe.record(pageSize: ids.count)
+            return FileExportPage(
+                files: ids.compactMap { filesByID[$0] },
+                categoryNames: [:]
+            )
+        }
+
+        let exported = try String(contentsOf: destination, encoding: .utf8)
+        let pageSizes = await probe.pageSizes()
+        XCTAssertEqual(exported.split(separator: "\n").count, files.count + 1)
+        XCTAssertEqual(pageSizes, [500, 500, 1])
+    }
+
+    func testUnboundedSearchIDsApplySourceHiddenAndMetadataFilters() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("xunjian-search-ids-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let database = try FileIndexDatabase(
+            databaseURL: root.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "Documents", path: root.path, bookmark: Data([1])
+        )
+        let otherSource = try await database.upsertSource(
+            displayName: "Other", path: "/other", bookmark: Data([2])
+        )
+        let cutoff = Date(timeIntervalSince1970: 1_000)
+        let matching = IndexedFile(
+            id: "matching", sourceID: source.id, name: "current.txt",
+            path: root.appendingPathComponent("current.txt").path,
+            fileExtension: "txt", kind: .document, size: 2_048,
+            createdAt: nil, modifiedAt: cutoff.addingTimeInterval(1), indexedAt: Date(),
+            textContent: "共同检索词"
+        )
+        let hidden = IndexedFile(
+            id: "hidden", sourceID: source.id, name: ".secret.txt",
+            path: root.appendingPathComponent(".secret.txt").path,
+            fileExtension: "txt", kind: .document, size: 2_048,
+            createdAt: nil, modifiedAt: cutoff.addingTimeInterval(1), indexedAt: Date(),
+            textContent: "共同检索词"
+        )
+        let wrongKind = IndexedFile(
+            id: "image", sourceID: source.id, name: "current.png",
+            path: root.appendingPathComponent("current.png").path,
+            fileExtension: "png", kind: .image, size: 2_048,
+            createdAt: nil, modifiedAt: cutoff.addingTimeInterval(1), indexedAt: Date(),
+            textContent: "共同检索词"
+        )
+        let other = IndexedFile(
+            id: "other", sourceID: otherSource.id, name: "other.txt", path: "/other/other.txt",
+            fileExtension: "txt", kind: .document, size: 2_048,
+            createdAt: nil, modifiedAt: cutoff.addingTimeInterval(1), indexedAt: Date(),
+            textContent: "共同检索词"
+        )
+        try await database.replaceFiles(for: source.id, with: [matching, hidden, wrongKind])
+        try await database.replaceFiles(for: otherSource.id, with: [other])
+
+        let ids = try await database.searchFileIDs(
+            matching: "共同检索词",
+            includesHiddenFiles: false,
+            sourceIDs: [source.id],
+            kind: .document,
+            minimumSize: 1_024,
+            minimumDate: cutoff
+        )
+
+        XCTAssertEqual(ids, [matching.id])
+    }
+
     func testStorageInsightsKeepsOnlyCorrectTopTenFiles() {
         let sourceID = UUID()
         let files = (0..<25).map { index in
@@ -825,5 +918,17 @@ private actor TextExtractionBatchRecorder {
 
     func snapshot() -> (sizes: [Int], fileIDs: [String]) {
         (sizes, fileIDs)
+    }
+}
+
+private actor ExportPageProbe {
+    private var sizes: [Int] = []
+
+    func record(pageSize: Int) {
+        sizes.append(pageSize)
+    }
+
+    func pageSizes() -> [Int] {
+        sizes
     }
 }

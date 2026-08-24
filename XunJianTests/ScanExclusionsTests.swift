@@ -2,6 +2,37 @@ import XCTest
 @testable import XunJian
 
 final class ScanExclusionsTests: XCTestCase {
+    func testSystemHomePrefersAccountDirectoryOverSandboxContainer() {
+        let accountHome = "/Users/owner"
+        let sandboxHome = URL(
+            fileURLWithPath: "/Users/owner/Library/Containers/app/Data",
+            isDirectory: true
+        )
+
+        XCTAssertEqual(
+            SystemUserHomeDirectory.resolved(
+                accountHomePath: accountHome,
+                fallback: sandboxHome
+            ).path,
+            accountHome
+        )
+    }
+
+    func testSystemHomeFallsBackWhenAccountDirectoryIsInvalid() {
+        let sandboxHome = URL(
+            fileURLWithPath: "/Users/owner/Library/Containers/app/Data",
+            isDirectory: true
+        )
+
+        XCTAssertEqual(
+            SystemUserHomeDirectory.resolved(
+                accountHomePath: nil,
+                fallback: sandboxHome
+            ).path,
+            sandboxHome.path
+        )
+    }
+
     func testNormalizationLowercasesTrimsAndDeduplicates() {
         let result = ScanExclusions.normalized([
             "  Vendor  ", "vendor", "PODS", "", "   "
@@ -36,6 +67,35 @@ final class ScanExclusionsTests: XCTestCase {
         defer { defaults.removePersistentDomain(forName: suiteName) }
 
         XCTAssertTrue(ScanExclusions.current(defaults: defaults).isEmpty)
+    }
+
+    func testSensitiveCredentialStoresRemainExcludedWhenHiddenFilesAreVisible() {
+        let sensitivePaths = [
+            "/Users/owner/.docker/config.json",
+            "/Users/owner/.config/gcloud/application_default_credentials.json",
+            "/Users/owner/.config/gh/hosts.yml",
+            "/Users/owner/.config/glab-cli/config.yml",
+            "/Users/owner/.config/op/config",
+            "/Users/owner/.config/1Password/settings.json",
+            "/Users/owner/.config/rclone/rclone.conf",
+            "/Users/owner/.password-store/example.gpg",
+            "/Users/owner/.local/share/keyrings/login.keyring"
+        ]
+
+        for path in sensitivePaths {
+            XCTAssertTrue(
+                ScanExclusions.isSensitivePath(URL(fileURLWithPath: path)),
+                "Expected credential path to be excluded: \(path)"
+            )
+        }
+    }
+
+    func testOrdinaryHiddenConfigurationRemainsEligible() {
+        XCTAssertFalse(
+            ScanExclusions.isSensitivePath(
+                URL(fileURLWithPath: "/Users/owner/.config/nvim/init.lua")
+            )
+        )
     }
 }
 

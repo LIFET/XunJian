@@ -1,4 +1,5 @@
 import CoreServices
+import Darwin
 import Foundation
 
 struct FileSystemChangeKinds: OptionSet, Hashable, Sendable {
@@ -87,6 +88,20 @@ struct FileSystemChangeEvent: Hashable, Sendable {
 struct MonitoredSource: Equatable, Sendable {
     let sourceID: UUID
     let rootPath: String
+    /// Last host-wide FSEvents cursor committed for this exact monitored root.
+    /// A whole-Mac source owns multiple streams, so sharing one cursor across
+    /// roots could let a faster stream hide events from a slower one.
+    let sinceEventID: FSEventStreamEventId?
+
+    init(
+        sourceID: UUID,
+        rootPath: String,
+        sinceEventID: FSEventStreamEventId? = nil
+    ) {
+        self.sourceID = sourceID
+        self.rootPath = rootPath
+        self.sinceEventID = sinceEventID
+    }
 }
 
 struct FileIndexScope: Hashable, Sendable {
@@ -101,16 +116,23 @@ struct IncrementalScanSnapshot: Sendable {
 }
 
 final class FileSystemChangeMonitor: @unchecked Sendable {
-    typealias EventHandler = @Sendable (UUID, [FileSystemChangeEvent]) -> Void
+    typealias EventHandler = @Sendable (
+        UUID,
+        String,
+        [FileSystemChangeEvent],
+        FSEventStreamEventId
+    ) -> Void
     typealias FailureHandler = @Sendable (UUID, String) -> Void
 
     private final class CallbackBox: @unchecked Sendable {
         let sourceID: UUID
+        let rootPath: String
         private let lock = NSLock()
         private var handler: EventHandler
 
-        init(sourceID: UUID, handler: @escaping EventHandler) {
+        init(sourceID: UUID, rootPath: String, handler: @escaping EventHandler) {
             self.sourceID = sourceID
+            self.rootPath = rootPath
             self.handler = handler
         }
 
@@ -120,11 +142,11 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
             lock.unlock()
         }
 
-        func emit(_ events: [FileSystemChangeEvent]) {
+        func emit(_ events: [FileSystemChangeEvent], lastEventID: FSEventStreamEventId) {
             lock.lock()
             let handler = handler
             lock.unlock()
-            handler(sourceID, events)
+            handler(sourceID, rootPath, events, lastEventID)
         }
     }
 
@@ -146,10 +168,15 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
         }
     }
 
+    private struct RegistrationKey: Hashable {
+        let sourceID: UUID
+        let rootPath: String
+    }
+
     private let queue = DispatchQueue(label: "com.xingmingbo.XunJian.fsevents", qos: .utility)
     private let latency: CFTimeInterval
     private let lock = NSLock()
-    private var registrations: [UUID: Registration] = [:]
+    private var registrations: [RegistrationKey: Registration] = [:]
 
     init(latency: CFTimeInterval = 0.25) {
         self.latency = latency
@@ -164,32 +191,46 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
         handler: @escaping EventHandler,
         onFailure: FailureHandler? = nil
     ) {
-        let desired = Dictionary(uniqueKeysWithValues: sources.map { ($0.sourceID, $0) })
+        let desired = Dictionary(
+            sources.map {
+                let rootPath = canonicalPath($0.rootPath)
+                return (
+                    RegistrationKey(sourceID: $0.sourceID, rootPath: rootPath),
+                    MonitoredSource(sourceID: $0.sourceID, rootPath: rootPath)
+                )
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         var registrationsToStop: [Registration] = []
 
         lock.lock()
-        for (sourceID, registration) in Array(registrations) {
-            guard let source = desired[sourceID],
+        for (key, registration) in Array(registrations) {
+            guard let source = desired[key],
                   canonicalPath(source.rootPath) == registration.rootPath else {
-                registrations.removeValue(forKey: sourceID)
+                registrations.removeValue(forKey: key)
                 registrationsToStop.append(registration)
                 continue
             }
             registration.callbackBox.updateHandler(handler)
         }
-        let existingSourceIDs = Set(registrations.keys)
+        let existingKeys = Set(registrations.keys)
         lock.unlock()
 
         registrationsToStop.forEach { $0.stop() }
 
-        for source in sources where !existingSourceIDs.contains(source.sourceID) {
+        for source in sources {
+            let key = RegistrationKey(
+                sourceID: source.sourceID,
+                rootPath: canonicalPath(source.rootPath)
+            )
+            guard !existingKeys.contains(key) else { continue }
             guard let registration = makeRegistration(for: source, handler: handler) else {
                 onFailure?(source.sourceID, source.rootPath)
                 continue
             }
             lock.lock()
-            if registrations[source.sourceID] == nil {
-                registrations[source.sourceID] = registration
+            if registrations[key] == nil {
+                registrations[key] = registration
                 lock.unlock()
             } else {
                 lock.unlock()
@@ -211,7 +252,11 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
         handler: @escaping EventHandler
     ) -> Registration? {
         let rootPath = canonicalPath(source.rootPath)
-        let callbackBox = CallbackBox(sourceID: source.sourceID, handler: handler)
+        let callbackBox = CallbackBox(
+            sourceID: source.sourceID,
+            rootPath: rootPath,
+            handler: handler
+        )
         // The context retains the box on copy and releases it when the
         // stream is torn down, so a callback already executing on the
         // monitor queue can never race the box's deallocation in `stop()`.
@@ -230,14 +275,17 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
             },
             copyDescription: nil
         )
-        let callback: FSEventStreamCallback = { _, info, eventCount, eventPaths, eventFlags, _ in
+        let callback: FSEventStreamCallback = {
+            _, info, eventCount, eventPaths, eventFlags, eventIDs in
             guard let info else { return }
             let callbackBox = Unmanaged<CallbackBox>.fromOpaque(info).takeUnretainedValue()
             let paths = eventPaths.assumingMemoryBound(to: UnsafePointer<CChar>?.self)
             var events: [FileSystemChangeEvent] = []
             events.reserveCapacity(eventCount)
+            var lastEventID: FSEventStreamEventId = 0
 
             for index in 0..<eventCount {
+                lastEventID = max(lastEventID, eventIDs[index])
                 guard let path = paths[index] else { continue }
                 let event = FileSystemChangeEvent(
                     path: String(cString: path),
@@ -248,8 +296,8 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
                 }
             }
 
-            if !events.isEmpty {
-                callbackBox.emit(events)
+            if lastEventID > 0 {
+                callbackBox.emit(events, lastEventID: lastEventID)
             }
         }
         // No `NoDefer`: that flag makes FSEvents deliver events immediately
@@ -260,12 +308,13 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
             kFSEventStreamCreateFlagFileEvents
                 | kFSEventStreamCreateFlagWatchRoot
         )
+        let startEventID = source.sinceEventID ?? FSEventsGetCurrentEventId()
         guard let stream = FSEventStreamCreate(
             nil,
             callback,
             &context,
             [rootPath] as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+            startEventID,
             latency,
             createFlags
         ) else {
@@ -278,11 +327,121 @@ final class FileSystemChangeMonitor: @unchecked Sendable {
             FSEventStreamRelease(stream)
             return nil
         }
+        // Persist the exact boundary used for a source that has never had a
+        // cursor. Future launches can then replay every event after it.
+        if source.sinceEventID == nil {
+            callbackBox.emit([], lastEventID: startEventID)
+        }
 
         return Registration(rootPath: rootPath, stream: stream, callbackBox: callbackBox)
     }
 
     private func canonicalPath(_ path: String) -> String {
+        URL(fileURLWithPath: path)
+            .resolvingSymlinksInPath()
+            .standardizedFileURL
+            .path
+            .precomposedStringWithCanonicalMapping
+    }
+}
+
+/// Shallow vnode monitoring for Whole-Mac topology and home-level files.
+///
+/// FSEvents is recursive, so registering the user's home as a second stream
+/// duplicated every event already delivered by the per-scope streams. A vnode
+/// source reports changes only for the watched directory or file, which is
+/// exactly what is needed to discover new top-level entries, update direct
+/// home files, and notice a late iCloud Drive mount.
+final class DirectoryTopologyMonitor: @unchecked Sendable {
+    typealias EventHandler = @Sendable () -> Void
+    typealias FailureHandler = @Sendable (String) -> Void
+
+    private final class Registration {
+        let path: String
+        let descriptor: Int32
+        let source: DispatchSourceFileSystemObject
+
+        init(path: String, descriptor: Int32, source: DispatchSourceFileSystemObject) {
+            self.path = path
+            self.descriptor = descriptor
+            self.source = source
+        }
+
+        func stop() {
+            source.cancel()
+        }
+    }
+
+    private let queue = DispatchQueue(
+        label: "com.xingmingbo.XunJian.directory-topology",
+        qos: .utility
+    )
+    private let lock = NSLock()
+    private var registrations: [String: Registration] = [:]
+
+    deinit { stopAll() }
+
+    func update(
+        paths: [String],
+        handler: @escaping EventHandler,
+        onFailure: FailureHandler? = nil
+    ) {
+        let desiredPaths = Set(paths.map(Self.canonicalPath))
+        var registrationsToStop: [Registration] = []
+
+        lock.lock()
+        for (path, registration) in Array(registrations) where !desiredPaths.contains(path) {
+            registrations.removeValue(forKey: path)
+            registrationsToStop.append(registration)
+        }
+        let existingPaths = Set(registrations.keys)
+        lock.unlock()
+
+        registrationsToStop.forEach { $0.stop() }
+
+        for path in desiredPaths.subtracting(existingPaths) {
+            guard let registration = makeRegistration(path: path, handler: handler) else {
+                onFailure?(path)
+                continue
+            }
+            lock.lock()
+            if registrations[path] == nil {
+                registrations[path] = registration
+                lock.unlock()
+                registration.source.resume()
+            } else {
+                lock.unlock()
+                registration.source.resume()
+                registration.stop()
+            }
+        }
+    }
+
+    func stopAll() {
+        lock.lock()
+        let registrationsToStop = Array(registrations.values)
+        registrations.removeAll()
+        lock.unlock()
+        registrationsToStop.forEach { $0.stop() }
+    }
+
+    private func makeRegistration(
+        path: String,
+        handler: @escaping EventHandler
+    ) -> Registration? {
+        let descriptor = open(path, O_EVTONLY | O_CLOEXEC)
+        guard descriptor >= 0 else { return nil }
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: descriptor,
+            eventMask: [.write, .extend, .attrib, .delete, .rename, .revoke],
+            queue: queue
+        )
+        source.setEventHandler(handler: handler)
+        source.setCancelHandler { close(descriptor) }
+        return Registration(path: path, descriptor: descriptor, source: source)
+    }
+
+    private static func canonicalPath(_ path: String) -> String {
         URL(fileURLWithPath: path)
             .resolvingSymlinksInPath()
             .standardizedFileURL

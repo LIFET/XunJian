@@ -2369,14 +2369,18 @@ final class OAuthBridgeTests: XCTestCase {
             credentialState: .signedIn,
             connectionState: .connected
         )))
+        await fake.configureModels(.success([
+            OAuthBridgeModel(provider: .codex, id: "gpt-5.6-sol", isDefault: true)
+        ]))
         await model.refreshOAuthStatus(for: .codex)
+        await model.oauth.refreshModels(for: .codex)
         model.setActiveOAuthAIProvider(.codex)
 
         model.searchText = "帮我找出上周修改过的合同"
         try? await Task.sleep(for: .milliseconds(250))
 
         let calls = await fake.calls()
-        XCTAssertEqual(calls, [.status(.codex)])
+        XCTAssertEqual(calls, [.status(.codex), .listModels(.codex)])
     }
 
     @MainActor
@@ -2399,7 +2403,11 @@ final class OAuthBridgeTests: XCTestCase {
             credentialState: .signedOut,
             connectionState: .disconnected
         ))
+        await fake.configureModels(.success([
+            OAuthBridgeModel(provider: .grok, id: "grok-4", isDefault: true)
+        ]))
         await model.refreshOAuthStatus(for: .grok)
+        await model.oauth.refreshModels(for: .grok)
         model.setActiveOAuthAIProvider(.grok)
 
         await model.logoutOAuthProvider(for: .grok)
@@ -2408,7 +2416,7 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertNil(model.activeAIProviderKind)
         XCTAssertNil(model.activeAIAuthenticationMode)
         let calls = await fake.calls()
-        XCTAssertEqual(calls, [.status(.grok), .logout(.grok)])
+        XCTAssertEqual(calls, [.status(.grok), .listModels(.grok), .logout(.grok)])
     }
 
     @MainActor
@@ -2431,8 +2439,12 @@ final class OAuthBridgeTests: XCTestCase {
             credentialState: .signedIn,
             connectionState: .disconnected
         ))
+        await fake.configureModels(.success([
+            OAuthBridgeModel(provider: .grok, id: "grok-4", isDefault: true)
+        ]))
 
         await model.refreshOAuthStatus(for: .grok)
+        await model.oauth.refreshModels(for: .grok)
         model.setActiveOAuthAIProvider(.grok)
         XCTAssertEqual(model.activeAIAuthenticationMode, .oauth)
 
@@ -2515,11 +2527,16 @@ final class OAuthBridgeTests: XCTestCase {
         let store = AIConfigurationStore(defaults: defaults)
         store.activeKind = .codex
         store.activeAuthenticationMode = .oauth
+        store.setOAuthModel("retired-model", for: .codex)
         await fake.enqueueStatus(.success(status(
             provider: .codex,
             credentialState: .signedIn,
             connectionState: .connected
         )))
+        await fake.configureModels(.success([
+            OAuthBridgeModel(provider: .codex, id: "current-default", isDefault: true),
+            OAuthBridgeModel(provider: .codex, id: "current-secondary", isDefault: false)
+        ]))
 
         let model = AppModel(
             oauthBridgeService: fake,
@@ -2531,8 +2548,12 @@ final class OAuthBridgeTests: XCTestCase {
 
         XCTAssertEqual(model.activeAIProviderKind, .codex)
         XCTAssertEqual(model.activeAIAuthenticationMode, .oauth)
+        XCTAssertEqual(model.oauth.selectedModel(for: .codex), "current-default")
+        XCTAssertEqual(store.oauthModel(for: .codex), "current-default")
         XCTAssertEqual(store.activeKind, .codex)
         XCTAssertEqual(store.activeAuthenticationMode, .oauth)
+        let calls = await fake.calls()
+        XCTAssertEqual(calls, [.status(.codex), .listModels(.codex)])
     }
 
     private func status(

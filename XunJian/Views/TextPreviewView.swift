@@ -41,11 +41,18 @@ struct TextPreviewView: View {
     struct TextChunk: Identifiable, Equatable, Sendable {
         let id: Int
         let text: String
+        let startOffset: Int
+    }
+
+    struct MatchSegment: Equatable, Sendable {
+        let chunkID: Int
+        let range: Range<String.Index>
     }
 
     struct Match: Equatable, Sendable {
-        let chunkID: Int
-        let range: Range<String.Index>
+        let segments: [MatchSegment]
+
+        var chunkID: Int { segments.first?.chunkID ?? 0 }
     }
 
     var body: some View {
@@ -255,15 +262,15 @@ struct TextPreviewView: View {
             return result
         }
 
-        let activeChunkID = matches.indices.contains(currentMatch)
-            ? matches[currentMatch].chunkID
+        let activeMatch = matches.indices.contains(currentMatch)
+            ? matches[currentMatch]
             : nil
 
         for range in ranges {
             guard let attributedRange = Range(range, in: result) else { continue }
-            // The chunk holding the current match gets a stronger tint so the
-            // user can tell where "next match" landed.
-            result[attributedRange].backgroundColor = chunk.id == activeChunkID
+            result[attributedRange].backgroundColor = activeMatch.map {
+                Self.isActive(chunkID: chunk.id, range: range, currentMatch: $0)
+            } == true
                 ? Color.accentColor.opacity(0.45)
                 : Color.accentColor.opacity(0.18)
         }
@@ -320,27 +327,60 @@ struct TextPreviewView: View {
         }
     }
 
-    nonisolated private static func matchesWithRanges(
+    nonisolated static func matchesWithRanges(
         for query: String,
         in chunks: [TextChunk]
     ) -> (matches: [Match], rangesByChunk: [Int: [Range<String.Index>]]) {
         var matches: [Match] = []
         var rangesByChunk: [Int: [Range<String.Index>]] = [:]
-        for chunk in chunks {
-            let ranges = Self.ranges(of: query, in: chunk.text)
-            if !ranges.isEmpty {
-                rangesByChunk[chunk.id] = ranges
+        let fullText = chunks.map(\.text).joined()
+        for globalRange in Self.ranges(of: query, in: fullText) {
+            let lowerOffset = fullText.distance(
+                from: fullText.startIndex,
+                to: globalRange.lowerBound
+            )
+            let upperOffset = fullText.distance(
+                from: fullText.startIndex,
+                to: globalRange.upperBound
+            )
+            var segments: [MatchSegment] = []
+            for chunk in chunks {
+                let chunkLower = chunk.startOffset
+                let chunkUpper = chunkLower + chunk.text.count
+                let intersectionLower = max(lowerOffset, chunkLower)
+                let intersectionUpper = min(upperOffset, chunkUpper)
+                guard intersectionLower < intersectionUpper else { continue }
+                let localLower = chunk.text.index(
+                    chunk.text.startIndex,
+                    offsetBy: intersectionLower - chunkLower
+                )
+                let localUpper = chunk.text.index(
+                    chunk.text.startIndex,
+                    offsetBy: intersectionUpper - chunkLower
+                )
+                let localRange = localLower..<localUpper
+                let segment = MatchSegment(chunkID: chunk.id, range: localRange)
+                segments.append(segment)
+                rangesByChunk[chunk.id, default: []].append(localRange)
             }
-            matches.append(contentsOf: ranges.map { Match(chunkID: chunk.id, range: $0) })
+            if !segments.isEmpty {
+                matches.append(Match(segments: segments))
+            }
         }
         return (matches, rangesByChunk)
     }
 
-    nonisolated private static func matches(for query: String, in chunks: [TextChunk]) -> [Match] {
-        chunks.flatMap { chunk in
-            Self.ranges(of: query, in: chunk.text).map {
-                Match(chunkID: chunk.id, range: $0)
-            }
+    nonisolated static func matches(for query: String, in chunks: [TextChunk]) -> [Match] {
+        matchesWithRanges(for: query, in: chunks).matches
+    }
+
+    nonisolated static func isActive(
+        chunkID: Int,
+        range: Range<String.Index>,
+        currentMatch: Match
+    ) -> Bool {
+        currentMatch.segments.contains {
+            $0.chunkID == chunkID && $0.range == range
         }
     }
 
@@ -364,17 +404,23 @@ struct TextPreviewView: View {
         return result
     }
 
-    /// Splits on newlines, then hard-wraps very long lines so a file with no
-    /// line breaks still produces multiple chunks instead of one huge view.
+    /// Exact contiguous slices keep the source reconstructable for matching.
+    /// A query crossing either a newline or a hard chunk boundary remains one
+    /// logical match while each visible slice receives its own highlight.
     nonisolated static func chunk(_ text: String, maximumChunkLength: Int = 2_000) -> [TextChunk] {
+        precondition(maximumChunkLength > 0)
         var result: [TextChunk] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
-            var remainder = Substring(line)
-            repeat {
-                let slice = remainder.prefix(maximumChunkLength)
-                result.append(TextChunk(id: result.count, text: String(slice)))
-                remainder = remainder.dropFirst(slice.count)
-            } while !remainder.isEmpty
+        var remainder = text[...]
+        var startOffset = 0
+        while !remainder.isEmpty {
+            let slice = remainder.prefix(maximumChunkLength)
+            result.append(TextChunk(
+                id: result.count,
+                text: String(slice),
+                startOffset: startOffset
+            ))
+            startOffset += slice.count
+            remainder = remainder.dropFirst(slice.count)
         }
         return result
     }

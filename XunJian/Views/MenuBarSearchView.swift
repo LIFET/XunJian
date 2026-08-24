@@ -155,10 +155,23 @@ struct MenuBarSearchView: View {
                 .contentShape(Rectangle())
                 .help(AppLanguage.joinedForAccessibility([file.name, resultSubtitle(for: file)]))
                 .tag(file.id)
-                .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                    "在寻简中显示“\(file.name)”",
-                    english: "Reveal “\(file.name)” in XunJian"
+                .accessibilityLabel(Text(verbatim: AppLanguage.joinedForAccessibility([
+                    file.name,
+                    resultSubtitle(for: file)
+                ])))
+                .accessibilityHint(Text(verbatim: AppLanguage.localized(
+                    "激活以在寻简中显示",
+                    english: "Activate to show in XunJian"
                 )))
+                .accessibilityAction {
+                    reveal(file)
+                }
+                .accessibilityAction(named: Text(verbatim: AppLanguage.localized(
+                    "打开文件",
+                    english: "Open File"
+                ))) {
+                    open(file)
+                }
                 // A double-click recognizer delays the first click while it
                 // waits for a possible second click. Keep selection immediate;
                 // Return and the footer buttons perform the actions.
@@ -252,7 +265,11 @@ struct MenuBarSearchView: View {
 
     private func openHighlightedFile() {
         guard displayedResults.indices.contains(highlightedIndex) else { return }
-        appModel.open(displayedResults[highlightedIndex])
+        open(displayedResults[highlightedIndex])
+    }
+
+    private func open(_ file: IndexedFile) {
+        appModel.open(file)
         NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
         query = ""
         highlightedIndex = 0

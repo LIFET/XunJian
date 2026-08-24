@@ -488,3 +488,15 @@ enum SearchIndexText {
         }
     }
 }
+
+struct FileSearchQuery: Sendable {
+    let matchExpression: String?
+    let filenameSubstring: String
+
+    init?(_ query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        matchExpression = SearchIndexText.matchExpression(for: trimmed)
+        filenameSubstring = trimmed.lowercased()
+    }
+}

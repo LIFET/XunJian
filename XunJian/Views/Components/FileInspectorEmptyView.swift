@@ -1,7 +1,8 @@
 import SwiftUI
 
 struct FileInspectorView: View {
-    private static let maximumInlinePreviewCharacters = 20_000
+    nonisolated static let maximumInlinePreviewCharacters = 20_000
+    nonisolated static let inlinePreviewFetchCharacterLimit = maximumInlinePreviewCharacters + 1
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
@@ -293,7 +294,9 @@ struct FileInspectorView: View {
                                             }
                                             .buttonStyle(.link)
                                             .controlSize(.small)
-                                        } else if previewText.count > Self.maximumInlinePreviewCharacters {
+                                        } else if Self.shouldOfferFullTextPreview(
+                                            fetchedCharacterCount: previewText.count
+                                        ) {
                                             Button(AppLanguage.localized(
                                                 "打开完整文本预览",
                                                 english: "Open Full Text Preview"
@@ -376,7 +379,7 @@ struct FileInspectorView: View {
             do {
                 let text = try await appModel.fetchInspectorPreviewText(
                     forFileID: file.id,
-                    maximumCharacters: Self.maximumInlinePreviewCharacters
+                    maximumCharacters: Self.inlinePreviewFetchCharacterLimit
                 )
                 guard !Task.isCancelled, self.file?.id == file.id else { return }
                 let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -431,6 +434,12 @@ struct FileInspectorView: View {
             InspectorPreviewCache.invalidateTags(for: file.id)
             finderTagRefreshRevision &+= 1
         }
+    }
+
+    nonisolated static func shouldOfferFullTextPreview(
+        fetchedCharacterCount: Int
+    ) -> Bool {
+        fetchedCharacterCount > maximumInlinePreviewCharacters
     }
 
     private var multiSelectInspector: some View {

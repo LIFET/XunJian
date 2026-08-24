@@ -194,8 +194,12 @@ struct SettingsView: View {
                         ProgressView()
                             .controlSize(.small)
                         Text(verbatim: AppLanguage.localized(
-                            "正在安全清除已保存正文…",
-                            english: "Securely clearing stored file contents…"
+                            indexesFileContents
+                                ? "正在建立正文索引…"
+                                : "正在安全清除已保存正文…",
+                            english: indexesFileContents
+                                ? "Building the file-content index…"
+                                : "Securely clearing stored file contents…"
                         ))
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -430,8 +434,8 @@ struct SettingsView: View {
 
             Section(AppLanguage.localized("扫描排除", english: "Scan Exclusions")) {
                 Text(verbatim: AppLanguage.localized(
-                    "扫描会始终跳过 .git、node_modules、DerivedData、Caches 等构建与缓存目录。可以在这里补充自己的目录名，改动会立即重新扫描。",
-                    english: "Scans always skip build and cache folders such as .git, node_modules, DerivedData, and Caches. Add your own folder names here; changes trigger a rescan."
+                    "扫描会始终跳过 .git、node_modules、DerivedData、Caches 等构建与缓存目录。可以补充需要排除的文件或文件夹名称，改动会立即重新扫描。",
+                    english: "Scans always skip build and cache folders such as .git, node_modules, DerivedData, and Caches. Add file or folder names to exclude; changes trigger a rescan."
                 ))
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -456,7 +460,10 @@ struct SettingsView: View {
 
                 HStack {
                     TextField(
-                        AppLanguage.localized("目录名，例如 vendor", english: "Folder name, e.g. vendor"),
+                        AppLanguage.localized(
+                            "文件或文件夹名，例如 vendor",
+                            english: "File or folder name, e.g. vendor"
+                        ),
                         text: $newExclusion
                     )
                     .onSubmit(addExclusion)
@@ -727,7 +734,7 @@ struct SettingsView: View {
         guard normalized != customExclusions else { return }
         customExclusions = normalized
         ScanExclusions.save(normalized)
-        appModel.refreshAllSources()
+        appModel.applyScanExclusions()
     }
 
     @ViewBuilder

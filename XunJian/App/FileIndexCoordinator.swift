@@ -214,11 +214,11 @@ final class FileIndexCoordinator: ObservableObject {
     private let bookmarkManager = BookmarkManager()
     private let fileOperations = FileOperationService()
     private let fileSystemMonitor = FileSystemChangeMonitor()
+    private let wholeMacTopologyMonitor = DirectoryTopologyMonitor()
 
     private static let searchResultBatchSize = 500
     private static let searchDebounce: Duration = .milliseconds(120)
     private static let fileChangeDebounce: Duration = .milliseconds(350)
-    private static let maximumWholeMacFilesPerScope = 100_000
 
     private var searchTask: Task<Void, Never>?
     private var searchGeneration: UInt64 = 0
@@ -231,13 +231,22 @@ final class FileIndexCoordinator: ObservableObject {
     private var hiddenFilesPreferenceRevision = UUID()
     private var contentIndexPreferenceTask: Task<Void, Never>?
     private var contentIndexPreferenceRevision = UUID()
+    private var exclusionRefreshTask: Task<Void, Never>?
+    private var exclusionRefreshRevision = UUID()
     private var pendingFullTextExtractionSourceIDs: Set<UUID> = []
     private var scanGeneration = UUID()
     private var wholeMacCompletedScopePaths = Set<String>()
+    private var fileSystemEventCursorByMonitorKey: [String: UInt64] = [:]
+    private var lastObservedFileSystemEventCursorByMonitorKey: [String: UInt64] = [:]
+    private var blockedFileSystemEventCursorSourceIDs = Set<UUID>()
+    private var fileSystemBaselineSourceIDs = Set<UUID>()
+    private var hasScheduledInitialCatchUp = false
+    private var cleanedWholeMacSourceIDs = Set<UUID>()
     private var scanningSourceIDs = Set<UUID>()
     private var currentScanningSourceID: UUID?
     private var failedScanningSourceIDs = Set<UUID>()
     private var fileChangeTasks: [UUID: Task<Void, Never>] = [:]
+    private var wholeMacTopologyTask: Task<Void, Never>?
     private var pendingFileChanges: [UUID: Set<FileSystemChangeEvent>] = [:]
     private var pendingFullRescanSourceIDs = Set<UUID>()
     private var sourceEnabledTasks: [UUID: Task<Void, Never>] = [:]
@@ -265,13 +274,24 @@ final class FileIndexCoordinator: ObservableObject {
             wholeMacSourceID = UserDefaults.standard
                 .string(forKey: FileIndexPreferences.wholeMacSourceIDKey)
                 .flatMap(UUID.init(uuidString:))
-            wholeMacCompletedScopePaths = Set(
+            let storedCursors = UserDefaults.standard.dictionary(
+                forKey: FileIndexPreferences.fileSystemEventCursorsKey
+            ) as? [String: String] ?? [:]
+            fileSystemEventCursorByMonitorKey = storedCursors.compactMapValues(UInt64.init)
+            fileSystemBaselineSourceIDs = Set(
                 UserDefaults.standard.stringArray(
-                    forKey: FileIndexPreferences.wholeMacCompletedScopePathsKey
-                ) ?? []
+                    forKey: FileIndexPreferences.fileSystemBaselineSourceIDsKey
+                )?.compactMap(UUID.init(uuidString:)) ?? []
             )
-            isWholeMacScanPaused = scanScopeMode == .wholeMac
-                && !wholeMacCompletedScopePaths.isEmpty
+
+            // A completed-scope checkpoint is only safe inside the process
+            // that observed all concurrent FSEvents. Across relaunches we
+            // restart the pass rather than silently skipping an old scope.
+            wholeMacCompletedScopePaths.removeAll()
+            isWholeMacScanPaused = false
+            UserDefaults.standard.removeObject(
+                forKey: FileIndexPreferences.wholeMacCompletedScopePathsKey
+            )
         }
         openDatabase()
         configureFileSystemMonitoring()
@@ -281,6 +301,7 @@ final class FileIndexCoordinator: ObservableObject {
         Task { [weak self] in
             guard let self, await self.ensureDisabledContentIsPurged() else { return }
             await self.reloadIndex()
+            self.scheduleInitialCatchUpScansIfNeeded()
         }
     }
 
@@ -395,6 +416,10 @@ final class FileIndexCoordinator: ObservableObject {
             let capturedPublicationGeneration = indexPublicationGeneration
             do {
                 let storedSources = try await database.fetchSources()
+                try await removeOutOfScopeWholeMacFilesIfNeeded(
+                    storedSources: storedSources,
+                    database: database
+                )
                 let indexedFiles = try await database.fetchFiles()
                 let requestedScanScopeMode = scanScopeMode
                 let requestedWholeMacSourceID = wholeMacSourceID
@@ -480,6 +505,88 @@ final class FileIndexCoordinator: ObservableObject {
                 return
             }
         }
+    }
+
+    private func removeOutOfScopeWholeMacFilesIfNeeded(
+        storedSources: [FileSource],
+        database: FileIndexDatabase
+    ) async throws {
+        guard scanScopeMode == .wholeMac,
+              let wholeMacSourceID,
+              !cleanedWholeMacSourceIDs.contains(wholeMacSourceID),
+              let source = storedSources.first(where: {
+                  $0.id == wholeMacSourceID && $0.enabled
+              }),
+              let restored = try? bookmarkManager.resolveBookmark(source.bookmark) else {
+            return
+        }
+
+        let didAccess = restored.url.startAccessingSecurityScopedResource()
+        guard didAccess else { return }
+        defer { restored.url.stopAccessingSecurityScopedResource() }
+
+        _ = try await Self.removeFilesOutsideWholeMacScopes(
+            from: database,
+            sourceID: source.id,
+            rootURL: restored.url,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: Set(ScanExclusions.current())
+        )
+        cleanedWholeMacSourceIDs.insert(source.id)
+    }
+
+    @discardableResult
+    static func removeFilesOutsideWholeMacScopes(
+        from database: FileIndexDatabase,
+        sourceID: UUID,
+        rootURL: URL,
+        homeDirectory: URL = SystemUserHomeDirectory.current,
+        includesHiddenFiles: Bool = false,
+        excludedItemNames: Set<String> = [],
+        fileManager: FileManager = .default
+    ) async throws -> Set<String> {
+        let effectiveExcludedNames = ScanExclusions.builtIn.union(excludedItemNames)
+        let scopes = try ScanExclusions.wholeMacScopes(
+            rootURL: rootURL,
+            homeDirectory: homeDirectory,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: effectiveExcludedNames,
+            fileManager: fileManager
+        )
+        let topLevelFiles = try ScanExclusions.wholeMacTopLevelFiles(
+            rootURL: rootURL,
+            homeDirectory: homeDirectory,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: effectiveExcludedNames,
+            fileManager: fileManager
+        )
+        let allowedPaths = (scopes + topLevelFiles).map(FilePathCanonicalizer.path)
+        guard !allowedPaths.isEmpty else { return [] }
+        return try await database.removeFiles(
+            for: sourceID,
+            outsideScopePaths: allowedPaths,
+            excludingItemNames: effectiveExcludedNames
+        )
+    }
+
+    @discardableResult
+    nonisolated static func removeExcludedFilesFromAllSources(
+        database: FileIndexDatabase,
+        sources: [FileSource],
+        excludedItemNames: Set<String>
+    ) async throws -> Set<String> {
+        let effectiveExcludedNames = ScanExclusions.builtIn.union(excludedItemNames)
+        var removedFileIDs = Set<String>()
+        for source in sources {
+            try Task.checkCancellation()
+            let removed = try await database.removeFiles(
+                for: source.id,
+                outsideScopePaths: [FilePathCanonicalizer.path(source.path)],
+                excludingItemNames: effectiveExcludedNames
+            )
+            removedFileIDs.formUnion(removed)
+        }
+        return removedFileIDs
     }
 
     /// Canonical in-memory order: modified_at DESC (NULLs last), then name
@@ -1006,6 +1113,10 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    func files(orderedIDs: [String]) -> [IndexedFile] {
+        orderedIDs.compactMap { filesByID[$0] }
+    }
+
     func totalSize(of ids: Set<String>) -> Int64 {
         ids.reduce(into: Int64(0)) { total, id in
             total += filesByID[id]?.size ?? 0
@@ -1258,46 +1369,6 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
-    func loadAllSearchResults(query: String) async -> Bool {
-        searchTask?.cancel()
-        searchGeneration &+= 1
-        let requestedGeneration = searchGeneration
-        let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty, query == activeSearchQuery, let database else { return false }
-        let capturedDatabaseGeneration = databaseGeneration
-        let activeSourceIDs = Set(activeSources.map(\.id))
-        let requestedLimit = max(searchResultTotalCount ?? 0, searchResults?.count ?? 0, 1)
-        setSearchProgress(true)
-        defer {
-            if searchGeneration == requestedGeneration,
-               databaseGeneration == capturedDatabaseGeneration,
-               activeSearchQuery == query {
-                setSearchProgress(false)
-            }
-        }
-        do {
-            let page = try await database.searchFilesPage(
-                matching: query,
-                limit: requestedLimit,
-                includesHiddenFiles: includesHiddenFiles,
-                sourceIDs: activeSourceIDs
-            )
-            guard searchGeneration == requestedGeneration,
-                  databaseGeneration == capturedDatabaseGeneration,
-                  activeSearchQuery == query else { return false }
-            publishSearchResults(page.files, totalCount: page.totalCount)
-            return true
-        } catch is CancellationError {
-            return false
-        } catch {
-            guard databaseGeneration == capturedDatabaseGeneration,
-                  searchGeneration == requestedGeneration,
-                  activeSearchQuery == query else { return false }
-            onError?(Self.message(for: error))
-            return false
-        }
-    }
-
     static func retainedSearchResults(
         forQuery query: String,
         previous: [IndexedFile]?
@@ -1340,6 +1411,29 @@ final class FileIndexCoordinator: ObservableObject {
             limit: limit,
             sourceIDs: Set(activeSources.map(\.id))
         )
+    }
+
+    func searchFileIDs(
+        matching query: String,
+        kind: FileKind?,
+        minimumSize: Int64,
+        minimumDate: Date?
+    ) async throws -> [String] {
+        guard let database else { throw FileIndexError.databaseUnavailable }
+        let capturedDatabaseGeneration = databaseGeneration
+        let sourceIDs = Set(activeSources.map(\.id))
+        let result = try await database.searchFileIDs(
+            matching: query,
+            includesHiddenFiles: includesHiddenFiles,
+            sourceIDs: sourceIDs,
+            kind: kind,
+            minimumSize: minimumSize,
+            minimumDate: minimumDate
+        )
+        guard capturedDatabaseGeneration == databaseGeneration else {
+            throw CancellationError()
+        }
+        return result
     }
 
     // MARK: - Sources
@@ -1517,6 +1611,11 @@ final class FileIndexCoordinator: ObservableObject {
         }
         fileChangeTasks.removeValue(forKey: source.id)?.cancel()
         pendingFileChanges.removeValue(forKey: source.id)
+        removeFileSystemEventCursors(for: source.id)
+        blockedFileSystemEventCursorSourceIDs.remove(source.id)
+        fileSystemBaselineSourceIDs.remove(source.id)
+        persistFileSystemEventCursors()
+        persistFileSystemBaselineSourceIDs()
 
         Task { [weak self] in
             guard let self, let database = self.database else { return }
@@ -1555,6 +1654,9 @@ final class FileIndexCoordinator: ObservableObject {
 
     private func startScan(_ source: FileSource) {
         cancelScan(startsPendingFullRescan: false)
+        fileSystemBaselineSourceIDs.remove(source.id)
+        persistFileSystemBaselineSourceIDs()
+        blockedFileSystemEventCursorSourceIDs.insert(source.id)
         let generation = UUID()
         scanGeneration = generation
         scanningSourceIDs = [source.id]
@@ -1573,13 +1675,21 @@ final class FileIndexCoordinator: ObservableObject {
     func refreshAllSources() {
         let sourcesToScan = activeSources.filter(Self.isSourceEligibleForScanning)
         guard !sourcesToScan.isEmpty else { return }
+        let sourceIDsToScan = Set(sourcesToScan.map(\.id))
+        fileSystemBaselineSourceIDs.subtract(sourceIDsToScan)
+        persistFileSystemBaselineSourceIDs()
+        blockedFileSystemEventCursorSourceIDs.formUnion(sourceIDsToScan)
+        // Hidden-file and custom-exclusion changes alter the bounded roots
+        // used by whole-Mac monitoring. Refresh those registrations before
+        // scanning so newly eligible roots continue receiving live updates.
+        configureFileSystemMonitoring()
         if scanScopeMode == .wholeMac {
             resetWholeMacScanCheckpoint()
         }
         cancelScan(startsPendingFullRescan: false)
         let generation = UUID()
         scanGeneration = generation
-        scanningSourceIDs = Set(sourcesToScan.map(\.id))
+        scanningSourceIDs = sourceIDsToScan
         failedScanningSourceIDs.removeAll()
         isScanning = true
         scanProgressStore.update(scopedProgress(
@@ -1600,6 +1710,47 @@ final class FileIndexCoordinator: ObservableObject {
                 )
             }
             self.finishScan(generation: generation)
+        }
+    }
+
+    func applyScanExclusions() {
+        exclusionRefreshTask?.cancel()
+        let revision = UUID()
+        exclusionRefreshRevision = revision
+        exclusionRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            await self.syncScanExclusions()
+            guard !Task.isCancelled,
+                  self.exclusionRefreshRevision == revision else { return }
+            guard let database = self.database else {
+                self.exclusionRefreshTask = nil
+                self.reportDatabaseUnavailable()
+                return
+            }
+            do {
+                let removedFileIDs = try await Self.removeExcludedFilesFromAllSources(
+                    database: database,
+                    sources: self.sources,
+                    excludedItemNames: Set(ScanExclusions.current())
+                )
+                try Task.checkCancellation()
+                guard self.exclusionRefreshRevision == revision else { return }
+                if !removedFileIDs.isEmpty {
+                    await self.refreshFiles(
+                        upsertedFileIDs: [],
+                        removedFileIDs: removedFileIDs
+                    )
+                }
+                guard self.exclusionRefreshRevision == revision else { return }
+                self.exclusionRefreshTask = nil
+                self.refreshAllSources()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self.exclusionRefreshRevision == revision else { return }
+                self.exclusionRefreshTask = nil
+                self.onError?(Self.message(for: error))
+            }
         }
     }
 
@@ -2531,7 +2682,11 @@ final class FileIndexCoordinator: ObservableObject {
         guard let database else { return reportDatabaseUnavailable() }
 
         do {
-            try Self.validateSourceCandidate(url, against: sources)
+            try Self.validateSelectedFolderCandidate(
+                url,
+                against: sources,
+                wholeMacSourceID: wholeMacSourceID
+            )
             let bookmark = try bookmarkManager.createBookmark(for: url)
             let source = try await database.upsertSource(
                 displayName: url.lastPathComponent,
@@ -2592,6 +2747,19 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
+    static func validateSelectedFolderCandidate(
+        _ candidateURL: URL,
+        against existingSources: [FileSource],
+        wholeMacSourceID: UUID?,
+        excluding sourceID: UUID? = nil
+    ) throws {
+        try validateSourceCandidate(
+            candidateURL,
+            against: existingSources.filter { $0.id != wholeMacSourceID },
+            excluding: sourceID
+        )
+    }
+
     private static func canonicalSourceURL(_ url: URL) -> URL {
         let path = url.resolvingSymlinksInPath()
             .standardizedFileURL.path
@@ -2614,11 +2782,14 @@ final class FileIndexCoordinator: ObservableObject {
         guard let database else { return reportDatabaseUnavailable() }
 
         do {
-            try Self.validateSourceCandidate(
-                url,
-                against: sources,
-                excluding: source.id
-            )
+            if source.id != wholeMacSourceID {
+                try Self.validateSelectedFolderCandidate(
+                    url,
+                    against: sources,
+                    wholeMacSourceID: wholeMacSourceID,
+                    excluding: source.id
+                )
+            }
             let selectedPath = Self.canonicalSourceURL(url).path
             let bookmark = try bookmarkManager.createBookmark(for: url)
             try await database.updateBookmark(
@@ -2626,6 +2797,10 @@ final class FileIndexCoordinator: ObservableObject {
                 bookmark: bookmark,
                 path: selectedPath
             )
+            removeFileSystemEventCursors(for: source.id)
+            fileSystemBaselineSourceIDs.remove(source.id)
+            persistFileSystemEventCursors()
+            persistFileSystemBaselineSourceIDs()
             await refreshSources()
             if let refreshedSource = sources.first(where: { $0.id == source.id }) {
                 scanSource(refreshedSource)
@@ -2864,11 +3039,11 @@ final class FileIndexCoordinator: ObservableObject {
                     database: database,
                     generation: generation
                 )
+                await database.finishScanMaintenance()
                 if !keepsScanningState { finishScan(generation: generation) }
                 return
             }
             let indexesFileContents = FileIndexPreferences.indexesFileContents
-            let excludedNames = ScanExclusions.builtIn.union(ScanExclusions.current())
             let existingSourceFiles = try await database.fetchFiles(forSourceID: source.id)
             let forcesFullTextExtraction = pendingFullTextExtractionSourceIDs.contains(source.id)
             let includesHiddenFiles = self.includesHiddenFiles
@@ -2882,8 +3057,7 @@ final class FileIndexCoordinator: ObservableObject {
                     Self.shouldPreserveUnscannedFile(
                         $0,
                         canonicalSourceRootPath: canonicalRootPath,
-                        includesHiddenFiles: includesHiddenFiles,
-                        excludedDirectoryNames: excludedNames
+                        includesHiddenFiles: includesHiddenFiles
                     )
                 }.map(\.id))
             }.value
@@ -2894,9 +3068,16 @@ final class FileIndexCoordinator: ObservableObject {
                 extractsText: false
             ) { [weak self] progress in
                 Task { @MainActor in
-                    guard self?.scanGeneration == generation else { return }
-                    self?.scanProgressStore.update(
-                        self?.scopedProgress(progress, sourceID: source.id)
+                    guard let self,
+                          Self.shouldPublishScanProgress(
+                            currentGeneration: self.scanGeneration,
+                            progressGeneration: generation,
+                            isScanning: self.isScanning,
+                            scanningSourceIDs: self.scanningSourceIDs,
+                            sourceID: source.id
+                          ) else { return }
+                    self.scanProgressStore.update(
+                        self.scopedProgress(progress, sourceID: source.id)
                     )
                 }
             }
@@ -2951,9 +3132,16 @@ final class FileIndexCoordinator: ObservableObject {
                     },
                     progress: { [weak self] progress in
                         Task { @MainActor in
-                            guard self?.scanGeneration == generation else { return }
-                            self?.scanProgressStore.update(
-                                self?.scopedProgress(progress, sourceID: source.id)
+                            guard let self,
+                                  Self.shouldPublishScanProgress(
+                                    currentGeneration: self.scanGeneration,
+                                    progressGeneration: generation,
+                                    isScanning: self.isScanning,
+                                    scanningSourceIDs: self.scanningSourceIDs,
+                                    sourceID: source.id
+                                  ) else { return }
+                            self.scanProgressStore.update(
+                                self.scopedProgress(progress, sourceID: source.id)
                             )
                         }
                     }
@@ -3006,108 +3194,342 @@ final class FileIndexCoordinator: ObservableObject {
         database: FileIndexDatabase,
         generation: UUID
     ) async throws {
-        let scopes = try ScanExclusions.wholeMacScopes(rootURL: rootURL)
-        guard !scopes.isEmpty else {
+        let customExclusions = Set(ScanExclusions.current())
+        let effectiveExclusions = ScanExclusions.builtIn.union(customExclusions)
+        let scopes = try ScanExclusions.wholeMacScopes(
+            rootURL: rootURL,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: effectiveExclusions
+        )
+        let topLevelFiles = try ScanExclusions.wholeMacTopLevelFiles(
+            rootURL: rootURL,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: effectiveExclusions
+        )
+        guard !scopes.isEmpty || !topLevelFiles.isEmpty else {
             throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
         }
 
         let allScopePaths = Set(scopes.map { FilePathCanonicalizer.path($0) })
+        let allAllowedPaths = Array(allScopePaths) + topLevelFiles.map {
+            FilePathCanonicalizer.path($0)
+        }
         let removedLegacyFileIDs = try await database.removeFiles(
             for: source.id,
-            outsideScopePaths: Array(allScopePaths)
+            outsideScopePaths: allAllowedPaths,
+            excludingItemNames: effectiveExclusions
         )
         if !removedLegacyFileIDs.isEmpty {
             await refreshFiles(upsertedFileIDs: [], removedFileIDs: removedLegacyFileIDs)
         }
-        let pendingScopePaths = Self.pendingWholeMacScopePaths(
-            allScopePaths: scopes.map { FilePathCanonicalizer.path($0) },
-            completedScopePaths: wholeMacCompletedScopePaths
-        )
-        let pendingScopes = scopes.filter {
-            pendingScopePaths.contains(FilePathCanonicalizer.path($0))
-        }
-        if pendingScopes.isEmpty,
-           wholeMacCompletedScopePaths.isSuperset(of: allScopePaths) {
-            resetWholeMacScanCheckpoint()
-            return
+
+        let indexesFileContents = FileIndexPreferences.indexesFileContents
+        let forcesFullTextExtraction = pendingFullTextExtractionSourceIDs.contains(source.id)
+        let existingSourceFiles = try await database.fetchFiles(forSourceID: source.id)
+        let contentScanID = UUID()
+        var hasStagedTextContents = false
+        var cumulativeDiscoveredCount = 0
+        var topLevelScanSucceeded = true
+
+        if forcesFullTextExtraction {
+            // A staged full-content commit must cover every scope in one pass;
+            // a paused metadata checkpoint cannot safely stand in for text
+            // extracted during an earlier process lifetime.
+            wholeMacCompletedScopePaths.removeAll()
+            persistWholeMacScanCheckpoint()
         }
 
-        var successfulScopeCount = 0
-        for (index, scopeURL) in pendingScopes.enumerated() {
-            try Task.checkCancellation()
-            guard scanGeneration == generation,
-                  scanningSourceIDs.contains(source.id) else {
-                throw CancellationError()
+        func stageTextContents(for files: [IndexedFile], progressBase: Int) async throws {
+            let filesRequiringRefresh = Self.filesRequiringTextRefresh(
+                scannedFiles: files,
+                existingFiles: existingSourceFiles,
+                forcesFullRefresh: forcesFullTextExtraction
+            )
+            guard Self.shouldExtractWholeMacText(
+                indexesFileContents: indexesFileContents,
+                forcesFullRefresh: forcesFullTextExtraction,
+                filesRequiringRefreshCount: filesRequiringRefresh.count
+            ) else { return }
+
+            hasStagedTextContents = true
+            let extractionFiles = forcesFullTextExtraction ? files : filesRequiringRefresh
+            if !forcesFullTextExtraction {
+                try await database.stageTextContents(
+                    extractionFiles.map {
+                        FileTextContentUpdate(fileID: $0.id, textContent: nil)
+                    },
+                    scanID: contentScanID
+                )
             }
-            scanProgressStore.update(ScanProgress(
-                discoveredCount: 0,
-                currentPath: scopeURL.path,
-                sourceIndex: index + 1,
-                sourceCount: pendingScopes.count
-            ))
-            do {
-                let files = try await scanner.scan(
-                    sourceID: source.id,
-                    rootURL: scopeURL,
-                    includesHiddenFiles: includesHiddenFiles,
-                    extractsText: false,
-                    allowsUnreadableDescendants: true,
-                    maximumFileCount: Self.maximumWholeMacFilesPerScope
-                ) { [weak self] progress in
+            try await scanner.extractTextContents(
+                in: extractionFiles,
+                consume: { updates in
+                    try Task.checkCancellation()
+                    try await database.stageTextContents(updates, scanID: contentScanID)
+                },
+                progress: { [weak self] progress in
                     Task { @MainActor in
-                        guard self?.scanGeneration == generation else { return }
-                        self?.scanProgressStore.update(ScanProgress(
-                            discoveredCount: progress.discoveredCount,
-                            currentPath: progress.currentPath,
-                            sourceIndex: index + 1,
-                            sourceCount: pendingScopes.count
+                        guard let self,
+                              Self.shouldPublishScanProgress(
+                                currentGeneration: self.scanGeneration,
+                                progressGeneration: generation,
+                                isScanning: self.isScanning,
+                                scanningSourceIDs: self.scanningSourceIDs,
+                                sourceID: source.id
+                              ) else { return }
+                        self.scanProgressStore.update(ScanProgress(
+                            discoveredCount: Self.cumulativeWholeMacDiscoveredCount(
+                                completedScopeFileCount: progressBase,
+                                currentScopeDiscoveredCount: progress.discoveredCount
+                            ),
+                            currentPath: progress.currentPath
                         ))
                     }
                 }
-                try Task.checkCancellation()
-                guard scanGeneration == generation else { throw CancellationError() }
-                // Whole-Mac scopes commit independently. Unreadable descendants
-                // never turn into deletions; stale rows are cleaned by later
-                // file-system events or an explicit, fully readable scope pass.
-                try await database.replaceFiles(
-                    for: source.id,
-                    with: files,
-                    deletesUnscanned: false,
-                    preservesExistingText: true,
-                    preservedUnscannedFileIDs: []
+            )
+        }
+
+        do {
+            if !topLevelFiles.isEmpty {
+                let snapshot = try await scanner.scanChanges(
+                    sourceID: source.id,
+                    rootURL: rootURL,
+                    events: topLevelFiles.map {
+                        FileSystemChangeEvent(
+                            path: $0.path,
+                            kinds: [.created],
+                            isDirectory: false
+                        )
+                    },
+                    includesHiddenFiles: includesHiddenFiles,
+                    extractsText: false
                 )
-                await refreshFiles(upsertedFileIDs: files.map(\.id), removedFileIDs: [])
+                if !snapshot.failedScopes.isEmpty {
+                    topLevelScanSucceeded = false
+                    failedScanningSourceIDs.insert(source.id)
+                    onError?(AppLanguage.localized(
+                        "主目录中的部分文件暂时无法读取，已保留旧索引。",
+                        english: "Some files in the home folder are temporarily unreadable; their previous index was preserved."
+                    ))
+                }
+                let removedFileIDs = try await database.reconcileFiles(
+                    for: source.id,
+                    scopes: snapshot.scopes,
+                    with: snapshot.files
+                )
+                await refreshFiles(
+                    upsertedFileIDs: snapshot.files.map(\.id),
+                    removedFileIDs: removedFileIDs
+                )
+                try await stageTextContents(for: snapshot.files, progressBase: 0)
+                cumulativeDiscoveredCount += snapshot.files.count
+            }
+
+            let pendingScopePaths = Self.pendingWholeMacScopePaths(
+                allScopePaths: scopes.map { FilePathCanonicalizer.path($0) },
+                completedScopePaths: wholeMacCompletedScopePaths
+            )
+            let pendingScopes = scopes.filter {
+                pendingScopePaths.contains(FilePathCanonicalizer.path($0))
+            }
+            if pendingScopes.isEmpty,
+               wholeMacCompletedScopePaths.isSuperset(of: allScopePaths) {
+                if forcesFullTextExtraction {
+                    if topLevelScanSucceeded {
+                        try await database.commitStagedTextContents(
+                            scanID: contentScanID,
+                            sourceID: source.id
+                        )
+                        pendingFullTextExtractionSourceIDs.remove(source.id)
+                        isUpdatingContentIndex = !pendingFullTextExtractionSourceIDs.isEmpty
+                        refreshActiveSearchIfNeeded()
+                    } else {
+                        try await database.discardStagedTextContents(scanID: contentScanID)
+                        isUpdatingContentIndex = false
+                    }
+                } else if hasStagedTextContents {
+                    try await database.commitStagedTextContentUpdates(scanID: contentScanID)
+                    refreshActiveSearchIfNeeded()
+                }
+                resetWholeMacScanCheckpoint()
+                return
+            }
+
+            var successfulScopeCount = 0
+            for (index, scopeURL) in pendingScopes.enumerated() {
                 try Task.checkCancellation()
                 guard scanGeneration == generation,
                       scanningSourceIDs.contains(source.id) else {
                     throw CancellationError()
                 }
-                successfulScopeCount += 1
-                wholeMacCompletedScopePaths.insert(FilePathCanonicalizer.path(scopeURL))
-                persistWholeMacScanCheckpoint()
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch let error as FileIndexError {
-                failedScanningSourceIDs.insert(source.id)
-                onError?(error.localizedDescription)
-            } catch {
-                failedScanningSourceIDs.insert(source.id)
-                onError?(AppLanguage.localized(
-                    "“\(scopeURL.lastPathComponent)”暂时无法读取，已保留旧索引并继续其他位置。",
-                    english: "“\(scopeURL.lastPathComponent)” is temporarily unreadable. Its previous index was preserved while other locations continue."
+                let progressBase = cumulativeDiscoveredCount
+                scanProgressStore.update(ScanProgress(
+                    discoveredCount: progressBase,
+                    currentPath: scopeURL.path,
+                    sourceIndex: index + 1,
+                    sourceCount: pendingScopes.count
                 ))
+                do {
+                    let snapshot = try await scanner.scanWithDiagnostics(
+                        sourceID: source.id,
+                        rootURL: scopeURL,
+                        includesHiddenFiles: includesHiddenFiles,
+                        extractsText: false,
+                        allowsUnreadableDescendants: true
+                    ) { [weak self] progress in
+                        Task { @MainActor in
+                            guard let self,
+                                  Self.shouldPublishScanProgress(
+                                    currentGeneration: self.scanGeneration,
+                                    progressGeneration: generation,
+                                    isScanning: self.isScanning,
+                                    scanningSourceIDs: self.scanningSourceIDs,
+                                    sourceID: source.id
+                                  ) else { return }
+                            self.scanProgressStore.update(ScanProgress(
+                                discoveredCount: Self.cumulativeWholeMacDiscoveredCount(
+                                    completedScopeFileCount: progressBase,
+                                    currentScopeDiscoveredCount: progress.discoveredCount
+                                ),
+                                currentPath: progress.currentPath,
+                                sourceIndex: index + 1,
+                                sourceCount: pendingScopes.count
+                            ))
+                        }
+                    }
+                    try Task.checkCancellation()
+                    guard scanGeneration == generation else { throw CancellationError() }
+                    // Whole-Mac scopes commit independently. A successful pass
+                    // removes missing rows inside the readable portion while
+                    // preserving rows below descendants that failed metadata I/O.
+                    let removedFileIDs = try await Self.reconcileWholeMacScope(
+                        snapshot,
+                        in: database,
+                        sourceID: source.id,
+                        scopeURL: scopeURL,
+                        sourceRootURL: rootURL,
+                        includesHiddenFiles: includesHiddenFiles
+                    )
+                    await refreshFiles(
+                        upsertedFileIDs: snapshot.files.map(\.id),
+                        removedFileIDs: removedFileIDs
+                    )
+                    try await stageTextContents(
+                        for: snapshot.files,
+                        progressBase: progressBase
+                    )
+                    try Task.checkCancellation()
+                    guard scanGeneration == generation,
+                          scanningSourceIDs.contains(source.id) else {
+                        throw CancellationError()
+                    }
+                    successfulScopeCount += 1
+                    cumulativeDiscoveredCount += snapshot.files.count
+                    wholeMacCompletedScopePaths.insert(FilePathCanonicalizer.path(scopeURL))
+                    persistWholeMacScanCheckpoint()
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch let error as FileIndexError {
+                    failedScanningSourceIDs.insert(source.id)
+                    onError?(error.localizedDescription)
+                } catch {
+                    failedScanningSourceIDs.insert(source.id)
+                    onError?(AppLanguage.localized(
+                        "“\(scopeURL.lastPathComponent)”暂时无法读取，已保留旧索引并继续其他位置。",
+                        english: "“\(scopeURL.lastPathComponent)” is temporarily unreadable. Its previous index was preserved while other locations continue."
+                    ))
+                }
             }
+            guard successfulScopeCount > 0 || !wholeMacCompletedScopePaths.isEmpty else {
+                throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
+            }
+            let completedAllScopes = wholeMacCompletedScopePaths.isSuperset(of: allScopePaths)
+            if completedAllScopes {
+                resetWholeMacScanCheckpoint()
+            } else {
+                isWholeMacScanPaused = true
+            }
+
+            if forcesFullTextExtraction {
+                if completedAllScopes && topLevelScanSucceeded {
+                    try await database.commitStagedTextContents(
+                        scanID: contentScanID,
+                        sourceID: source.id
+                    )
+                    pendingFullTextExtractionSourceIDs.remove(source.id)
+                    isUpdatingContentIndex = !pendingFullTextExtractionSourceIDs.isEmpty
+                    refreshActiveSearchIfNeeded()
+                } else {
+                    try await database.discardStagedTextContents(scanID: contentScanID)
+                    isUpdatingContentIndex = false
+                }
+            } else if hasStagedTextContents {
+                try await database.commitStagedTextContentUpdates(scanID: contentScanID)
+                refreshActiveSearchIfNeeded()
+            }
+            await FinderTagService.shared.invalidateAll()
+            refreshActiveSearchIfNeeded()
+        } catch {
+            if hasStagedTextContents {
+                try? await database.discardStagedTextContents(scanID: contentScanID)
+            }
+            if forcesFullTextExtraction {
+                isUpdatingContentIndex = false
+            }
+            throw error
         }
-        guard successfulScopeCount > 0 || !wholeMacCompletedScopePaths.isEmpty else {
-            throw FileIndexError.unreadableFolder(rootURL.lastPathComponent)
+    }
+
+    nonisolated static func shouldExtractWholeMacText(
+        indexesFileContents: Bool,
+        forcesFullRefresh: Bool,
+        filesRequiringRefreshCount: Int
+    ) -> Bool {
+        indexesFileContents && (forcesFullRefresh || filesRequiringRefreshCount > 0)
+    }
+
+    nonisolated static func cumulativeWholeMacDiscoveredCount(
+        completedScopeFileCount: Int,
+        currentScopeDiscoveredCount: Int
+    ) -> Int {
+        completedScopeFileCount + currentScopeDiscoveredCount
+    }
+
+    @discardableResult
+    nonisolated static func reconcileWholeMacScope(
+        _ snapshot: FileScanner.ScanSnapshot,
+        in database: FileIndexDatabase,
+        sourceID: UUID,
+        scopeURL: URL,
+        sourceRootURL: URL,
+        includesHiddenFiles: Bool
+    ) async throws -> Set<String> {
+        let unreadablePaths = Set(snapshot.unreadablePaths.map(FilePathCanonicalizer.path))
+        let canonicalSourceRootPath = FilePathCanonicalizer.path(sourceRootURL)
+        return try await database.reconcileFiles(
+            for: sourceID,
+            scopes: [FileIndexScope(
+                path: FilePathCanonicalizer.path(scopeURL),
+                includesDescendants: true
+            )],
+            with: snapshot.files,
+            preservesUnscannedPath: { path in
+                shouldPreserveUnscannedPath(
+                    path,
+                    canonicalSourceRootPath: canonicalSourceRootPath,
+                    includesHiddenFiles: includesHiddenFiles
+                ) || isPath(path, sameAsOrDescendantOfAny: unreadablePaths)
+            }
+        )
+    }
+
+    nonisolated static func isPath(
+        _ path: String,
+        sameAsOrDescendantOfAny roots: Set<String>
+    ) -> Bool {
+        roots.contains { root in
+            path == root || path.hasPrefix(root.hasSuffix("/") ? root : root + "/")
         }
-        if wholeMacCompletedScopePaths.isSuperset(of: allScopePaths) {
-            resetWholeMacScanCheckpoint()
-        } else {
-            isWholeMacScanPaused = true
-        }
-        await FinderTagService.shared.invalidateAll()
-        refreshActiveSearchIfNeeded()
     }
 
     private func persistWholeMacScanCheckpoint() {
@@ -3135,14 +3557,12 @@ final class FileIndexCoordinator: ObservableObject {
     nonisolated static func shouldPreserveUnscannedFile(
         _ file: IndexedFile,
         sourceRoot: URL,
-        includesHiddenFiles: Bool,
-        excludedDirectoryNames: Set<String>
+        includesHiddenFiles: Bool
     ) -> Bool {
         shouldPreserveUnscannedFile(
             file,
             canonicalSourceRootPath: FilePathCanonicalizer.path(sourceRoot),
-            includesHiddenFiles: includesHiddenFiles,
-            excludedDirectoryNames: excludedDirectoryNames
+            includesHiddenFiles: includesHiddenFiles
         )
     }
 
@@ -3168,22 +3588,19 @@ final class FileIndexCoordinator: ObservableObject {
     nonisolated static func shouldPreserveUnscannedFile(
         _ file: IndexedFile,
         canonicalSourceRootPath: String,
-        includesHiddenFiles: Bool,
-        excludedDirectoryNames: Set<String>
+        includesHiddenFiles: Bool
     ) -> Bool {
         shouldPreserveUnscannedPath(
             file.path,
             canonicalSourceRootPath: canonicalSourceRootPath,
-            includesHiddenFiles: includesHiddenFiles,
-            excludedDirectoryNames: excludedDirectoryNames
+            includesHiddenFiles: includesHiddenFiles
         )
     }
 
     nonisolated static func shouldPreserveUnscannedPath(
         _ filePath: String,
         canonicalSourceRootPath: String,
-        includesHiddenFiles: Bool,
-        excludedDirectoryNames: Set<String>
+        includesHiddenFiles: Bool
     ) -> Bool {
         let rootComponents = URL(
             fileURLWithPath: canonicalSourceRootPath
@@ -3201,9 +3618,7 @@ final class FileIndexCoordinator: ObservableObject {
            relativeComponents.contains(where: { $0.count > 1 && $0.hasPrefix(".") }) {
             return true
         }
-        return relativeComponents.dropLast().contains {
-            excludedDirectoryNames.contains($0.lowercased())
-        }
+        return false
     }
 
     private func scopedProgress(
@@ -3224,6 +3639,10 @@ final class FileIndexCoordinator: ObservableObject {
             currentGeneration: scanGeneration,
             finishingGeneration: generation
         ) else { return }
+        // Invalidate progress tasks that were already queued onto MainActor
+        // before clearing the banner. Otherwise a final callback can publish
+        // after completion and make an idle scan look permanently active.
+        scanGeneration = UUID()
         isScanning = false
         scanProgressStore.update(nil)
         scanTask = nil
@@ -3239,12 +3658,28 @@ final class FileIndexCoordinator: ObservableObject {
         }
         // Captured before the reset below, otherwise the notification's
         // "did everything succeed?" check always saw an empty set.
-        let scanSucceeded = failedScanningSourceIDs.isEmpty
+        let failedSourceIDs = failedScanningSourceIDs
+        let scanSucceeded = failedSourceIDs.isEmpty
         failedScanningSourceIDs.removeAll()
         let completedSourceIDs = scanningSourceIDs
         scanningSourceIDs.removeAll()
         currentScanningSourceID = nil
+        if isUpdatingContentIndex && !pendingFullTextExtractionSourceIDs.isEmpty {
+            // A failed/cancelled extraction remains pending for the next
+            // explicit rescan, but Settings must not stay permanently locked.
+            isUpdatingContentIndex = false
+        }
         schedulePendingFileChanges(for: completedSourceIDs)
+        let successfulSourceIDs = completedSourceIDs.subtracting(failedSourceIDs)
+        if !successfulSourceIDs.isEmpty {
+            fileSystemBaselineSourceIDs.formUnion(successfulSourceIDs)
+            persistFileSystemBaselineSourceIDs()
+        }
+        for sourceID in successfulSourceIDs {
+            guard pendingFileChanges[sourceID]?.isEmpty != false else { continue }
+            blockedFileSystemEventCursorSourceIDs.remove(sourceID)
+            commitObservedFileSystemEventCursorIfSafe(for: sourceID)
+        }
         startNextPendingFullRescanIfNeeded()
         notifyScanFinished(succeeded: scanSucceeded)
     }
@@ -3280,6 +3715,18 @@ final class FileIndexCoordinator: ObservableObject {
         currentGeneration == finishingGeneration
     }
 
+    nonisolated static func shouldPublishScanProgress(
+        currentGeneration: UUID,
+        progressGeneration: UUID,
+        isScanning: Bool,
+        scanningSourceIDs: Set<UUID>,
+        sourceID: UUID
+    ) -> Bool {
+        isScanning
+            && currentGeneration == progressGeneration
+            && scanningSourceIDs.contains(sourceID)
+    }
+
     private func startNextPendingFullRescanIfNeeded() {
         guard !isScanning else { return }
         while let sourceID = pendingFullRescanSourceIDs.first {
@@ -3294,20 +3741,193 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Filesystem monitoring
 
-    private func configureFileSystemMonitoring() {
-        let monitoredSources = activeSources
-            .filter {
-                $0.id != wholeMacSourceID
-                    && $0.enabled
-                    && $0.accessState == .available
+    private func scheduleInitialCatchUpScansIfNeeded() {
+        guard !hasScheduledInitialCatchUp else { return }
+        hasScheduledInitialCatchUp = true
+        let activeSourceIDs = Set(activeSources.lazy
+            .filter(Self.isSourceEligibleForScanning)
+            .map(\.id))
+        let missingBaselineSourceIDs = Self.sourceIDsRequiringInitialCatchUp(
+            activeSourceIDs: activeSourceIDs,
+            baselineSourceIDs: fileSystemBaselineSourceIDs
+        )
+        pendingFullRescanSourceIDs.formUnion(missingBaselineSourceIDs)
+        startNextPendingFullRescanIfNeeded()
+    }
+
+    nonisolated static func sourceIDsRequiringInitialCatchUp(
+        activeSourceIDs: Set<UUID>,
+        baselineSourceIDs: Set<UUID>
+    ) -> Set<UUID> {
+        activeSourceIDs.subtracting(baselineSourceIDs)
+    }
+
+    nonisolated static func fileSystemMonitorKey(
+        sourceID: UUID,
+        rootPath: String
+    ) -> String {
+        sourceID.uuidString + "\u{1F}" + FilePathCanonicalizer.path(rootPath)
+    }
+
+    private func fileSystemMonitorKeyPrefix(for sourceID: UUID) -> String {
+        sourceID.uuidString + "\u{1F}"
+    }
+
+    private func removeFileSystemEventCursors(for sourceID: UUID) {
+        let prefix = fileSystemMonitorKeyPrefix(for: sourceID)
+        fileSystemEventCursorByMonitorKey = fileSystemEventCursorByMonitorKey.filter {
+            !$0.key.hasPrefix(prefix)
+        }
+        lastObservedFileSystemEventCursorByMonitorKey =
+            lastObservedFileSystemEventCursorByMonitorKey.filter {
+                !$0.key.hasPrefix(prefix)
             }
-            .map { MonitoredSource(sourceID: $0.id, rootPath: $0.path) }
+    }
+
+    private func commitObservedFileSystemEventCursorIfSafe(
+        for sourceID: UUID,
+        monitorKeys requestedMonitorKeys: Set<String>? = nil
+    ) {
+        guard Self.shouldCommitObservedFileSystemEventCursor(
+                isBlocked: blockedFileSystemEventCursorSourceIDs.contains(sourceID),
+                isScanning: scanningSourceIDs.contains(sourceID),
+                hasPendingChanges: pendingFileChanges[sourceID]?.isEmpty == false
+              ) else { return }
+        let prefix = fileSystemMonitorKeyPrefix(for: sourceID)
+        let monitorKeys = requestedMonitorKeys
+            ?? Set(lastObservedFileSystemEventCursorByMonitorKey.keys.filter {
+                $0.hasPrefix(prefix)
+            })
+        var didChange = false
+        for monitorKey in monitorKeys {
+            guard monitorKey.hasPrefix(prefix),
+                  let cursor = lastObservedFileSystemEventCursorByMonitorKey[monitorKey],
+                  cursor > fileSystemEventCursorByMonitorKey[monitorKey, default: 0] else {
+                continue
+            }
+            fileSystemEventCursorByMonitorKey[monitorKey] = cursor
+            didChange = true
+        }
+        if didChange { persistFileSystemEventCursors() }
+    }
+
+    nonisolated static func shouldCommitObservedFileSystemEventCursor(
+        isBlocked: Bool,
+        isScanning: Bool,
+        hasPendingChanges: Bool
+    ) -> Bool {
+        !isBlocked && !isScanning && !hasPendingChanges
+    }
+
+    private func persistFileSystemEventCursors() {
+        let encoded = Dictionary(
+            uniqueKeysWithValues: fileSystemEventCursorByMonitorKey.map {
+                ($0.key, String($0.value))
+            }
+        )
+        UserDefaults.standard.set(
+            encoded,
+            forKey: FileIndexPreferences.fileSystemEventCursorsKey
+        )
+    }
+
+    private func persistFileSystemBaselineSourceIDs() {
+        UserDefaults.standard.set(
+            fileSystemBaselineSourceIDs.map(\.uuidString).sorted(),
+            forKey: FileIndexPreferences.fileSystemBaselineSourceIDsKey
+        )
+    }
+
+    private func configureFileSystemMonitoring() {
+        let customExclusions = Set(ScanExclusions.current())
+        var monitoredSources: [MonitoredSource] = []
+        var wholeMacTopologyPaths: [String] = []
+        for source in activeSources.filter(Self.isSourceEligibleForScanning) {
+            guard source.id == wholeMacSourceID else {
+                let rootPath = FilePathCanonicalizer.path(source.url)
+                let monitorKey = Self.fileSystemMonitorKey(
+                    sourceID: source.id,
+                    rootPath: rootPath
+                )
+                monitoredSources.append(MonitoredSource(
+                    sourceID: source.id,
+                    rootPath: rootPath,
+                    sinceEventID: fileSystemEventCursorByMonitorKey[monitorKey]
+                ))
+                continue
+            }
+            do {
+                let wholeMacSources = try Self.wholeMacMonitoredSources(
+                    source: source,
+                    includesHiddenFiles: includesHiddenFiles,
+                    excludedItemNames: customExclusions
+                )
+                monitoredSources.append(contentsOf: wholeMacSources.map { monitoredSource in
+                    let monitorKey = Self.fileSystemMonitorKey(
+                        sourceID: source.id,
+                        rootPath: monitoredSource.rootPath
+                    )
+                    return MonitoredSource(
+                        sourceID: source.id,
+                        rootPath: monitoredSource.rootPath,
+                        sinceEventID: fileSystemEventCursorByMonitorKey[monitorKey]
+                    )
+                })
+                wholeMacTopologyPaths = Self.wholeMacTopologyRootPaths(
+                    rootURL: source.url
+                )
+                wholeMacTopologyPaths.append(contentsOf: try ScanExclusions
+                    .wholeMacTopLevelFiles(
+                        rootURL: source.url,
+                        includesHiddenFiles: includesHiddenFiles,
+                        excludedItemNames: customExclusions
+                    )
+                    .map(\.path))
+            } catch {
+                reportMonitorRegistrationFailure(
+                    sourceID: source.id,
+                    rootPath: source.path
+                )
+            }
+        }
+
+        // A durable source-level baseline is not sufficient when the set of
+        // recursive roots changes (for example, after correcting a sandbox
+        // container home to the real account home). A root without a cursor
+        // may contain files created before this stream starts, so force one
+        // catch-up scan before any new cursor can become durable.
+        let sourcesWithNewMonitorRoots = Self
+            .sourceIDsRequiringCatchUpForNewMonitorRoots(
+                monitoredSources: monitoredSources,
+                baselineSourceIDs: fileSystemBaselineSourceIDs
+            )
+        if !sourcesWithNewMonitorRoots.isEmpty {
+            fileSystemBaselineSourceIDs.subtract(sourcesWithNewMonitorRoots)
+            blockedFileSystemEventCursorSourceIDs.formUnion(sourcesWithNewMonitorRoots)
+            persistFileSystemBaselineSourceIDs()
+        }
 
         fileSystemMonitor.update(
             sources: monitoredSources,
-            handler: { [weak self] sourceID, events in
+            handler: { [weak self] sourceID, rootPath, events, lastEventID in
                 Task { @MainActor [weak self] in
-                    self?.enqueueFileSystemChanges(events, for: sourceID)
+                    guard let self else { return }
+                    let monitorKey = Self.fileSystemMonitorKey(
+                        sourceID: sourceID,
+                        rootPath: rootPath
+                    )
+                    self.lastObservedFileSystemEventCursorByMonitorKey[monitorKey] = max(
+                        self.lastObservedFileSystemEventCursorByMonitorKey[monitorKey] ?? 0,
+                        lastEventID
+                    )
+                    if events.isEmpty {
+                        self.commitObservedFileSystemEventCursorIfSafe(
+                            for: sourceID,
+                            monitorKeys: [monitorKey]
+                        )
+                    } else {
+                        self.enqueueFileSystemChanges(events, for: sourceID)
+                    }
                 }
             },
             onFailure: { [weak self] sourceID, rootPath in
@@ -3316,6 +3936,124 @@ final class FileIndexCoordinator: ObservableObject {
                 }
             }
         )
+        wholeMacTopologyMonitor.update(
+            paths: wholeMacTopologyPaths,
+            handler: { [weak self] in
+                Task { @MainActor [weak self] in
+                    self?.enqueueWholeMacTopologyRefresh()
+                }
+            },
+            onFailure: { [weak self] rootPath in
+                Task { @MainActor [weak self] in
+                    guard let self, let sourceID = self.wholeMacSourceID else { return }
+                    self.reportMonitorRegistrationFailure(
+                        sourceID: sourceID,
+                        rootPath: rootPath
+                    )
+                }
+            }
+        )
+    }
+
+    nonisolated static func sourceIDsRequiringCatchUpForNewMonitorRoots(
+        monitoredSources: [MonitoredSource],
+        baselineSourceIDs: Set<UUID>
+    ) -> Set<UUID> {
+        Set(
+            monitoredSources.lazy
+                .filter { $0.sinceEventID == nil }
+                .map(\.sourceID)
+        ).intersection(baselineSourceIDs)
+    }
+
+    nonisolated static func wholeMacMonitoredSources(
+        source: FileSource,
+        homeDirectory: URL = SystemUserHomeDirectory.current,
+        includesHiddenFiles: Bool = false,
+        excludedItemNames: Set<String> = [],
+        fileManager: FileManager = .default
+    ) throws -> [MonitoredSource] {
+        let scopes = try ScanExclusions.wholeMacScopes(
+            rootURL: source.url,
+            homeDirectory: homeDirectory,
+            includesHiddenFiles: includesHiddenFiles,
+            excludedItemNames: excludedItemNames,
+            fileManager: fileManager
+        )
+        return scopes.map {
+            MonitoredSource(
+                sourceID: source.id,
+                rootPath: $0.path
+            )
+        }
+    }
+
+    nonisolated static func wholeMacTopologyRootPaths(
+        rootURL: URL,
+        homeDirectory: URL = SystemUserHomeDirectory.current,
+        fileManager: FileManager = .default
+    ) -> [String] {
+        let canonicalRootPath = FilePathCanonicalizer.path(rootURL)
+        let canonicalHomePath = FilePathCanonicalizer.path(homeDirectory)
+        guard canonicalHomePath == canonicalRootPath
+                || canonicalHomePath.hasPrefix(
+                    canonicalRootPath.hasSuffix("/")
+                        ? canonicalRootPath
+                        : canonicalRootPath + "/"
+                ) else {
+            return []
+        }
+
+        let mobileDocuments = homeDirectory.appendingPathComponent(
+            "Library/Mobile Documents",
+            isDirectory: true
+        )
+        let library = homeDirectory.appendingPathComponent("Library", isDirectory: true)
+        let usersDirectory = rootURL.appendingPathComponent("Users", isDirectory: true)
+        let candidates = [homeDirectory, mobileDocuments, library, usersDirectory]
+        var seen = Set<String>()
+        return candidates.compactMap { candidate in
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: candidate.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else { return nil }
+            let canonicalPath = FilePathCanonicalizer.path(candidate)
+            guard seen.insert(canonicalPath).inserted else { return nil }
+            // Watch the closest existing iCloud parent only. If Mobile
+            // Documents exists, Library would add unrelated topology noise.
+            if canonicalPath == FilePathCanonicalizer.path(library),
+               fileManager.fileExists(atPath: mobileDocuments.path) {
+                return nil
+            }
+            return canonicalPath
+        }
+    }
+
+    private func enqueueWholeMacTopologyRefresh() {
+        wholeMacTopologyTask?.cancel()
+        wholeMacTopologyTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: Self.fileChangeDebounce)
+            } catch {
+                return
+            }
+            guard let self,
+                  self.scanScopeMode == .wholeMac,
+                  let source = self.wholeMacSource,
+                  Self.isSourceEligibleForScanning(source) else { return }
+            self.wholeMacTopologyTask = nil
+            // New top-level roots have no replay cursor yet. Clear the durable
+            // baseline before registering them so a crash before the rescan
+            // still forces a catch-up pass on the next launch.
+            self.fileSystemBaselineSourceIDs.remove(source.id)
+            self.persistFileSystemBaselineSourceIDs()
+            self.blockedFileSystemEventCursorSourceIDs.insert(source.id)
+            self.configureFileSystemMonitoring()
+            if self.isScanning {
+                self.pendingFullRescanSourceIDs.insert(source.id)
+            } else {
+                self.scanSource(source)
+            }
+        }
     }
 
     private func reportMonitorRegistrationFailure(sourceID: UUID, rootPath: String) {
@@ -3356,7 +4094,14 @@ final class FileIndexCoordinator: ObservableObject {
               let source = sources.first(where: { $0.id == sourceID }) else {
             return
         }
-        await applyFileSystemChanges(Array(events), to: source)
+        let applied = await applyFileSystemChanges(Array(events), to: source)
+        if applied {
+            if !scanningSourceIDs.contains(sourceID),
+               pendingFileChanges[sourceID]?.isEmpty != false {
+                blockedFileSystemEventCursorSourceIDs.remove(sourceID)
+            }
+            commitObservedFileSystemEventCursorIfSafe(for: sourceID)
+        }
     }
 
     private func invalidateFinderTags(forPaths paths: [String]) async {
@@ -3372,32 +4117,38 @@ final class FileIndexCoordinator: ObservableObject {
     private func applyFileSystemChanges(
         _ events: [FileSystemChangeEvent],
         to source: FileSource
-    ) async {
+    ) async -> Bool {
         guard let database,
               !events.isEmpty,
-              Self.isSourceEligibleForScanning(source) else { return }
+              Self.isSourceEligibleForScanning(source) else { return false }
         guard !Self.shouldDeferFileSystemChanges(
             scanningSourceIDs: scanningSourceIDs,
             sourceID: source.id
         ) else {
             pendingFileChanges[source.id, default: []].formUnion(events)
-            return
+            return false
         }
         if events.contains(where: \.requiresFullRescan) {
+            blockedFileSystemEventCursorSourceIDs.insert(source.id)
             if Self.shouldQueueFullRescan(isScanning: isScanning) {
                 pendingFullRescanSourceIDs.insert(source.id)
             } else {
                 scanSource(source)
             }
-            return
+            return false
         }
 
         let metadataOnly = events.filter(\.isMetadataOnly)
         if !metadataOnly.isEmpty {
             await invalidateFinderTags(forPaths: metadataOnly.map(\.path))
         }
-        let indexEvents = events.filter(\.requiresIndexScan)
-        guard !indexEvents.isEmpty else { return }
+        let indexEvents = events.filter {
+            Self.shouldIndexFileSystemEvent(
+                $0,
+                isKnownPath: fileIDByCanonicalPath[$0.path] != nil
+            )
+        }
+        guard !indexEvents.isEmpty else { return true }
 
         do {
             let restored = try bookmarkManager.resolveBookmark(source.bookmark)
@@ -3427,15 +4178,12 @@ final class FileIndexCoordinator: ObservableObject {
                 sourceID: source.id
             ) else {
                 pendingFileChanges[source.id, default: []].formUnion(events)
-                return
+                return false
             }
             var removedFileIDs = Set<String>()
             if !snapshot.scopes.isEmpty {
                 let canonicalRootPath = FilePathCanonicalizer.path(restored.url)
                 let includesHiddenFiles = self.includesHiddenFiles
-                let excludedDirectoryNames = ScanExclusions.builtIn.union(
-                    ScanExclusions.current()
-                )
                 removedFileIDs = try await database.reconcileFiles(
                     for: source.id,
                     scopes: snapshot.scopes,
@@ -3444,14 +4192,13 @@ final class FileIndexCoordinator: ObservableObject {
                         Self.shouldPreserveUnscannedPath(
                             path,
                             canonicalSourceRootPath: canonicalRootPath,
-                            includesHiddenFiles: includesHiddenFiles,
-                            excludedDirectoryNames: excludedDirectoryNames
+                            includesHiddenFiles: includesHiddenFiles
                         )
                     }
                 )
             }
             guard !snapshot.scopes.isEmpty
-                    || !snapshot.failedScopes.isEmpty else { return }
+                    || !snapshot.failedScopes.isEmpty else { return true }
             if !snapshot.scopes.isEmpty {
                 await refreshFiles(
                     upsertedFileIDs: snapshot.files.map(\.id),
@@ -3466,17 +4213,34 @@ final class FileIndexCoordinator: ObservableObject {
                 }
             }
             if !snapshot.failedScopes.isEmpty {
+                blockedFileSystemEventCursorSourceIDs.insert(source.id)
                 onError?(AppLanguage.localized(
                     "“\(source.displayName)”的部分文件暂时无法读取，本次更新未完成，请稍后重新扫描。",
                     english: "Some files in “\(source.displayName)” could not be read. This update is incomplete; rescan later."
                 ))
+                pendingFullRescanSourceIDs.insert(source.id)
+                startNextPendingFullRescanIfNeeded()
+                return false
             }
+            return true
         } catch is CancellationError {
-            return
+            return false
         } catch {
+            blockedFileSystemEventCursorSourceIDs.insert(source.id)
             onError?(Self.message(for: error))
             await reloadIndex()
+            pendingFullRescanSourceIDs.insert(source.id)
+            startNextPendingFullRescanIfNeeded()
+            return false
         }
+    }
+
+    nonisolated static func shouldIndexFileSystemEvent(
+        _ event: FileSystemChangeEvent,
+        isKnownPath: Bool
+    ) -> Bool {
+        event.requiresIndexScan
+            || (event.isMetadataOnly && !event.isDirectory && !isKnownPath)
     }
 
     private func reconcileKnownFileChanges(_ urls: [URL]) async {
@@ -3489,7 +4253,7 @@ final class FileIndexCoordinator: ObservableObject {
         }
 
         for source in Self.sourcesAffected(by: urls, in: sources) {
-            await applyFileSystemChanges(events, to: source)
+            _ = await applyFileSystemChanges(events, to: source)
         }
     }
 

@@ -51,12 +51,21 @@ final class NavigationModelTests: XCTestCase {
         let home = root.appendingPathComponent("Users/owner", isDirectory: true)
         let desktop = home.appendingPathComponent("Desktop", isDirectory: true)
         let projects = home.appendingPathComponent("Projects", isDirectory: true)
+        let hiddenProjects = home.appendingPathComponent(".projects", isDirectory: true)
+        let builtInHiddenCache = home.appendingPathComponent(".cache", isDirectory: true)
+        let sensitiveSSH = home.appendingPathComponent(".ssh", isDirectory: true)
+        let sensitiveDocker = home.appendingPathComponent(".docker", isDirectory: true)
+        let sensitiveGitHubCLI = home.appendingPathComponent(
+            ".config/gh",
+            isDirectory: true
+        )
         let library = home.appendingPathComponent("Library", isDirectory: true)
         let cloudDocs = library.appendingPathComponent(
             "Mobile Documents/com~apple~CloudDocs",
             isDirectory: true
         )
-        for directory in [desktop, projects, cloudDocs,
+        for directory in [desktop, projects, hiddenProjects, builtInHiddenCache, sensitiveSSH,
+                          sensitiveDocker, sensitiveGitHubCLI, cloudDocs,
                           root.appendingPathComponent("usr", isDirectory: true),
                           root.appendingPathComponent("Library", isDirectory: true),
                           root.appendingPathComponent("Volumes", isDirectory: true)] {
@@ -70,6 +79,11 @@ final class NavigationModelTests: XCTestCase {
             rootURL: root,
             homeDirectory: home
         ).map(\.path)
+        let pathsIncludingHidden = try ScanExclusions.wholeMacScopes(
+            rootURL: root,
+            homeDirectory: home,
+            includesHiddenFiles: true
+        ).map(\.path)
 
         XCTAssertTrue(paths.contains(desktop.path))
         XCTAssertTrue(paths.contains(projects.path))
@@ -78,6 +92,116 @@ final class NavigationModelTests: XCTestCase {
         XCTAssertFalse(paths.contains(root.appendingPathComponent("Library").path))
         XCTAssertFalse(paths.contains(root.appendingPathComponent("Volumes").path))
         XCTAssertFalse(paths.contains(library.path))
+        XCTAssertFalse(paths.contains(hiddenProjects.path))
+        XCTAssertTrue(pathsIncludingHidden.contains(hiddenProjects.path))
+        XCTAssertFalse(pathsIncludingHidden.contains(builtInHiddenCache.path))
+        XCTAssertFalse(pathsIncludingHidden.contains(sensitiveSSH.path))
+        XCTAssertFalse(pathsIncludingHidden.contains(sensitiveDocker.path))
+        XCTAssertFalse(pathsIncludingHidden.contains(sensitiveGitHubCLI.path))
+    }
+
+    func testWholeMacTopLevelFilesIncludeVisibleFilesWithoutEnteringLibrary() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("Users/owner", isDirectory: true)
+        let library = home.appendingPathComponent("Library", isDirectory: true)
+        try FileManager.default.createDirectory(at: library, withIntermediateDirectories: true)
+        let visible = home.appendingPathComponent("notes.txt")
+        let hidden = home.appendingPathComponent(".private.txt")
+        let libraryFile = library.appendingPathComponent("ignored.txt")
+        try Data("visible".utf8).write(to: visible)
+        try Data("hidden".utf8).write(to: hidden)
+        try Data("library".utf8).write(to: libraryFile)
+
+        let files = try ScanExclusions.wholeMacTopLevelFiles(
+            rootURL: root,
+            homeDirectory: home
+        )
+        let filesIncludingHidden = try ScanExclusions.wholeMacTopLevelFiles(
+            rootURL: root,
+            homeDirectory: home,
+            includesHiddenFiles: true
+        )
+
+        XCTAssertEqual(files.map(\.path), [visible.path])
+        XCTAssertEqual(Set(filesIncludingHidden.map(\.path)), [visible.path, hidden.path])
+        XCTAssertFalse(filesIncludingHidden.contains(where: { $0.path == libraryFile.path }))
+    }
+
+    func testWholeMacMonitoringRefreshDiscoversNewTopLevelDirectory() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("Users/owner", isDirectory: true)
+        let documents = home.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let source = makeSource(at: root)
+        let initial = try FileIndexCoordinator.wholeMacMonitoredSources(
+            source: source,
+            homeDirectory: home
+        )
+        let projects = home.appendingPathComponent("Projects", isDirectory: true)
+        try FileManager.default.createDirectory(at: projects, withIntermediateDirectories: true)
+        let refreshed = try FileIndexCoordinator.wholeMacMonitoredSources(
+            source: source,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(initial.allSatisfy { $0.sourceID == source.id })
+        XCTAssertFalse(initial.contains(where: { $0.rootPath == projects.path }))
+        XCTAssertTrue(refreshed.contains(MonitoredSource(
+            sourceID: source.id,
+            rootPath: projects.path
+        )))
+    }
+
+    func testWholeMacTopologyRootsWatchICloudParentBeforeCloudDriveAppears() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = root.appendingPathComponent("Users/owner", isDirectory: true)
+        let mobileDocuments = home.appendingPathComponent(
+            "Library/Mobile Documents",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: mobileDocuments,
+            withIntermediateDirectories: true
+        )
+
+        let roots = FileIndexCoordinator.wholeMacTopologyRootPaths(
+            rootURL: root,
+            homeDirectory: home
+        )
+
+        XCTAssertTrue(roots.contains(home.path))
+        XCTAssertTrue(roots.contains(mobileDocuments.path))
+    }
+
+    func testWholeMacProgressAddsCompletedScopeCount() {
+        XCTAssertEqual(
+            FileIndexCoordinator.cumulativeWholeMacDiscoveredCount(
+                completedScopeFileCount: 1_200,
+                currentScopeDiscoveredCount: 345
+            ),
+            1_545
+        )
+    }
+
+    func testWholeMacContentExtractionRunsForEnabledOrForcedRefresh() {
+        XCTAssertFalse(FileIndexCoordinator.shouldExtractWholeMacText(
+            indexesFileContents: false,
+            forcesFullRefresh: false,
+            filesRequiringRefreshCount: 2
+        ))
+        XCTAssertTrue(FileIndexCoordinator.shouldExtractWholeMacText(
+            indexesFileContents: true,
+            forcesFullRefresh: false,
+            filesRequiringRefreshCount: 2
+        ))
+        XCTAssertTrue(FileIndexCoordinator.shouldExtractWholeMacText(
+            indexesFileContents: true,
+            forcesFullRefresh: true,
+            filesRequiringRefreshCount: 0
+        ))
     }
 
     func testScanModeUsesOnlyTheActiveSourceSet() {
@@ -501,6 +625,37 @@ final class NavigationModelTests: XCTestCase {
         ))
     }
 
+    func testUnknownFileMetadataEventIsIndexedWithoutRescanningKnownItems() {
+        let unknownFile = FileSystemChangeEvent(
+            path: "/Users/owner/Documents/new.txt",
+            kinds: [.metadata],
+            isDirectory: false
+        )
+        let knownFile = FileSystemChangeEvent(
+            path: "/Users/owner/Documents/existing.txt",
+            kinds: [.metadata],
+            isDirectory: false
+        )
+        let directory = FileSystemChangeEvent(
+            path: "/Users/owner/Documents/Folder",
+            kinds: [.metadata],
+            isDirectory: true
+        )
+
+        XCTAssertTrue(FileIndexCoordinator.shouldIndexFileSystemEvent(
+            unknownFile,
+            isKnownPath: false
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldIndexFileSystemEvent(
+            knownFile,
+            isKnownPath: true
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldIndexFileSystemEvent(
+            directory,
+            isKnownPath: false
+        ))
+    }
+
     @MainActor
     func testPreservedHiddenPathUsesTheSameCanonicalRootAlias() {
         let sourceID = UUID()
@@ -514,8 +669,7 @@ final class NavigationModelTests: XCTestCase {
         XCTAssertTrue(FileIndexCoordinator.shouldPreserveUnscannedFile(
             hidden,
             sourceRoot: URL(fileURLWithPath: "/private/tmp/xunjian-alias"),
-            includesHiddenFiles: false,
-            excludedDirectoryNames: []
+            includesHiddenFiles: false
         ))
     }
 
@@ -722,6 +876,26 @@ final class NavigationModelTests: XCTestCase {
 
         XCTAssertNoThrow(
             try AppModel.validateSourceCandidate(second, against: [makeSource(at: first)])
+        )
+    }
+
+    @MainActor
+    func testSelectedFolderCanCoexistWithWholeMacAuthorization() throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let selectedFolder = root.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: selectedFolder,
+            withIntermediateDirectories: true
+        )
+        let wholeMacSource = makeSource(at: root)
+
+        XCTAssertNoThrow(
+            try FileIndexCoordinator.validateSelectedFolderCandidate(
+                selectedFolder,
+                against: [wholeMacSource],
+                wholeMacSourceID: wholeMacSource.id
+            )
         )
     }
 
@@ -1171,6 +1345,105 @@ final class NavigationModelTests: XCTestCase {
     }
 
     @MainActor
+    func testLateProgressCannotReactivateFinishedOrReplacedScan() {
+        let generation = UUID()
+        let sourceID = UUID()
+        XCTAssertTrue(FileIndexCoordinator.shouldPublishScanProgress(
+            currentGeneration: generation,
+            progressGeneration: generation,
+            isScanning: true,
+            scanningSourceIDs: [sourceID],
+            sourceID: sourceID
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldPublishScanProgress(
+            currentGeneration: generation,
+            progressGeneration: generation,
+            isScanning: false,
+            scanningSourceIDs: [sourceID],
+            sourceID: sourceID
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldPublishScanProgress(
+            currentGeneration: UUID(),
+            progressGeneration: generation,
+            isScanning: true,
+            scanningSourceIDs: [sourceID],
+            sourceID: sourceID
+        ))
+    }
+
+    @MainActor
+    func testFileSystemCursorCommitsOnlyAfterPendingWorkIsDurable() {
+        XCTAssertTrue(FileIndexCoordinator.shouldCommitObservedFileSystemEventCursor(
+            isBlocked: false,
+            isScanning: false,
+            hasPendingChanges: false
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldCommitObservedFileSystemEventCursor(
+            isBlocked: true,
+            isScanning: false,
+            hasPendingChanges: false
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldCommitObservedFileSystemEventCursor(
+            isBlocked: false,
+            isScanning: true,
+            hasPendingChanges: false
+        ))
+        XCTAssertFalse(FileIndexCoordinator.shouldCommitObservedFileSystemEventCursor(
+            isBlocked: false,
+            isScanning: false,
+            hasPendingChanges: true
+        ))
+    }
+
+    @MainActor
+    func testWholeMacRootsKeepIndependentReplayCursors() {
+        let sourceID = UUID()
+        let desktopKey = FileIndexCoordinator.fileSystemMonitorKey(
+            sourceID: sourceID,
+            rootPath: "/Users/test/Desktop"
+        )
+        let documentsKey = FileIndexCoordinator.fileSystemMonitorKey(
+            sourceID: sourceID,
+            rootPath: "/Users/test/Documents"
+        )
+        XCTAssertNotEqual(desktopKey, documentsKey)
+        XCTAssertTrue(desktopKey.hasPrefix(sourceID.uuidString))
+        XCTAssertTrue(documentsKey.hasPrefix(sourceID.uuidString))
+    }
+
+    @MainActor
+    func testExistingSourceWithoutDurableBaselineRequiresLaunchCatchUp() {
+        let sourceID = UUID()
+        XCTAssertEqual(
+            FileIndexCoordinator.sourceIDsRequiringInitialCatchUp(
+                activeSourceIDs: [sourceID],
+                baselineSourceIDs: []
+            ),
+            [sourceID]
+        )
+        XCTAssertTrue(FileIndexCoordinator.sourceIDsRequiringInitialCatchUp(
+            activeSourceIDs: [sourceID],
+            baselineSourceIDs: [sourceID]
+        ).isEmpty)
+    }
+
+    func testNewWholeMacMonitorRootInvalidatesDurableBaseline() {
+        let sourceID = UUID()
+        let monitored = MonitoredSource(
+            sourceID: sourceID,
+            rootPath: "/Users/owner/Documents"
+        )
+
+        XCTAssertEqual(
+            FileIndexCoordinator.sourceIDsRequiringCatchUpForNewMonitorRoots(
+                monitoredSources: [monitored],
+                baselineSourceIDs: [sourceID]
+            ),
+            [sourceID]
+        )
+    }
+
+    @MainActor
     func testRecoveryFullRescanQueuesWhileAnotherScanOwnsTheState() {
         XCTAssertTrue(AppModel.shouldQueueFullRescan(isScanning: true))
         XCTAssertFalse(AppModel.shouldQueueFullRescan(isScanning: false))
@@ -1262,6 +1535,25 @@ final class FileScannerTests: XCTestCase {
         XCTAssertTrue(files.allSatisfy { $0.sourceID == sourceID })
         XCTAssertTrue(files.allSatisfy { $0.size > 0 })
         XCTAssertEqual(files.first(where: { $0.name == "说明.md" })?.textContent, "hello")
+    }
+
+    func testScannerSkipsCustomFileAndFolderNames() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let excludedFolder = root.appendingPathComponent("vendor", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: excludedFolder,
+            withIntermediateDirectories: true
+        )
+        try Data("keep".utf8).write(to: root.appendingPathComponent("notes.txt"))
+        try Data("skip".utf8).write(to: root.appendingPathComponent("index.sqlite3"))
+        try Data("skip".utf8).write(to: excludedFolder.appendingPathComponent("library.js"))
+        let scanner = FileScanner()
+        await scanner.setAdditionalExcludedNames(["index.sqlite3", "vendor"])
+
+        let files = try await scanner.scan(sourceID: UUID(), rootURL: root)
+
+        XCTAssertEqual(files.map(\.name), ["notes.txt"])
     }
 
     func testScannerReturnsEmptyResultForEmptyDirectory() async throws {
@@ -1400,6 +1692,28 @@ final class FileScannerTests: XCTestCase {
         XCTAssertTrue(snapshot.failedScopes.isEmpty)
     }
 
+    func testIncrementalScanAcceptsFileBelowFileSystemRoot() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fileURL = root.appendingPathComponent("根目录增量.txt")
+        try Data("root incremental".utf8).write(to: fileURL)
+
+        let snapshot = try await FileScanner().scanChanges(
+            sourceID: UUID(),
+            rootURL: URL(fileURLWithPath: "/", isDirectory: true),
+            events: [
+                FileSystemChangeEvent(
+                    path: fileURL.path,
+                    flags: FSEventStreamEventFlags(kFSEventStreamEventFlagItemIsFile)
+                )
+            ]
+        )
+
+        XCTAssertEqual(snapshot.files.map(\.path), [FilePathCanonicalizer.path(fileURL)])
+        XCTAssertEqual(snapshot.scopes.map(\.path), [FilePathCanonicalizer.path(fileURL)])
+        XCTAssertTrue(snapshot.failedScopes.isEmpty)
+    }
+
     func testFullScanFailsClosedWhenAnyFileMetadataCannotBeRead() async throws {
         let root = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -1408,9 +1722,9 @@ final class FileScannerTests: XCTestCase {
         try Data("readable".utf8).write(to: readableURL)
         try Data("unreadable".utf8).write(to: unreadableURL)
 
-        let unreadablePath = unreadableURL.resolvingSymlinksInPath().standardizedFileURL.path
+        let unreadablePath = FilePathCanonicalizer.path(unreadableURL)
         let scanner = FileScanner(resourceValuesLoader: { url, keys in
-            if url.resolvingSymlinksInPath().standardizedFileURL.path == unreadablePath {
+            if FilePathCanonicalizer.path(url) == unreadablePath {
                 throw CocoaError(.fileReadNoPermission)
             }
             return try url.resourceValues(forKeys: keys)
@@ -1424,6 +1738,31 @@ final class FileScannerTests: XCTestCase {
                 return XCTFail("应以不可读来源失败关闭，实际为 \(error)")
             }
         }
+    }
+
+    func testWholeMacDiagnosticsReportUnreadablePathWithoutDroppingReadableFiles() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let readableURL = root.appendingPathComponent("可读.txt")
+        let unreadableURL = root.appendingPathComponent("不可读.txt")
+        try Data("readable".utf8).write(to: readableURL)
+        try Data("unreadable".utf8).write(to: unreadableURL)
+        let unreadablePath = FilePathCanonicalizer.path(unreadableURL)
+        let scanner = FileScanner(resourceValuesLoader: { url, keys in
+            if FilePathCanonicalizer.path(url) == unreadablePath {
+                throw CocoaError(.fileReadNoPermission)
+            }
+            return try url.resourceValues(forKeys: keys)
+        })
+
+        let snapshot = try await scanner.scanWithDiagnostics(
+            sourceID: UUID(),
+            rootURL: root,
+            allowsUnreadableDescendants: true
+        )
+
+        XCTAssertEqual(snapshot.files.map(\.name), [readableURL.lastPathComponent])
+        XCTAssertEqual(snapshot.unreadablePaths, [unreadablePath])
     }
 
     func testIncrementalScanExcludesFailedScopeFromReconciliationAndPreservesCategory() async throws {
@@ -1487,6 +1826,43 @@ final class FileScannerTests: XCTestCase {
             [category.id],
             "失败范围不得参与差集删除，旧文件与分类关联必须保留"
         )
+    }
+}
+
+final class TextPreviewBehaviorTests: XCTestCase {
+    func testSearchFindsOneLogicalMatchAcrossChunkBoundary() {
+        let chunks = TextPreviewView.chunk("abcXYZdef", maximumChunkLength: 4)
+
+        let matches = TextPreviewView.matches(for: "cXYZd", in: chunks)
+
+        XCTAssertEqual(matches.count, 1)
+        XCTAssertEqual(matches.first?.segments.map(\.chunkID), [0, 1])
+    }
+
+    func testOnlyExactCurrentRangeReceivesActiveHighlight() {
+        let chunks = TextPreviewView.chunk("same same", maximumChunkLength: 20)
+        let matches = TextPreviewView.matches(for: "same", in: chunks)
+
+        XCTAssertTrue(TextPreviewView.isActive(
+            chunkID: 0,
+            range: matches[1].segments[0].range,
+            currentMatch: matches[1]
+        ))
+        XCTAssertFalse(TextPreviewView.isActive(
+            chunkID: 0,
+            range: matches[0].segments[0].range,
+            currentMatch: matches[1]
+        ))
+    }
+
+    func testInspectorFetchesSentinelCharacterToDetectTruncation() {
+        XCTAssertEqual(FileInspectorView.inlinePreviewFetchCharacterLimit, 20_001)
+        XCTAssertTrue(FileInspectorView.shouldOfferFullTextPreview(
+            fetchedCharacterCount: 20_001
+        ))
+        XCTAssertFalse(FileInspectorView.shouldOfferFullTextPreview(
+            fetchedCharacterCount: 20_000
+        ))
     }
 }
 
@@ -1577,9 +1953,13 @@ final class FileSystemChangeEventTests: XCTestCase {
         let monitor = FileSystemChangeMonitor(latency: 0.05)
         monitor.update(
             sources: [MonitoredSource(sourceID: sourceID, rootPath: root.path)]
-        ) { reportedSourceID, events in
+        ) { reportedSourceID, rootPath, events, _ in
             Task {
-                await probe.record(sourceID: reportedSourceID, events: events)
+                await probe.record(
+                    sourceID: reportedSourceID,
+                    events: events,
+                    rootPath: rootPath
+                )
             }
         }
         defer { monitor.stopAll() }
@@ -1598,6 +1978,112 @@ final class FileSystemChangeEventTests: XCTestCase {
         XCTAssertTrue(didObserveCreatedFile)
     }
 
+    func testRealFSEventsMonitorReplaysChangesAfterMonitorWasStopped() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sourceID = UUID()
+        let probe = FileEventProbe()
+        let firstMonitor = FileSystemChangeMonitor(latency: 0.05)
+        firstMonitor.update(
+            sources: [MonitoredSource(sourceID: sourceID, rootPath: root.path)]
+        ) { reportedSourceID, _, events, cursor in
+            Task {
+                await probe.record(
+                    sourceID: reportedSourceID,
+                    events: events,
+                    cursor: cursor
+                )
+            }
+        }
+
+        var storedCursor: FSEventStreamEventId?
+        for _ in 0..<20 {
+            if let cursor = await probe.latestCursor(sourceID: sourceID) {
+                storedCursor = cursor
+                break
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        firstMonitor.stopAll()
+        let cursor = try XCTUnwrap(storedCursor)
+        let offlineURL = root.appendingPathComponent("离线新增.txt")
+        try Data("offline".utf8).write(to: offlineURL)
+
+        let replayMonitor = FileSystemChangeMonitor(latency: 0.05)
+        replayMonitor.update(
+            sources: [MonitoredSource(
+                sourceID: sourceID,
+                rootPath: root.path,
+                sinceEventID: cursor
+            )]
+        ) { reportedSourceID, _, events, latestCursor in
+            Task {
+                await probe.record(
+                    sourceID: reportedSourceID,
+                    events: events,
+                    cursor: latestCursor
+                )
+            }
+        }
+        defer { replayMonitor.stopAll() }
+
+        var replayed = false
+        for _ in 0..<50 {
+            if await probe.containsCreatedFile(sourceID: sourceID, path: offlineURL.path) {
+                replayed = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(replayed)
+    }
+
+    func testRealFSEventsMonitorSupportsMultipleRootsForOneSource() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let firstRoot = container.appendingPathComponent("Desktop", isDirectory: true)
+        let secondRoot = container.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: firstRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: secondRoot, withIntermediateDirectories: true)
+        let sourceID = UUID()
+        let createdURL = secondRoot.appendingPathComponent("新增文件.txt")
+        let probe = FileEventProbe()
+        let monitor = FileSystemChangeMonitor(latency: 0.05)
+        monitor.update(
+            sources: [
+                MonitoredSource(sourceID: sourceID, rootPath: firstRoot.path),
+                MonitoredSource(sourceID: sourceID, rootPath: secondRoot.path)
+            ]
+        ) { reportedSourceID, rootPath, events, _ in
+            Task {
+                await probe.record(
+                    sourceID: reportedSourceID,
+                    events: events,
+                    rootPath: rootPath
+                )
+            }
+        }
+        defer { monitor.stopAll() }
+        try await Task.sleep(for: .milliseconds(200))
+
+        try Data("created".utf8).write(to: createdURL)
+
+        var didObserveCreatedFile = false
+        for _ in 0..<50 {
+            if await probe.containsCreatedFile(sourceID: sourceID, path: createdURL.path) {
+                didObserveCreatedFile = true
+                break
+            }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        XCTAssertTrue(didObserveCreatedFile)
+        let didReportSecondRoot = await probe.containsRoot(
+            sourceID: sourceID,
+            rootPath: FilePathCanonicalizer.path(secondRoot)
+        )
+        XCTAssertTrue(didReportSecondRoot)
+    }
+
     func testRealFSEventsMonitorReportsMoveOutsideWatchedRoot() async throws {
         let container = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -1613,7 +2099,7 @@ final class FileSystemChangeEventTests: XCTestCase {
         let monitor = FileSystemChangeMonitor(latency: 0.05)
         monitor.update(
             sources: [MonitoredSource(sourceID: sourceID, rootPath: watchedRoot.path)]
-        ) { reportedSourceID, events in
+        ) { reportedSourceID, _, events, _ in
             Task {
                 await probe.record(sourceID: reportedSourceID, events: events)
             }
@@ -1916,6 +2402,261 @@ final class FileOperationServiceTests: XCTestCase {
 }
 
 final class FileIndexDatabaseTests: XCTestCase {
+    func testScannerIndexesBothPathsOfOneHardLinkedFile() async throws {
+        let root = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = root.appendingPathComponent("原始名称.txt")
+        let alias = root.appendingPathComponent("另一个名称.txt")
+        try Data("same inode".utf8).write(to: original)
+        try FileManager.default.linkItem(at: original, to: alias)
+
+        let files = try await FileScanner().scan(sourceID: UUID(), rootURL: root)
+
+        XCTAssertEqual(Set(files.map(\.name)), [original.lastPathComponent, alias.lastPathComponent])
+        XCTAssertEqual(Set(files.map(\.id)).count, 2)
+    }
+
+    func testWholeMacScopeRescanRemovesFileDeletedWhileMonitoringWasOffline() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("root", isDirectory: true)
+        let documents = root.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: documents, withIntermediateDirectories: true)
+        let keptURL = documents.appendingPathComponent("kept.txt")
+        let deletedURL = documents.appendingPathComponent("deleted.txt")
+        try Data("kept phrase".utf8).write(to: keptURL)
+        try Data("offline deletion phrase".utf8).write(to: deletedURL)
+
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "整台 Mac",
+            path: root.path,
+            bookmark: Data([1])
+        )
+        let scanner = FileScanner()
+        let initialFiles = try await scanner.scan(sourceID: source.id, rootURL: documents)
+        let deletedFileID = try XCTUnwrap(
+            initialFiles.first(where: { $0.name == deletedURL.lastPathComponent })?.id
+        )
+        try await database.replaceFiles(for: source.id, with: initialFiles)
+        try FileManager.default.removeItem(at: deletedURL)
+
+        let snapshot = try await scanner.scanWithDiagnostics(
+            sourceID: source.id,
+            rootURL: documents,
+            extractsText: false,
+            allowsUnreadableDescendants: true
+        )
+        let removed = try await FileIndexCoordinator.reconcileWholeMacScope(
+            snapshot,
+            in: database,
+            sourceID: source.id,
+            scopeURL: documents,
+            sourceRootURL: root,
+            includesHiddenFiles: false
+        )
+
+        let remainingNames = try await database.fetchFiles().map(\.name)
+        let deletedMatches = try await database.searchFiles(
+            matching: "offline deletion phrase"
+        )
+        XCTAssertEqual(removed, [deletedFileID])
+        XCTAssertEqual(remainingNames, ["kept.txt"])
+        XCTAssertTrue(deletedMatches.isEmpty)
+    }
+
+    func testWholeMacScopeReconcilePreservesUnreadableSubtree() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("root", isDirectory: true)
+        let documents = root.appendingPathComponent("Documents", isDirectory: true)
+        let unreadable = documents.appendingPathComponent("Unavailable", isDirectory: true)
+        try FileManager.default.createDirectory(at: unreadable, withIntermediateDirectories: true)
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "整台 Mac",
+            path: root.path,
+            bookmark: Data([1])
+        )
+        let existing = IndexedFile(
+            id: "preserved-unreadable",
+            sourceID: source.id,
+            name: "notes.txt",
+            path: unreadable.appendingPathComponent("notes.txt").path,
+            fileExtension: "txt",
+            kind: .document,
+            size: 1,
+            createdAt: nil,
+            modifiedAt: nil,
+            indexedAt: Date(),
+            textContent: "preserved unreadable phrase"
+        )
+        try await database.replaceFiles(for: source.id, with: [existing])
+        let snapshot = FileScanner.ScanSnapshot(
+            files: [],
+            unreadablePaths: [unreadable.path]
+        )
+
+        let removed = try await FileIndexCoordinator.reconcileWholeMacScope(
+            snapshot,
+            in: database,
+            sourceID: source.id,
+            scopeURL: documents,
+            sourceRootURL: root,
+            includesHiddenFiles: false
+        )
+
+        let remainingFileIDs = try await database.fetchFiles().map(\.id)
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(remainingFileIDs, [existing.id])
+    }
+
+    func testExclusionCleanupRemovesRowsFromPausedSources() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("Documents", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "Documents",
+            path: root.path,
+            bookmark: Data([1])
+        )
+        let kept = IndexedFile(
+            id: "kept",
+            sourceID: source.id,
+            name: "notes.txt",
+            path: root.appendingPathComponent("notes.txt").path,
+            fileExtension: "txt",
+            kind: .document,
+            size: 1,
+            createdAt: nil,
+            modifiedAt: nil,
+            indexedAt: Date(),
+            textContent: "kept phrase"
+        )
+        let excluded = IndexedFile(
+            id: "excluded",
+            sourceID: source.id,
+            name: "library.js",
+            path: root.appendingPathComponent("vendor/library.js").path,
+            fileExtension: "js",
+            kind: .code,
+            size: 1,
+            createdAt: nil,
+            modifiedAt: nil,
+            indexedAt: Date(),
+            textContent: "paused excluded phrase"
+        )
+        try await database.replaceFiles(for: source.id, with: [kept, excluded])
+        try await database.setSourceEnabled(id: source.id, enabled: false)
+        let pausedSources = try await database.fetchSources()
+        XCTAssertEqual(pausedSources.first?.enabled, false)
+
+        let removed = try await FileIndexCoordinator.removeExcludedFilesFromAllSources(
+            database: database,
+            sources: pausedSources,
+            excludedItemNames: ["vendor"]
+        )
+
+        let remainingFileIDs = try await database.fetchFiles().map(\.id)
+        let excludedMatches = try await database.searchFiles(
+            matching: "paused excluded phrase"
+        )
+        XCTAssertEqual(removed, [excluded.id])
+        XCTAssertEqual(remainingFileIDs, [kept.id])
+        XCTAssertTrue(excludedMatches.isEmpty)
+    }
+
+    func testCoordinatorWholeMacScopeCleanupRemovesLegacyTestHostArtifacts() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        let root = container.appendingPathComponent("root", isDirectory: true)
+        let home = root.appendingPathComponent("Users/owner", isDirectory: true)
+        let documents = home.appendingPathComponent("Documents", isDirectory: true)
+        let testHost = home.appendingPathComponent(
+            "Library/Containers/com.xingmingbo.XunJian/Data/tmp/XunJian-TestHost-123",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(
+            at: documents,
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            at: testHost,
+            withIntermediateDirectories: true
+        )
+
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "整台 Mac", path: root.path, bookmark: Data([1])
+        )
+        let allowed = IndexedFile(
+            id: "allowed", sourceID: source.id, name: "notes.txt",
+            path: documents.appendingPathComponent("notes.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "ordinary notes"
+        )
+        let legacyTestDatabase = IndexedFile(
+            id: "legacy-test-database", sourceID: source.id, name: "index.sqlite3",
+            path: testHost.appendingPathComponent("index.sqlite3").path,
+            fileExtension: "sqlite3", kind: .other, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "legacy test database"
+        )
+        let customExcludedFile = IndexedFile(
+            id: "custom-excluded", sourceID: source.id, name: "index.sqlite3",
+            path: documents.appendingPathComponent("index.sqlite3").path,
+            fileExtension: "sqlite3", kind: .other, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "custom excluded database"
+        )
+        let builtInExcludedFile = IndexedFile(
+            id: "built-in-excluded", sourceID: source.id, name: "library.js",
+            path: documents.appendingPathComponent("node_modules/library.js").path,
+            fileExtension: "js", kind: .code, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: "built in excluded dependency"
+        )
+        try await database.replaceFiles(
+            for: source.id,
+            with: [allowed, legacyTestDatabase, customExcludedFile, builtInExcludedFile]
+        )
+
+        let removed = try await FileIndexCoordinator.removeFilesOutsideWholeMacScopes(
+            from: database,
+            sourceID: source.id,
+            rootURL: root,
+            homeDirectory: home,
+            excludedItemNames: ["index.sqlite3"]
+        )
+
+        XCTAssertEqual(
+            removed,
+            [legacyTestDatabase.id, customExcludedFile.id, builtInExcludedFile.id]
+        )
+        let remainingFileIDs = try await database.fetchFiles().map(\.id)
+        let staleMatches = try await database.searchFiles(
+            matching: "legacy test database"
+        )
+        let excludedMatches = try await database.searchFiles(
+            matching: "custom excluded database"
+        )
+        XCTAssertEqual(remainingFileIDs, [allowed.id])
+        XCTAssertTrue(staleMatches.isEmpty)
+        XCTAssertTrue(excludedMatches.isEmpty)
+    }
+
     func testWholeMacScopeCleanupRemovesLegacyAndSensitiveRows() async throws {
         let container = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: container) }
@@ -2005,6 +2746,57 @@ final class FileIndexDatabaseTests: XCTestCase {
             sourceIDs: [firstSource.id]
         )
         XCTAssertEqual(manualCategoryMatches, [first.id])
+    }
+
+    func testSearchFindsFilenameSubstringAndSymbolOnlyName() async throws {
+        let container = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: container) }
+        let database = try FileIndexDatabase(
+            databaseURL: container.appendingPathComponent("index.sqlite3")
+        )
+        let source = try await database.upsertSource(
+            displayName: "子串搜索", path: container.path, bookmark: Data([7])
+        )
+        let report = IndexedFile(
+            id: "quarterly-report", sourceID: source.id,
+            name: "QuarterlyReport.pdf",
+            path: container.appendingPathComponent("QuarterlyReport.pdf").path,
+            fileExtension: "pdf", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        let emoji = IndexedFile(
+            id: "emoji-plan", sourceID: source.id,
+            name: "😀计划.txt",
+            path: container.appendingPathComponent("😀计划.txt").path,
+            fileExtension: "txt", kind: .document, size: 1,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date()
+        )
+        try await database.replaceFiles(for: source.id, with: [report, emoji])
+        let category = try await database.createCategory(name: "子串分类", symbolName: "doc")
+        try await database.setCategory(category.id, assigned: true, toFile: report.id)
+
+        let suffixPage = try await database.searchFilesPage(matching: "Report", limit: 10)
+        let emojiPage = try await database.searchFilesPage(matching: "😀", limit: 10)
+        let categoryIDs = try await database.searchFileIDs(
+            matching: "Report",
+            inCategory: category.id,
+            limit: 10,
+            sourceIDs: [source.id]
+        )
+        let filteredIDs = try await database.searchFileIDs(
+            matching: "😀",
+            includesHiddenFiles: true,
+            sourceIDs: [source.id],
+            kind: .document,
+            minimumSize: 0,
+            minimumDate: nil
+        )
+
+        XCTAssertEqual(suffixPage.files.map(\.id), [report.id])
+        XCTAssertEqual(suffixPage.totalCount, 1)
+        XCTAssertEqual(emojiPage.files.map(\.id), [emoji.id])
+        XCTAssertEqual(categoryIDs, [report.id])
+        XCTAssertEqual(filteredIDs, [emoji.id])
     }
 
     func testSearchPageReportsTotalAndCanLoadEveryMatch() async throws {
@@ -3078,7 +3870,7 @@ final class FileIndexDatabaseTests: XCTestCase {
         XCTAssertFalse(categoriesAfterDelete.contains(where: { $0.id == category.id }))
     }
 
-    func testIncrementalReconcilePreservesOrdinaryHiddenRowsButRemovesSensitiveRows() async throws {
+    func testIncrementalReconcilePreservesOrdinaryHiddenRowsButRemovesExcludedAndSensitiveRows() async throws {
         let directory = try makeTemporaryDirectory()
         defer { try? FileManager.default.removeItem(at: directory) }
         let database = try FileIndexDatabase(
@@ -3131,8 +3923,7 @@ final class FileIndexDatabaseTests: XCTestCase {
                 FileIndexCoordinator.shouldPreserveUnscannedPath(
                     path,
                     canonicalSourceRootPath: sourceRoot.path,
-                    includesHiddenFiles: false,
-                    excludedDirectoryNames: ["vendor"]
+                    includesHiddenFiles: false
                 )
             }
         )
@@ -3142,14 +3933,14 @@ final class FileIndexDatabaseTests: XCTestCase {
         let hiddenMatches = try await database.searchFiles(matching: "hidden-preserved-phrase")
         let sensitiveMatches = try await database.searchFiles(matching: "sensitive-removed-phrase")
         let excludedMatches = try await database.searchFiles(matching: "excluded-preserved-phrase")
-        XCTAssertEqual(removed, [sensitive.id])
-        XCTAssertEqual(persistedIDs, [visible.id, hidden.id, excluded.id])
+        XCTAssertEqual(removed, [sensitive.id, excluded.id])
+        XCTAssertEqual(persistedIDs, [visible.id, hidden.id])
         XCTAssertEqual(links[hidden.id], [category.id])
         XCTAssertNil(links[sensitive.id])
-        XCTAssertEqual(links[excluded.id], [category.id])
+        XCTAssertNil(links[excluded.id])
         XCTAssertEqual(hiddenMatches.map(\.id), [hidden.id])
         XCTAssertTrue(sensitiveMatches.isEmpty)
-        XCTAssertEqual(excludedMatches.map(\.id), [excluded.id])
+        XCTAssertTrue(excludedMatches.isEmpty)
     }
 
     func testMoveReconciliationIgnoresCategoryDeletedAfterSnapshot() async throws {
@@ -3451,6 +4242,53 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertEqual(payload["model"] as? String, "deepseek-v4-flash")
     }
 
+    func testOpenAICompatibleProviderRetriesLocalizedServerFailureByStatusCode() async throws {
+        let transport = SequencedAITransport(responses: [
+            (Data("服务暂时不可用".utf8), 503),
+            (Data(#"{"choices":[{"message":{"content":"恢复"}}]}"#.utf8), 200)
+        ])
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: transport,
+            retryDelays: [.milliseconds(0), .milliseconds(0)]
+        )
+
+        let response = try await provider.chat([AIMessage(role: .user, content: "测试")])
+        let requestCount = await transport.requestCount()
+
+        XCTAssertEqual(response, "恢复")
+        XCTAssertEqual(requestCount, 2)
+    }
+
+    func testOpenAICompatibleProviderDoesNotRetryLocalizedClientFailure() async throws {
+        let transport = SequencedAITransport(responses: [
+            (Data("请求参数有误".utf8), 400),
+            (Data(#"{"choices":[{"message":{"content":"不应到达"}}]}"#.utf8), 200)
+        ])
+        let provider = OpenAICompatibleAIProvider(
+            kind: .deepSeek,
+            apiKey: "test-secret",
+            baseURL: URL(string: "https://api.deepseek.com")!,
+            model: "deepseek-v4-flash",
+            transport: transport,
+            retryDelays: [.milliseconds(0), .milliseconds(0)]
+        )
+
+        do {
+            _ = try await provider.chat([AIMessage(role: .user, content: "测试")])
+            XCTFail("400 客户端错误不得重试")
+        } catch let error as AIServiceError {
+            guard case .requestFailed = error else {
+                return XCTFail("错误类型不符：\(error)")
+            }
+        }
+        let requestCount = await transport.requestCount()
+        XCTAssertEqual(requestCount, 1)
+    }
+
     func testOpenAICompatibleProviderStreamsSSEContent() async throws {
         let transport = StreamingAITransport(lines: [
             #"data: {"choices":[{"delta":{"content":"你"}}]}"#,
@@ -3721,6 +4559,75 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertTrue(context.isTruncated)
     }
 
+    func testUTF8BudgetNeverSplitsExtendedGraphemeCluster() {
+        let family = "👨‍👩‍👧‍👦"
+        let bounded = AIUTF8Budget.prefix(
+            String(repeating: family, count: 20),
+            maximumBytes: family.utf8.count * 3 + 1
+        )
+
+        XCTAssertEqual(bounded, String(repeating: family, count: 3))
+        XCTAssertLessThanOrEqual(bounded.utf8.count, family.utf8.count * 3 + 1)
+    }
+
+    func testAIQuestionPromptFitsOAuthSegmentWithMultibyteQuestionAndContent() async throws {
+        let maximumBytes = OAuthBridgeGenerationPolicy.maximumPromptSegmentBytes
+        let file = IndexedFile(
+            id: "large-question", sourceID: UUID(), name: "合同👨‍👩‍👧‍👦.md",
+            path: "/private/合同.md", fileExtension: "md", kind: .document, size: 100,
+            createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+            textContent: String(repeating: "条款👨‍👩‍👧‍👦。", count: 20_000)
+        )
+        let provider = ScriptedAIProvider(
+            response: "没有相关信息。",
+            maximumPromptSegmentBytes: maximumBytes
+        )
+
+        _ = try await AIService(provider: provider).answer(
+            question: String(repeating: "到期日👨‍👩‍👧‍👦", count: 1_000),
+            about: file
+        )
+
+        let messages = await provider.lastMessages()
+        XCTAssertTrue(messages.allSatisfy { $0.content.utf8.count <= maximumBytes })
+        XCTAssertTrue(messages.last?.content.contains("问题：") == true)
+    }
+
+    func testAIClassificationEveryPromptBatchFitsOAuthSegment() async throws {
+        let maximumBytes = OAuthBridgeGenerationPolicy.maximumPromptSegmentBytes
+        let files = (0..<8).map { index in
+            IndexedFile(
+                id: "classification-\(index)", sourceID: UUID(),
+                name: "文件-\(index)-\(String(repeating: "👨‍👩‍👧‍👦", count: 100)).md",
+                path: "/private/文件-\(index).md", fileExtension: "md", kind: .document,
+                size: 100, createdAt: nil, modifiedAt: nil, indexedAt: Date(),
+                textContent: String(repeating: "正文👨‍👩‍👧‍👦。", count: 10_000)
+            )
+        }
+        let categories = (0..<180).map { index in
+            FileCategory(
+                id: UUID(),
+                name: "分类-\(index)-\(String(repeating: "汉👨‍👩‍👧‍👦", count: 80))",
+                symbolName: "folder"
+            )
+        }
+        let provider = ScriptedAIProvider(
+            response: #"{"suggestions":[]}"#,
+            maximumPromptSegmentBytes: maximumBytes
+        )
+
+        _ = try await AIService(provider: provider).classify(
+            files: files,
+            categories: categories
+        )
+
+        let batches = await provider.allMessageBatches()
+        XCTAssertGreaterThan(batches.count, 1)
+        XCTAssertTrue(batches.flatMap { $0 }.allSatisfy {
+            $0.content.utf8.count <= maximumBytes
+        })
+    }
+
     func testAIQuestionRetrievesRelevantLateExcerptInsteadOfPrefixOnly() async throws {
         let file = IndexedFile(
             id: "late", sourceID: UUID(), name: "合同.md", path: "/private/合同.md",
@@ -3819,6 +4726,32 @@ private actor RecordingAITransport: AIHTTPTransport {
     }
 }
 
+private actor SequencedAITransport: AIHTTPTransport {
+    private let responses: [(data: Data, statusCode: Int)]
+    private var nextIndex = 0
+
+    init(responses: [(Data, Int)]) {
+        self.responses = responses
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        let index = min(nextIndex, responses.count - 1)
+        nextIndex += 1
+        let response = responses[index]
+        return (
+            response.data,
+            HTTPURLResponse(
+                url: request.url!,
+                statusCode: response.statusCode,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+        )
+    }
+
+    func requestCount() -> Int { nextIndex }
+}
+
 private actor StreamingAITransport: AIStreamingHTTPTransport {
     private let responseLines: [String]
     private var request: URLRequest?
@@ -3857,28 +4790,57 @@ private actor StreamingAITransport: AIStreamingHTTPTransport {
 
 private actor ScriptedAIProvider: AIProvider {
     nonisolated let kind = AIProviderKind.deepSeek
+    nonisolated let maximumPromptSegmentBytes: Int
     private let response: String
     private var messages: [AIMessage] = []
+    private var messageBatches: [[AIMessage]] = []
 
-    init(response: String) {
+    init(response: String, maximumPromptSegmentBytes: Int = 262_144) {
         self.response = response
+        self.maximumPromptSegmentBytes = maximumPromptSegmentBytes
     }
 
     func chat(_ messages: [AIMessage]) async throws -> String {
         self.messages = messages
+        messageBatches.append(messages)
         return response
     }
 
     func lastMessages() -> [AIMessage] {
         messages
     }
+
+    func allMessageBatches() -> [[AIMessage]] {
+        messageBatches
+    }
 }
 
 private actor FileEventProbe {
     private var eventsBySourceID: [UUID: [FileSystemChangeEvent]] = [:]
+    private var cursorsBySourceID: [UUID: FSEventStreamEventId] = [:]
+    private var rootsBySourceID: [UUID: Set<String>] = [:]
 
-    func record(sourceID: UUID, events: [FileSystemChangeEvent]) {
+    func record(
+        sourceID: UUID,
+        events: [FileSystemChangeEvent],
+        cursor: FSEventStreamEventId? = nil,
+        rootPath: String? = nil
+    ) {
         eventsBySourceID[sourceID, default: []].append(contentsOf: events)
+        if let cursor {
+            cursorsBySourceID[sourceID] = max(cursorsBySourceID[sourceID] ?? 0, cursor)
+        }
+        if let rootPath {
+            rootsBySourceID[sourceID, default: []].insert(rootPath)
+        }
+    }
+
+    func latestCursor(sourceID: UUID) -> FSEventStreamEventId? {
+        cursorsBySourceID[sourceID]
+    }
+
+    func containsRoot(sourceID: UUID, rootPath: String) -> Bool {
+        rootsBySourceID[sourceID, default: []].contains(rootPath)
     }
 
     func containsCreatedFile(sourceID: UUID, path: String) -> Bool {

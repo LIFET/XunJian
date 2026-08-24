@@ -89,7 +89,6 @@ struct CommandPaletteView: View {
         }
     }
 
-    @ViewBuilder
     private func panel(maximumResultHeight: CGFloat) -> some View {
         let visibleCommands = displayedCommands
         return VStack(spacing: 0) {

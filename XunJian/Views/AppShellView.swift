@@ -906,16 +906,16 @@ private struct ScanStatusView: View {
                 Text(
                     AppLanguage.localized(
                         progress.sourceCount > 1
-                            ? "正在建立文件索引（\(progress.sourceIndex)/\(progress.sourceCount)）… 已发现 \(AppLanguage.fileCount(progress.discoveredCount))"
-                            : "正在建立文件索引… 已发现 \(AppLanguage.fileCount(progress.discoveredCount))",
+                            ? "正在建立文件索引（\(progress.sourceIndex)/\(progress.sourceCount)）… 本轮已扫描 \(AppLanguage.fileCount(progress.discoveredCount))"
+                            : "正在建立文件索引… 本轮已扫描 \(AppLanguage.fileCount(progress.discoveredCount))",
                         english: progress.sourceCount > 1
-                            ? "Building file index (\(progress.sourceIndex)/\(progress.sourceCount))… Found \(AppLanguage.fileCount(progress.discoveredCount))"
-                            : "Building file index… Found \(AppLanguage.fileCount(progress.discoveredCount))"
+                            ? "Building file index (\(progress.sourceIndex)/\(progress.sourceCount))… Scanned \(AppLanguage.fileCount(progress.discoveredCount)) this pass"
+                            : "Building file index… Scanned \(AppLanguage.fileCount(progress.discoveredCount)) this pass"
                     )
                 )
                 .font(.caption.weight(.medium))
                 Text(verbatim: progress.currentPath)
-                    .font(.caption2)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)

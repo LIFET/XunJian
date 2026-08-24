@@ -163,52 +163,6 @@ struct AIProviderSettingsRow: View {
             guard canLoadOAuthModels else { return }
             await oauth.refreshModels(for: kind)
         }
-        .background { providerConfirmationDialogs }
-    }
-
-    @ViewBuilder
-    private var providerConfirmationDialogs: some View {
-        Color.clear
-            .confirmationDialog(
-                deleteAPIKeyTitle,
-                isPresented: $showsDeleteConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button(deleteAPIKeyActionTitle, role: .destructive) {
-                    appModel.deleteAIKey(for: kind)
-                }
-                Button(cancelTitle, role: .cancel) {}
-            } message: {
-                Text(verbatim: deleteAPIKeyMessage)
-            }
-
-        Color.clear
-            .confirmationDialog(
-                verifyOAuthTitle,
-                isPresented: $showsOAuthVerificationConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button(verifyOAuthActionTitle) {
-                    Task { await appModel.verifyOAuthConnection(for: kind) }
-                }
-                Button(cancelTitle, role: .cancel) {}
-            } message: {
-                Text(verbatim: verifyOAuthMessage)
-            }
-
-        Color.clear
-            .confirmationDialog(
-                signOutOAuthTitle,
-                isPresented: $showsOAuthLogoutConfirmation,
-                titleVisibility: .visible
-            ) {
-                Button(signOutOAuthActionTitle, role: .destructive) {
-                    Task { await appModel.logoutOAuthProvider(for: kind) }
-                }
-                Button(cancelTitle, role: .cancel) {}
-            } message: {
-                Text(verbatim: signOutOAuthMessage)
-            }
     }
 
     private var cancelTitle: String {
@@ -526,6 +480,18 @@ struct AIProviderSettingsRow: View {
                     ) {
                         showsOAuthVerificationConfirmation = true
                     }
+                    .confirmationDialog(
+                        verifyOAuthTitle,
+                        isPresented: $showsOAuthVerificationConfirmation,
+                        titleVisibility: .visible
+                    ) {
+                        Button(verifyOAuthActionTitle) {
+                            Task { await appModel.verifyOAuthConnection(for: kind) }
+                        }
+                        Button(cancelTitle, role: .cancel) {}
+                    } message: {
+                        Text(verbatim: verifyOAuthMessage)
+                    }
                 }
                 refreshOAuthButton
                 logoutOAuthButton
@@ -599,6 +565,18 @@ struct AIProviderSettingsRow: View {
                 ) {
                     showsDeleteConfirmation = true
                 }
+                .confirmationDialog(
+                    deleteAPIKeyTitle,
+                    isPresented: $showsDeleteConfirmation,
+                    titleVisibility: .visible
+                ) {
+                    Button(deleteAPIKeyActionTitle, role: .destructive) {
+                        appModel.deleteAIKey(for: kind)
+                    }
+                    Button(cancelTitle, role: .cancel) {}
+                } message: {
+                    Text(verbatim: deleteAPIKeyMessage)
+                }
             }
     }
 
@@ -613,7 +591,11 @@ struct AIProviderSettingsRow: View {
         ) {
             appModel.setActiveOAuthAIProvider(kind)
         }
-        .disabled(isActiveOAuth || currentOAuthState != .connected)
+        .disabled(
+            isActiveOAuth
+                || currentOAuthState != .connected
+                || !oauth.modelCatalogIsReady(for: kind)
+        )
     }
 
     private var logoutOAuthButton: some View {
@@ -624,6 +606,18 @@ struct AIProviderSettingsRow: View {
             showsOAuthLogoutConfirmation = true
         }
         .disabled(isOAuthVerificationInFlight)
+        .confirmationDialog(
+            signOutOAuthTitle,
+            isPresented: $showsOAuthLogoutConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(signOutOAuthActionTitle, role: .destructive) {
+                Task { await appModel.logoutOAuthProvider(for: kind) }
+            }
+            Button(cancelTitle, role: .cancel) {}
+        } message: {
+            Text(verbatim: signOutOAuthMessage)
+        }
     }
 
     private var deviceCodeLoginButton: some View {

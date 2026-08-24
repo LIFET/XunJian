@@ -12,6 +12,11 @@ struct FileExportProgress: Equatable, Sendable {
     let total: Int
 }
 
+struct FileExportPage: Sendable {
+    let files: [IndexedFile]
+    let categoryNames: [String: [String]]
+}
+
 /// Exports the current result list as a plain-text artifact (N11).
 ///
 /// Read-only: this writes a new file the user picks and never touches the
@@ -59,7 +64,8 @@ enum FileListExport {
 
     @MainActor
     private static func export(appModel: AppModel, format: Format) async {
-        var files = currentFiles(from: appModel)
+        let files = currentFiles(from: appModel)
+        var allResultIDs: [String]?
         if appModel.commandTargetUsesGlobalSearchPagination,
            appModel.hasMoreSearchResults,
            appModel.selectedFileIDs.count <= 1 {
@@ -71,11 +77,11 @@ enum FileListExport {
             case .loaded:
                 break
             case .all:
-                guard await appModel.loadAllSearchResults() else { return }
-                files = await appModel.filesMatchingCurrentBrowseFilters()
+                guard let ids = await appModel.allFilteredSearchResultIDs() else { return }
+                allResultIDs = ids
             }
         }
-        guard !files.isEmpty else {
+        guard !(allResultIDs ?? files.map(\.id)).isEmpty else {
             appModel.reportError(AppLanguage.localized(
                 "当前没有可导出的文件。",
                 english: "There are no files to export right now."
@@ -90,6 +96,20 @@ enum FileListExport {
         panel.canCreateDirectories = true
 
         guard panel.runModal() == .OK, let url = panel.url else { return }
+
+        if let allResultIDs {
+            appModel.startFileListExport(totalCount: allResultIDs.count) { reportProgress in
+                try await writePaged(
+                    orderedIDs: allResultIDs,
+                    format: format,
+                    to: url,
+                    progress: reportProgress
+                ) { ids in
+                    await appModel.fileExportPage(for: ids)
+                }
+            }
+            return
+        }
 
         let categoryNames = await appModel.categoryNamesForExport(files)
         let filesSnapshot = files
@@ -223,6 +243,93 @@ enum FileListExport {
                     progress?(index + 1)
                 }
             }
+        }
+
+        try handle.synchronize()
+        try handle.close()
+        if fileManager.fileExists(atPath: destinationURL.path) {
+            _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
+        } else {
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+        }
+        installed = true
+    }
+
+    /// Writes global-search results in bounded pages. Only ordered IDs are
+    /// retained for the whole operation; file metadata and category names are
+    /// resolved 500 rows at a time so a large export does not duplicate the
+    /// complete in-memory index.
+    static func writePaged(
+        orderedIDs: [String],
+        format: Format,
+        to destinationURL: URL,
+        progress: (@Sendable (Int) -> Void)? = nil,
+        page: @escaping @MainActor @Sendable ([String]) async -> FileExportPage
+    ) async throws {
+        let fileManager = FileManager.default
+        let temporaryURL = destinationURL.deletingLastPathComponent()
+            .appendingPathComponent(".xunjian-export-\(UUID().uuidString).tmp")
+        guard fileManager.createFile(atPath: temporaryURL.path, contents: nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        let handle = try FileHandle(forWritingTo: temporaryURL)
+        var installed = false
+        defer {
+            try? handle.close()
+            if !installed { try? fileManager.removeItem(at: temporaryURL) }
+        }
+
+        func append(_ line: String) throws {
+            try handle.write(contentsOf: Data(line.utf8))
+        }
+
+        switch format {
+        case .csv:
+            try append(headers.map(csvField).joined(separator: ",") + "\n")
+        case .markdown:
+            let opening = [
+                "# " + AppLanguage.localized("寻简文件清单", english: "XunJian File List"),
+                "",
+                AppLanguage.localized(
+                    "共 \(orderedIDs.count) 个文件 · 导出于 \(FinderDateFormatting.string(for: Date()))",
+                    english: "\(orderedIDs.count) files · exported \(FinderDateFormatting.string(for: Date()))"
+                ),
+                "",
+                "| " + headers.map(markdownCell).joined(separator: " | ") + " |",
+                "| " + headers.map { _ in "---" }.joined(separator: " | ") + " |"
+            ]
+            try append(opening.joined(separator: "\n") + "\n")
+        }
+
+        let pageSize = 500
+        for start in stride(from: 0, to: orderedIDs.count, by: pageSize) {
+            try Task.checkCancellation()
+            let end = min(start + pageSize, orderedIDs.count)
+            let pageIDs = Array(orderedIDs[start..<end])
+            let resolved = await page(pageIDs)
+            guard resolved.files.count == pageIDs.count else {
+                throw CocoaError(.fileReadNoSuchFile)
+            }
+            for file in resolved.files {
+                try Task.checkCancellation()
+                switch format {
+                case .csv:
+                    let cells = row(
+                        for: file,
+                        categoryNames: resolved.categoryNames,
+                        dateFormatter: { $0.ISO8601Format() }
+                    )
+                    try append(cells.map(csvField).joined(separator: ",") + "\n")
+                case .markdown:
+                    let cells = row(
+                        for: file,
+                        categoryNames: resolved.categoryNames,
+                        dateFormatter: FinderDateFormatting.string(for:)
+                    )
+                    try append("| " + cells.map(markdownCell).joined(separator: " | ") + " |\n")
+                }
+            }
+            progress?(end)
         }
 
         try handle.synchronize()
