@@ -2,7 +2,7 @@
 
 ## 当前项目状态
 
-寻简 0.1.5（build 6）发布候选已完成检索、扫描、AI 与交互修复，正在执行正式发布流程。
+寻简 0.1.5（build 6）已完成三架构正式发布，GitHub Release 与 Sparkle 更新源均使用已公证产物。
 
 ## 已完成内容
 
@@ -28,8 +28,11 @@
 - 5 万/10 万文件发布门禁 2/2 通过；10 万项写入 1.24s、重载 0.11s、搜索 0.011s、页面交互 0.40s。
 - `xcodebuild analyze` 与 `git diff --check` 通过；仅有 macOS 测试宿主的 `linkd` 环境噪声。
 - Developer ID Debug QA 构建完成深层严格签名验证；最终无探针构建在线新增 1 秒入库、离线新增重启后 1 秒入库、目录移除 3 秒清索引，SQLite `quick_check=ok`，同一 PID 稳定运行且无新增崩溃报告。
-- 未运行真实 OAuth、AI 或付费请求；0.1.5 正在执行提交、签名、公证与上线门禁。
+- 三架构新公证任务均已 Accepted；Universal、Apple Silicon、Intel 已通过 staple/validate、DMG 校验、Gatekeeper、挂载版本/架构、App/XPC 深层签名、Sparkle 与官方 Runtime 签名复验。
+- GitHub Release `v0.1.5` 已公开，三个资产的线上大小与 SHA-256 均和本地一致且可通过 HTTPS 下载。
+- Universal Sparkle EdDSA 已生成并验证；`appcast.xml` 保留旧版本并新增 0.1.5（build 6）。
+- 未运行真实 OAuth、AI 或付费请求。
 
 ## 下一步
 
-完成三架构签名、公证、GitHub Release、Sparkle appcast 与 HTTPS 验收。
+0.1.5 发布已完成；后续开发从 0.1.6 开始。

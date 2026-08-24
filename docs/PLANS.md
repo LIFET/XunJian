@@ -3,7 +3,7 @@
 ## 发布状态
 
 - [x] 0.1.4（build 5）已完成索引迁移性能修复、三架构签名/公证/门禁、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
-- [ ] 0.1.5（build 6）发布候选已修复扫描/监控/排除与原子正文索引，并收口 OAuth 模型恢复、UTF-8 Prompt 门禁、大结果集全选/分页导出、选中大小、确认框与无障碍；全盘模式使用真实账户主目录，未知文件元数据事件与 `/` 根目录增量扫描已闭环。主工程 401 项（2 项大型门禁跳过）及 OAuth 进程 38 项均 0 失败，真实 Documents 在线/离线增删验收通过，正在执行正式发布。
+- [x] 0.1.5（build 6）已完成扫描/监控/排除、原子正文索引、OAuth 模型恢复、UTF-8 Prompt 门禁、大结果集全选/导出、确认框与无障碍修复；主工程 401 项（2 项大型门禁跳过）、OAuth 进程 38 项及 5 万/10 万门禁均 0 失败。三架构已完成 Developer ID、公证、staple/validate、Gatekeeper、挂载签名/架构、官方 Runtime、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 
 ## 产品目标
 

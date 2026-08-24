@@ -6,6 +6,21 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.5</title>
+            <pubDate>Mon, 24 Aug 2026 17:32:11 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.5</link>
+            <sparkle:version>6</sparkle:version>
+            <sparkle:shortVersionString>0.1.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.5
+
+- 修复全盘及授权目录扫描遗漏、排除规则失效、离线变更和 FSEvents 游标一致性问题。
+- 提升大规模索引、全文搜索、批量选择与导出的性能和稳定性。
+- 完善 OAuth 模型恢复、AI 输入预算、扫描进度、确认操作及无障碍体验。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.5/XunJian-0.1.5-macOS.dmg" length="277527281" type="application/octet-stream" sparkle:edSignature="i7VCt+/Q2AQyGtWwUoJEZoidmffIlg82NHUhL9bai9wrRCivOEdldGYlx1rdG+pJbacKWgXsJsyXEh+y+D5EAA=="/>
+        </item>
+        <item>
             <title>0.1.4</title>
             <pubDate>Wed, 19 Aug 2026 00:00:23 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.4</link>
