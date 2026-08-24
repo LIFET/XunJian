@@ -144,7 +144,7 @@ struct AppShellView: View {
                     )
 
                     DatabaseUnavailableBanner(
-                        isAvailable: appModel.isDatabaseAvailable,
+                        state: appModel.databaseState,
                         onRetry: { Task { await appModel.retryDatabase() } }
                     )
 
@@ -193,6 +193,7 @@ struct AppShellView: View {
         }
         .focusedSceneValue(\.xunJianCommandContext, commandContext)
         return navigation
+            .xunjianThinScrollers()
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRevealInAllFiles)) { _ in
                 selection = .allFiles
             }
@@ -836,13 +837,31 @@ private struct TrashUndoBanner: View {
 }
 
 private struct DatabaseUnavailableBanner: View {
-    let isAvailable: Bool
+    let state: FileIndexDatabaseState
     let onRetry: () -> Void
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         Group {
-            if !isAvailable {
+            if state == .opening {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(verbatim: AppLanguage.localized(
+                        "正在打开本地索引…",
+                        english: "Opening the local index…"
+                    ))
+                    Spacer(minLength: 8)
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, XunJianUI.Spacing.page)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.bar)
+                .overlay(alignment: .bottom) { Divider() }
+                .transition(.move(edge: .top).combined(with: .opacity))
+            } else if state.showsFailure {
                 HStack(spacing: 8) {
                     Label(
                         AppLanguage.localized(
@@ -867,7 +886,7 @@ private struct DatabaseUnavailableBanner: View {
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
         }
-        .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: isAvailable)
+        .animation(XunJianUI.motion(reduceMotion: reduceMotion), value: state)
     }
 }
 

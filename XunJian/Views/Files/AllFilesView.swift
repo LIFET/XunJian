@@ -661,7 +661,7 @@ struct AllFilesView: View {
                 } description: {
                     Text(emptyDescription)
                 } actions: {
-                    if !appModel.isDatabaseAvailable {
+                    if appModel.databaseState.showsFailure {
                         Button(AppLanguage.localized("重试", english: "Retry")) {
                             Task { await appModel.retryDatabase() }
                         }
@@ -778,7 +778,10 @@ struct AllFilesView: View {
     }
 
     private var emptyTitle: String {
-        if !appModel.isDatabaseAvailable {
+        if appModel.databaseState == .opening {
+            return AppLanguage.localized("正在打开本地索引…", english: "Opening local index…")
+        }
+        if appModel.databaseState.showsFailure {
             return AppLanguage.localized("本地索引不可用", english: "Local index unavailable")
         }
         if appModel.aiSearchResults != nil {
@@ -801,7 +804,13 @@ struct AllFilesView: View {
     }
 
     private var emptyDescription: String {
-        if !appModel.isDatabaseAvailable {
+        if appModel.databaseState == .opening {
+            return AppLanguage.localized(
+                "索引准备完成后，文件会自动显示。",
+                english: "Files appear automatically when the index is ready."
+            )
+        }
+        if appModel.databaseState.showsFailure {
             return AppLanguage.localized(
                 "文件索引无法读取，依赖索引的操作已暂停。",
                 english: "The file index could not be read, so index-dependent actions are paused."

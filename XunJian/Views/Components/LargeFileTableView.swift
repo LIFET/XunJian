@@ -71,6 +71,7 @@ struct LargeFileTableView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = true
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
+        XunJianScrollAppearance.apply(to: scrollView)
 
         let tableView = LargeFileNSTableView()
         tableView.delegate = context.coordinator

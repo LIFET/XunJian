@@ -59,15 +59,13 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
         guard !Self.isRunningTests, self.appModel == nil else { return }
         self.appModel = appModel
 
-        preferenceObservation = NotificationCenter.default
-            .publisher(for: UserDefaults.didChangeNotification)
+        preferenceObservation = Self.userDefaultsDidChangePublisher()
             .map { _ in Self.isMenuBarSearchEnabled }
             .removeDuplicates()
             .sink { [weak self] enabled in
                 self?.setMenuBarSearchVisible(enabled)
             }
-        languageObservation = NotificationCenter.default
-            .publisher(for: UserDefaults.didChangeNotification)
+        languageObservation = Self.userDefaultsDidChangePublisher()
             .map { _ in
                 UserDefaults.standard.string(forKey: AppLanguage.storageKey)
                     ?? AppLanguage.system.rawValue
@@ -83,6 +81,14 @@ final class XunJianAppDelegate: NSObject, NSApplicationDelegate {
                 self?.popover?.performClose(nil)
             }
         setMenuBarSearchVisible(Self.isMenuBarSearchEnabled)
+    }
+
+    static func userDefaultsDidChangePublisher(
+        center: NotificationCenter = .default
+    ) -> AnyPublisher<Notification, Never> {
+        center.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: RunLoop.main)
+            .eraseToAnyPublisher()
     }
 
     private static var isMenuBarSearchEnabled: Bool {

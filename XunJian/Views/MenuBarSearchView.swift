@@ -72,6 +72,7 @@ struct MenuBarSearchView: View {
             idealHeight: 480,
             maxHeight: 620
         )
+        .xunjianThinScrollers()
         .environment(
             \.locale,
             AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent

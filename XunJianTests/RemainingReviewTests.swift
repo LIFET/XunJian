@@ -1,8 +1,135 @@
+import AppKit
+import Combine
 import Darwin
 import XCTest
 @testable import XunJian
 
 final class RemainingReviewTests: XCTestCase {
+    @MainActor
+    func testDatabaseStartsInOpeningStateAndOnlyFailureShowsRetryUI() async throws {
+        let coordinator = FileIndexCoordinator(isRunningTests: true)
+
+        XCTAssertEqual(coordinator.databaseState, .opening)
+        XCTAssertFalse(coordinator.isDatabaseAvailable)
+        XCTAssertFalse(coordinator.databaseState.showsFailure)
+
+        coordinator.start()
+        for _ in 0..<100 where coordinator.databaseState != .available {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(coordinator.databaseState, .available)
+        XCTAssertTrue(coordinator.isDatabaseAvailable)
+        XCTAssertFalse(coordinator.databaseState.showsFailure)
+        XCTAssertTrue(FileIndexDatabaseState.failed.showsFailure)
+        coordinator.cancelAllTasks()
+    }
+
+    @MainActor
+    func testMenuBarDefaultsObserversHopToMainRunLoopBeforeReadingPreferences() async {
+        let center = NotificationCenter()
+        let delivered = expectation(description: "UserDefaults notification delivered")
+        var deliveredOnMainThread = false
+        let observation = XunJianAppDelegate.userDefaultsDidChangePublisher(center: center)
+            .sink { _ in
+                deliveredOnMainThread = Thread.isMainThread
+                delivered.fulfill()
+            }
+
+        Task.detached {
+            center.post(name: UserDefaults.didChangeNotification, object: nil)
+        }
+        await fulfillment(of: [delivered], timeout: 1)
+
+        XCTAssertTrue(deliveredOnMainThread)
+        _ = observation
+    }
+
+    @MainActor
+    func testDatabaseBootstrapActuallyRunsOffMainThread() async throws {
+        let openedOnMainThread = try await FileIndexCoordinator.performDatabaseBootstrap {
+            Thread.isMainThread
+        }
+
+        XCTAssertFalse(openedOnMainThread)
+    }
+
+    @MainActor
+    func testGlobalScrollbarStyleKeepsNativeScrollersThin() throws {
+        let repositoryRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let uiSource = try String(
+            contentsOf: repositoryRoot
+                .appending(path: "XunJian/Views/Components/XunJianUI.swift"),
+            encoding: .utf8
+        )
+        let shellSource = try String(
+            contentsOf: repositoryRoot
+                .appending(path: "XunJian/Views/AppShellView.swift"),
+            encoding: .utf8
+        )
+        let menuBarSource = try String(
+            contentsOf: repositoryRoot
+                .appending(path: "XunJian/Views/MenuBarSearchView.swift"),
+            encoding: .utf8
+        )
+
+        XCTAssertTrue(uiSource.contains("scrollView.scrollerStyle = .overlay"))
+        XCTAssertTrue(uiSource.contains("scroller.controlSize = .small"))
+        XCTAssertTrue(shellSource.contains(".xunjianThinScrollers()"))
+        XCTAssertTrue(menuBarSource.contains(".xunjianThinScrollers()"))
+
+        let rootView = NSView()
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        scrollView.scrollerStyle = .legacy
+        scrollView.autohidesScrollers = false
+        scrollView.verticalScroller?.controlSize = .regular
+        rootView.addSubview(scrollView)
+
+        XunJianScrollAppearance.applyRecursively(in: rootView)
+
+        XCTAssertEqual(scrollView.scrollerStyle, .overlay)
+        XCTAssertTrue(scrollView.autohidesScrollers)
+        XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
+    }
+
+    @MainActor
+    func testThinScrollerHostAppliesOnExplicitRefreshButNotEveryLayoutPass() async throws {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let rootView = try XCTUnwrap(window.contentView)
+        let hostView = XunJianThinScrollerHostView()
+        let scrollView = NSScrollView()
+        scrollView.hasVerticalScroller = true
+        rootView.addSubview(hostView)
+        rootView.addSubview(scrollView)
+
+        hostView.scheduleApply()
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(scrollView.scrollerStyle, .overlay)
+        XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
+
+        scrollView.scrollerStyle = .legacy
+        scrollView.verticalScroller?.controlSize = .regular
+        hostView.needsLayout = true
+        hostView.layoutSubtreeIfNeeded()
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(scrollView.scrollerStyle, .legacy)
+        XCTAssertEqual(scrollView.verticalScroller?.controlSize, .regular)
+
+        hostView.scheduleApply()
+        try await Task.sleep(for: .milliseconds(20))
+        XCTAssertEqual(scrollView.scrollerStyle, .overlay)
+        XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
+    }
+
     func testPaginatedSelectAllContextIgnoresResultPublicationButTracksFilters() {
         let original = PaginatedSelectAllContext(
             query: "report",

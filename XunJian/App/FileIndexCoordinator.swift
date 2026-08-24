@@ -2,6 +2,15 @@ import AppKit
 import Foundation
 import UserNotifications
 
+enum FileIndexDatabaseState: Equatable, Sendable {
+    case opening
+    case available
+    case failed
+
+    var isAvailable: Bool { self == .available }
+    var showsFailure: Bool { self == .failed }
+}
+
 /// Owns the local file index: database lifecycle, scanning, search, file
 /// operations, categories, and filesystem monitoring.
 ///
@@ -162,7 +171,8 @@ final class FileIndexCoordinator: ObservableObject {
     @Published private(set) var scanScopeMode: FileScanScopeMode = .selectedFolders
     @Published private(set) var wholeMacSourceID: UUID?
     @Published private(set) var isWholeMacScanPaused = false
-    @Published private(set) var isDatabaseAvailable = true
+    @Published private(set) var databaseState: FileIndexDatabaseState = .opening
+    var isDatabaseAvailable: Bool { databaseState.isAvailable }
     @Published private(set) var isUpdatingContentIndex = false
 
     // MARK: - Hooks into the rest of the app
@@ -203,6 +213,8 @@ final class FileIndexCoordinator: ObservableObject {
     // MARK: - Storage
 
     private var database: FileIndexDatabase?
+    private var databaseBootstrapTask: Task<Void, Never>?
+    private var databaseBootstrapGeneration: UInt64 = 0
     /// Invalidates work captured from an older SQLite actor after retry/reopen.
     private var databaseGeneration: UInt64 = 0
     /// Invalidates older full reloads and detached snapshots before publication.
@@ -293,19 +305,50 @@ final class FileIndexCoordinator: ObservableObject {
                 forKey: FileIndexPreferences.wholeMacCompletedScopePathsKey
             )
         }
-        openDatabase()
-        configureFileSystemMonitoring()
     }
 
     func start() {
-        Task { [weak self] in
-            guard let self, await self.ensureDisabledContentIsPurged() else { return }
-            await self.reloadIndex()
-            self.scheduleInitialCatchUpScansIfNeeded()
+        guard database == nil, databaseBootstrapTask == nil else { return }
+        databaseState = .opening
+        let targetURL: URL
+        do {
+            targetURL = try databaseURL()
+        } catch {
+            suspendIndexAfterDatabaseFailure(error)
+            return
+        }
+        databaseBootstrapGeneration &+= 1
+        let requestedBootstrap = databaseBootstrapGeneration
+        databaseBootstrapTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                if requestedBootstrap == self.databaseBootstrapGeneration {
+                    self.databaseBootstrapTask = nil
+                }
+            }
+            do {
+                let openedDatabase = try await Self.openDatabaseOffMainActor(at: targetURL)
+                guard !Task.isCancelled,
+                      requestedBootstrap == self.databaseBootstrapGeneration else { return }
+                self.database = openedDatabase
+                self.databaseGeneration &+= 1
+                self.databaseState = .available
+                guard await self.ensureDisabledContentIsPurged() else { return }
+                await self.reloadIndex()
+                self.scheduleInitialCatchUpScansIfNeeded()
+            } catch is CancellationError {
+                return
+            } catch {
+                guard requestedBootstrap == self.databaseBootstrapGeneration else { return }
+                self.suspendIndexAfterDatabaseFailure(error)
+            }
         }
     }
 
     func cancelAllTasks() {
+        databaseBootstrapGeneration &+= 1
+        databaseBootstrapTask?.cancel()
+        databaseBootstrapTask = nil
         searchTask?.cancel()
         searchGeneration &+= 1
         setSearchProgress(false)
@@ -320,15 +363,24 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Database lifecycle
 
-    private func openDatabase() {
-        do {
-            database = try FileIndexDatabase(databaseURL: try databaseURL())
-            databaseGeneration &+= 1
-        } catch {
-            database = nil
-            databaseGeneration &+= 1
-            isDatabaseAvailable = false
-            onError?(Self.message(for: error))
+    nonisolated static func performDatabaseBootstrap<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) async throws -> T {
+        let task = Task.detached(priority: .userInitiated) {
+            try operation()
+        }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    nonisolated static func openDatabaseOffMainActor(
+        at databaseURL: URL
+    ) async throws -> FileIndexDatabase {
+        try await performDatabaseBootstrap {
+            try FileIndexDatabase(databaseURL: databaseURL)
         }
     }
 
@@ -346,20 +398,31 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func retryDatabase() async {
+        databaseBootstrapGeneration &+= 1
+        let requestedBootstrap = databaseBootstrapGeneration
+        databaseBootstrapTask?.cancel()
+        databaseBootstrapTask = nil
         searchTask?.cancel()
         searchGeneration &+= 1
         database = nil
         databaseGeneration &+= 1
         reloadGeneration &+= 1
         indexPublicationGeneration &+= 1
+        databaseState = .opening
         do {
-            database = try FileIndexDatabase(databaseURL: try databaseURL())
+            let openedDatabase = try await Self.openDatabaseOffMainActor(at: databaseURL())
+            guard !Task.isCancelled,
+                  requestedBootstrap == databaseBootstrapGeneration else { return }
+            database = openedDatabase
             databaseGeneration &+= 1
-            isDatabaseAvailable = true
+            databaseState = .available
             guard await ensureDisabledContentIsPurged() else { return }
             await reloadIndex()
             startNextPendingFullRescanIfNeeded()
+        } catch is CancellationError {
+            return
         } catch {
+            guard requestedBootstrap == databaseBootstrapGeneration else { return }
             suspendIndexAfterDatabaseFailure(error)
         }
     }
@@ -390,7 +453,7 @@ final class FileIndexCoordinator: ObservableObject {
         databaseGeneration &+= 1
         reloadGeneration &+= 1
         indexPublicationGeneration &+= 1
-        isDatabaseAvailable = false
+        databaseState = .failed
         onError?(Self.message(for: error))
     }
 
@@ -497,7 +560,7 @@ final class FileIndexCoordinator: ObservableObject {
                 configureFileSystemMonitoring()
                 onFilesChanged?()
                 refreshActiveSearchIfNeeded()
-                isDatabaseAvailable = true
+                databaseState = .available
                 return
             } catch {
                 guard databaseGeneration == capturedDatabaseGeneration else { return }
@@ -825,7 +888,7 @@ final class FileIndexCoordinator: ObservableObject {
 
             refreshActiveSearchIfNeeded()
             onFilesChanged?()
-            isDatabaseAvailable = true
+            databaseState = .available
             return .publish
         } catch {
             guard databaseGeneration == capturedDatabaseGeneration else {
@@ -878,7 +941,7 @@ final class FileIndexCoordinator: ObservableObject {
             apply(derived.categories)
             indexPublicationGeneration &+= 1
             refreshActiveSearchIfNeeded()
-            isDatabaseAvailable = true
+            databaseState = .available
         } catch {
             guard databaseGeneration == capturedDatabaseGeneration else { return }
             suspendIndexAfterDatabaseFailure(error)
@@ -921,7 +984,7 @@ final class FileIndexCoordinator: ObservableObject {
             apply(derived)
             indexPublicationGeneration &+= 1
             refreshActiveSearchIfNeeded()
-            isDatabaseAvailable = true
+            databaseState = .available
         } catch {
             guard databaseGeneration == capturedDatabaseGeneration else { return }
             suspendIndexAfterDatabaseFailure(error)
@@ -963,7 +1026,7 @@ final class FileIndexCoordinator: ObservableObject {
             activateSecurityScopes()
             configureFileSystemMonitoring()
             indexPublicationGeneration &+= 1
-            isDatabaseAvailable = true
+            databaseState = .available
         } catch {
             guard databaseGeneration == capturedDatabaseGeneration else { return }
             suspendIndexAfterDatabaseFailure(error)

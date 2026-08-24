@@ -1000,7 +1000,7 @@ final class AppModel: ObservableObject {
         forward(index.$categories)
         forward(index.$savedSearches)
         forward(index.$sources)
-        forward(index.$isDatabaseAvailable)
+        forward(index.$databaseState)
         forward(index.$includesHiddenFiles)
         forward(index.$scanScopeMode)
         forward(index.$wholeMacSourceID)
@@ -1028,6 +1028,7 @@ final class AppModel: ObservableObject {
     var scanProgress: ScanProgress? { index.scanProgress }
     var isScanning: Bool { index.isScanning }
     var includesHiddenFiles: Bool { index.includesHiddenFiles }
+    var databaseState: FileIndexDatabaseState { index.databaseState }
     var isDatabaseAvailable: Bool { index.isDatabaseAvailable }
     var isUpdatingContentIndex: Bool { index.isUpdatingContentIndex }
 

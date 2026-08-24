@@ -58,6 +58,7 @@ struct LargeFileGridView: NSViewRepresentable {
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
+        XunJianScrollAppearance.apply(to: scrollView)
 
         let collectionView = LargeFileNSCollectionView()
         collectionView.collectionViewLayout = LargeFileGridLayout()

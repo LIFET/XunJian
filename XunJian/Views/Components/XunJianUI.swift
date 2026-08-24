@@ -180,6 +180,70 @@ extension View {
     ) -> some View {
         modifier(FloatingSurfaceModifier(cornerRadius: cornerRadius, forceOpaque: forceOpaque))
     }
+
+    /// Keeps every AppKit-backed SwiftUI scroll container on the compact,
+    /// overlay-style scroller used throughout XunJian. This is app-local and
+    /// never changes the user's macOS scrollbar preference.
+    func xunjianThinScrollers() -> some View {
+        background(XunJianThinScrollerBridge())
+    }
+}
+
+// MARK: - App-local scrollbar appearance
+
+@MainActor
+enum XunJianScrollAppearance {
+    static func apply(to scrollView: NSScrollView) {
+        scrollView.scrollerStyle = .overlay
+        scrollView.autohidesScrollers = true
+
+        for scroller in [scrollView.verticalScroller, scrollView.horizontalScroller].compactMap({ $0 }) {
+            scroller.controlSize = .small
+        }
+    }
+
+    static func applyRecursively(in rootView: NSView) {
+        var pendingViews = [rootView]
+        while let view = pendingViews.popLast() {
+            if let scrollView = view as? NSScrollView {
+                apply(to: scrollView)
+                // A scroll view's document tree can contain thousands of
+                // visible file cells but cannot contain another page scroller.
+                continue
+            }
+            pendingViews.append(contentsOf: view.subviews)
+        }
+    }
+}
+
+private struct XunJianThinScrollerBridge: NSViewRepresentable {
+    func makeNSView(context: Context) -> XunJianThinScrollerHostView {
+        XunJianThinScrollerHostView()
+    }
+
+    func updateNSView(_ nsView: XunJianThinScrollerHostView, context: Context) {
+        nsView.scheduleApply()
+    }
+}
+
+@MainActor
+final class XunJianThinScrollerHostView: NSView {
+    private var applyTask: Task<Void, Never>?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        scheduleApply()
+    }
+
+    func scheduleApply() {
+        applyTask?.cancel()
+        applyTask = Task { @MainActor [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled,
+                  let contentView = self?.window?.contentView else { return }
+            XunJianScrollAppearance.applyRecursively(in: contentView)
+        }
+    }
 }
 
 // MARK: - Reusable chrome
