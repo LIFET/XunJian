@@ -2,7 +2,7 @@
 
 ## 当前项目状态
 
-寻简 0.1.6（build 7）稳定性修复已提交并推送 `main`，annotated tag `v0.1.6` 已推送；三架构 Developer ID DMG 已完成本地验收，尚未提交 Apple 公证或创建 GitHub Release。
+寻简 0.1.6（build 7）已直接发布：源码、annotated tag、三架构 Developer ID DMG、GitHub Release 与 Sparkle 更新源均已上线；本次按用户指令未执行 Apple 公证。
 
 ## 已完成内容
 
@@ -19,4 +19,4 @@
 
 ## 下一步
 
-当前 Keychain 没有可用的 `notarytool` 凭据 profile；交互式保存 `XunJianNotary` 后，提交三个本次 DMG 公证，再完成 staple、Gatekeeper、GitHub Release 与 Sparkle 发布。
+后续版本如需 Apple 公证，先保存可用的 `notarytool` Keychain profile，再执行提交、staple 与 Gatekeeper 门禁。

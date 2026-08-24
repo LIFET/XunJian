@@ -6,6 +6,21 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.6</title>
+            <pubDate>Tue, 25 Aug 2026 00:28:48 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.6</link>
+            <sparkle:version>7</sparkle:version>
+            <sparkle:shortVersionString>0.1.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.6
+
+- 修复菜单栏偏好变更可能触发的后台线程隔离崩溃。
+- 将 SQLite 打开与迁移移出主线程，并区分索引打开、可用与失败状态。
+- 恢复全局细型原生滚动条，并消除布局阶段重复遍历。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.6/XunJian-0.1.6-macOS.dmg" length="303454725" type="application/octet-stream" sparkle:edSignature="wr9tzIqB8yFhcLxU/Fi1DaFAMtgJWVVJQAu1Q9KZZwUMk9y+L72ujGrrzCWqrA24h6Qfc4U3tsh2ze4RNIsBDw=="/>
+        </item>
+        <item>
             <title>0.1.5</title>
             <pubDate>Mon, 24 Aug 2026 17:32:11 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.5</link>
