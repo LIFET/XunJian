@@ -2,7 +2,7 @@
 
 ## 发布状态
 
-- [ ] 0.1.6（build 7）已完成菜单栏后台偏好通知崩溃、SQLite 启动阻塞/状态误报与全局滚动条回退修复；主工程 406 项（2 项大型门禁跳过）、OAuth Process 38 项及 5 万/10 万门禁均 0 失败。修复版三架构 Developer ID DMG、GitHub Release、Sparkle EdDSA 与线上 digest/size 已完成；Universal、Intel 公证与 Gatekeeper 验收通过，Apple Silicon 新公证任务处理中，完成 staple 与最终资产替换后关闭本项。
+- [x] 0.1.6（build 7）已完成菜单栏后台偏好通知崩溃、SQLite 启动阻塞/状态误报与全局滚动条回退修复；主工程 406 项（2 项大型门禁跳过）、OAuth Process 38 项及 5 万/10 万门禁均 0 失败。修复版三架构 Developer ID DMG、Apple 公证、staple、Gatekeeper、挂载复验、GitHub Release、Sparkle EdDSA 与线上 digest/size/下载均已完成。
 - [x] 0.1.4（build 5）已完成索引迁移性能修复、三架构签名/公证/门禁、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 - [x] 0.1.5（build 6）已完成扫描/监控/排除、原子正文索引、OAuth 模型恢复、UTF-8 Prompt 门禁、大结果集全选/导出、确认框与无障碍修复；主工程 401 项（2 项大型门禁跳过）、OAuth 进程 38 项及 5 万/10 万门禁均 0 失败。三架构已完成 Developer ID、公证、staple/validate、Gatekeeper、挂载签名/架构、官方 Runtime、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 
