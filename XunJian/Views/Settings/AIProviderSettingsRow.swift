@@ -1,10 +1,70 @@
 import AppKit
 import SwiftUI
 
+struct AIProviderSettingsDraft: Equatable {
+    let baseURL: String
+    let model: String
+    let apiKey: String
+}
+
+@MainActor
+final class AIProviderSettingsDraftStore: ObservableObject {
+    private var drafts: [AIProviderKind: AIProviderSettingsDraft] = [:]
+
+    func draft(for kind: AIProviderKind) -> AIProviderSettingsDraft? {
+        drafts[kind]
+    }
+
+    func save(_ draft: AIProviderSettingsDraft, for kind: AIProviderKind) {
+        drafts[kind] = draft
+    }
+
+    func clear(for kind: AIProviderKind) {
+        drafts.removeValue(forKey: kind)
+    }
+}
+
+struct OAuthLoginActionPresentation: Equatable {
+    let showsPrimaryLogin: Bool
+    let showsDeviceCodeFallback: Bool
+    let showsCopyCode: Bool
+    let showsBrowserWaitingMessage: Bool
+
+    static func make(
+        state: AIOAuthState,
+        hasDeviceCodePresentation: Bool,
+        fallbackAvailable: Bool,
+        browserLaunchMode: OAuthBrowserLaunchMode?
+    ) -> Self {
+        let isDisconnected = state == .disconnected
+        let isFailed: Bool
+        if case .failed = state {
+            isFailed = true
+        } else {
+            isFailed = false
+        }
+        let isAuthenticating: Bool
+        if case .authenticating = state {
+            isAuthenticating = true
+        } else {
+            isAuthenticating = false
+        }
+        return Self(
+            showsPrimaryLogin: isDisconnected || isFailed,
+            showsDeviceCodeFallback: fallbackAvailable && !hasDeviceCodePresentation,
+            showsCopyCode: hasDeviceCodePresentation,
+            showsBrowserWaitingMessage: isAuthenticating
+                && browserLaunchMode == .providerRuntime
+                && !hasDeviceCodePresentation
+        )
+    }
+}
+
 struct AIProviderSettingsRow: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var oauth: OAuthCoordinator
     @EnvironmentObject private var ai: AISessionCoordinator
+    @EnvironmentObject private var draftStore: AIProviderSettingsDraftStore
     @Environment(\.locale) private var locale
     @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -138,7 +198,7 @@ struct AIProviderSettingsRow: View {
             .contentShape(Rectangle())
         }
         .disclosureGroupStyle(FullRowDisclosureGroupStyle())
-        .onAppear(perform: synchronizeFields)
+        .onAppear(perform: restoreDraftOrSynchronizeFields)
         .onAppear {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
@@ -163,6 +223,7 @@ struct AIProviderSettingsRow: View {
             guard canLoadOAuthModels else { return }
             await oauth.refreshModels(for: kind)
         }
+        .onDisappear(perform: preserveDraftIfNeeded)
     }
 
     private var cancelTitle: String {
@@ -373,7 +434,7 @@ struct AIProviderSettingsRow: View {
                     Task { await appModel.refreshOAuthStatus(for: kind, presentsFailure: true) }
                 }
 
-            case .statusUnknown, .failed:
+            case .statusUnknown:
                 Button(
                     AppLanguage.localized(
                         "重新检测",
@@ -381,6 +442,16 @@ struct AIProviderSettingsRow: View {
                     )
                 ) {
                     Task { await appModel.refreshOAuthStatus(for: kind, presentsFailure: true) }
+                }
+
+            case .failed:
+                if oauthLoginActionPresentation.showsPrimaryLogin {
+                    Button(loginButtonTitle) {
+                        startOAuthLogin()
+                    }
+                }
+                if oauthLoginActionPresentation.showsDeviceCodeFallback {
+                    deviceCodeFallbackButton
                 }
 
             case .starting:
@@ -405,11 +476,10 @@ struct AIProviderSettingsRow: View {
                 }
 
             case .disconnected:
-                Button(loginButtonTitle) {
-                    startOAuthLogin()
-                }
-                if kind == .codex {
-                    deviceCodeLoginButton
+                if oauthLoginActionPresentation.showsPrimaryLogin {
+                    Button(loginButtonTitle) {
+                        startOAuthLogin()
+                    }
                 }
                 Button(
                     AppLanguage.localized(
@@ -421,7 +491,8 @@ struct AIProviderSettingsRow: View {
                 }
 
             case let .authenticating(_, authorizationURL):
-                if let deviceCode = currentDeviceCodePresentation {
+                if oauthLoginActionPresentation.showsCopyCode,
+                   let deviceCode = currentDeviceCodePresentation {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(
                             verbatim: AppLanguage.localized(
@@ -439,6 +510,16 @@ struct AIProviderSettingsRow: View {
                             }
                         }
                     }
+                } else if oauthLoginActionPresentation.showsBrowserWaitingMessage {
+                    Label(
+                        AppLanguage.localized(
+                            "已在浏览器打开授权页，请完成授权",
+                            english: "The authorization page is open in your browser. Complete sign-in there."
+                        ),
+                        systemImage: "safari"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 } else if let authorizationURL {
                     Button(
                         AppLanguage.localized(
@@ -525,6 +606,7 @@ struct AIProviderSettingsRow: View {
                     apiKey: apiKey
                 ) else { return }
                 apiKey = ""
+                draftStore.clear(for: kind)
                 withAnimation(XunJianUI.motion(reduceMotion: reduceMotion)) { showsSavedConfirmation = true }
                 Task {
                     try? await Task.sleep(for: .seconds(2))
@@ -620,14 +702,16 @@ struct AIProviderSettingsRow: View {
         }
     }
 
-    private var deviceCodeLoginButton: some View {
+    private var deviceCodeFallbackButton: some View {
         Button(
             AppLanguage.localized(
-                "使用设备码登录",
-                english: "Sign In with Device Code"
+                "改用设备码登录",
+                english: "Use Device Code Instead"
             )
         ) {
-            startDeviceCodeLogin()
+            Task {
+                _ = await appModel.switchToOAuthDeviceCodeLogin(for: kind)
+            }
         }
     }
 
@@ -644,6 +728,24 @@ struct AIProviderSettingsRow: View {
             return nil
         }
         return presentation
+    }
+
+    private var currentOAuthLoginPresentation: AIOAuthLoginPresentation? {
+        guard case let .authenticating(attemptID, _) = currentOAuthState,
+              let presentation = oauth.loginPresentations[kind],
+              presentation.attemptID == attemptID else {
+            return nil
+        }
+        return presentation
+    }
+
+    private var oauthLoginActionPresentation: OAuthLoginActionPresentation {
+        OAuthLoginActionPresentation.make(
+            state: currentOAuthState,
+            hasDeviceCodePresentation: currentDeviceCodePresentation != nil,
+            fallbackAvailable: oauth.deviceCodeFallbacks.contains(kind),
+            browserLaunchMode: currentOAuthLoginPresentation?.browserLaunchMode
+        )
     }
 
     private var isOAuthVerificationInFlight: Bool {
@@ -705,12 +807,6 @@ struct AIProviderSettingsRow: View {
                   currentURL == authorizationURL,
                   oauth.deviceCodePresentations[kind] == nil else { return }
             openAuthorizationURL(authorizationURL)
-        }
-    }
-
-    private func startDeviceCodeLogin() {
-        Task {
-            _ = await appModel.beginOAuthDeviceCodeLogin(for: kind)
         }
     }
 
@@ -817,6 +913,28 @@ struct AIProviderSettingsRow: View {
     private func synchronizeFields() {
         baseURL = settings.baseURL
         model = settings.model
+    }
+
+    private func restoreDraftOrSynchronizeFields() {
+        guard let draft = draftStore.draft(for: kind) else {
+            synchronizeFields()
+            return
+        }
+        baseURL = draft.baseURL
+        model = draft.model
+        apiKey = draft.apiKey
+    }
+
+    private func preserveDraftIfNeeded() {
+        let hasTypedAPIKey = !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard hasUnsavedConfigurationChanges || hasTypedAPIKey else {
+            draftStore.clear(for: kind)
+            return
+        }
+        draftStore.save(
+            AIProviderSettingsDraft(baseURL: baseURL, model: model, apiKey: apiKey),
+            for: kind
+        )
     }
 
     private func responsiveField<Content: View>(

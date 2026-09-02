@@ -1692,7 +1692,7 @@ final class OAuthProtocolClientTests: XCTestCase {
             (profileAttributes[.ownerAccountID] as? NSNumber)?.uint32Value,
             getuid()
         )
-        XCTAssertEqual(login.arguments, ["--no-auto-update", "login", "--oauth"])
+        XCTAssertEqual(login.arguments, ["--no-auto-update", "login", "--device-auth"])
         XCTAssertEqual(logout.arguments, ["--no-auto-update", "logout"])
         XCTAssertEqual(
             deletion.arguments,
@@ -1817,6 +1817,95 @@ final class OAuthProtocolClientTests: XCTestCase {
         ) { error in
             XCTAssertEqual(error as? SupervisedLineProcessError, .invalidConfiguration)
         }
+    }
+
+    func testGrokCLIHomeSecurelyRemovesPrivateCredential() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "xunjian-grok-logout-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let home = root.appending(path: "home", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: home,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let grokHome = try GrokCLIHome.prepare(userHomeDirectoryURL: home)
+        let credentialURL = grokHome.rootURL.appending(path: "auth.json")
+        try Data("private credential".utf8).write(to: credentialURL, options: .withoutOverwriting)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: credentialURL.path
+        )
+
+        try grokHome.removeCredentialIfPresent()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: credentialURL.path))
+        XCTAssertNoThrow(try grokHome.removeCredentialIfPresent())
+    }
+
+    func testGrokCLIHomeRefusesToRemoveSymlinkCredential() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "xunjian-grok-logout-symlink-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let home = root.appending(path: "home", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: home,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let grokHome = try GrokCLIHome.prepare(userHomeDirectoryURL: home)
+        let targetURL = root.appending(path: "target")
+        try Data("do not remove".utf8).write(to: targetURL, options: .withoutOverwriting)
+        let credentialURL = grokHome.rootURL.appending(path: "auth.json")
+        try FileManager.default.createSymbolicLink(at: credentialURL, withDestinationURL: targetURL)
+
+        XCTAssertThrowsError(try grokHome.removeCredentialIfPresent()) { error in
+            XCTAssertEqual(error as? GrokCLIHomeError, .unsafePath)
+        }
+        XCTAssertEqual(try Data(contentsOf: targetURL), Data("do not remove".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: credentialURL.path))
+    }
+
+    func testGrokCLIHomeRefusesToRemoveHardLinkedCredential() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: "xunjian-grok-logout-hardlink-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let home = root.appending(path: "home", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: home,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let grokHome = try GrokCLIHome.prepare(userHomeDirectoryURL: home)
+        let credentialURL = grokHome.rootURL.appending(path: "auth.json")
+        try Data("private credential".utf8).write(to: credentialURL, options: .withoutOverwriting)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: credentialURL.path
+        )
+        let hardLinkURL = root.appending(path: "hard-link")
+        XCTAssertEqual(Darwin.link(credentialURL.path, hardLinkURL.path), 0)
+
+        XCTAssertThrowsError(try grokHome.removeCredentialIfPresent()) { error in
+            XCTAssertEqual(error as? GrokCLIHomeError, .unsafePath)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: credentialURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: hardLinkURL.path))
     }
 
     func testCodexClientUsesBoundedReadOnlyEphemeralTranscript() async throws {
@@ -2337,8 +2426,8 @@ final class OAuthProtocolClientTests: XCTestCase {
             XCTAssertEqual(login["method"], .string("account/login/start"))
             let params = login["params"]?.objectValue
             XCTAssertEqual(params?["type"], .string("chatgpt"))
-            XCTAssertEqual(params?["useHostedLoginSuccessPage"], .bool(true))
-            XCTAssertEqual(params?["appBrand"], .string("chatgpt"))
+            XCTAssertEqual(params?["useHostedLoginSuccessPage"], .bool(false))
+            XCTAssertNil(params?["appBrand"])
             try await transport.sendServerObject(.object([
                 "id": login["id"]!,
                 "result": .object([

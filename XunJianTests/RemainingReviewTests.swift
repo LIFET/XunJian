@@ -111,7 +111,10 @@ final class RemainingReviewTests: XCTestCase {
         rootView.addSubview(scrollView)
 
         hostView.scheduleApply()
-        try await Task.sleep(for: .milliseconds(20))
+        for _ in 0..<200 where scrollView.scrollerStyle != .overlay
+            || scrollView.verticalScroller?.controlSize != .small {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(scrollView.scrollerStyle, .overlay)
         XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
 
@@ -125,7 +128,10 @@ final class RemainingReviewTests: XCTestCase {
         XCTAssertEqual(scrollView.verticalScroller?.controlSize, .regular)
 
         hostView.scheduleApply()
-        try await Task.sleep(for: .milliseconds(20))
+        for _ in 0..<200 where scrollView.scrollerStyle != .overlay
+            || scrollView.verticalScroller?.controlSize != .small {
+            try await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(scrollView.scrollerStyle, .overlay)
         XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
     }

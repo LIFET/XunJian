@@ -87,6 +87,7 @@ struct AppShellView: View {
     @State private var responsiveLayout = AppShellResponsiveLayoutState()
     @State private var windowWidth: CGFloat = 1_200
     @State private var showsGlobalNewCategory = false
+    @StateObject private var aiProviderSettingsDraftStore = AIProviderSettingsDraftStore()
 
     var body: some View {
         let _ = (locale.identifier, appModel.localeRevision)
@@ -264,6 +265,7 @@ struct AppShellView: View {
                     }
                 }
                 .environment(\.locale, locale)
+                .xunjianThinScrollers()
             }
             .sheet(isPresented: $showsGlobalNewCategory) {
                 CategoryEditorSheet(
@@ -344,6 +346,7 @@ struct AppShellView: View {
             destination: destination,
             databaseAvailable: appModel.isDatabaseAvailable,
             hasSelectedFile: selectedFile != nil,
+            selectedFileSupportsText: selectedFile.map { appModel.supportsTextContent($0) } ?? false,
             selectedFileCount: isFilePage ? appModel.selectedFileIDs.count : 0,
             hasCommandTargets: isFilePage && !appModel.commandTargetFiles.isEmpty,
             canToggleInspector: canToggleInspector,
@@ -635,6 +638,7 @@ struct AppShellView: View {
             .disabled(!appModel.isDatabaseAvailable)
         case .settings:
             SettingsView(presentsErrors: true)
+                .environmentObject(aiProviderSettingsDraftStore)
         }
     }
 }

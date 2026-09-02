@@ -446,6 +446,80 @@ struct GrokCLIHome: Equatable, Sendable {
         try Self.validateBundledSkillDirectoriesIfPresent(in: rootURL)
     }
 
+    func removeCredentialIfPresent() throws {
+        let directoryDescriptor = Darwin.open(
+            rootURL.standardizedFileURL.path,
+            O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard directoryDescriptor >= 0 else { throw GrokCLIHomeError.unsafePath }
+        defer { Darwin.close(directoryDescriptor) }
+
+        var directoryInformation = stat()
+        guard Darwin.fstat(directoryDescriptor, &directoryInformation) == 0,
+              directoryInformation.st_uid == Darwin.getuid(),
+              directoryInformation.st_mode & S_IFMT == S_IFDIR,
+              directoryInformation.st_mode & 0o077 == 0 else {
+            throw GrokCLIHomeError.unsafePath
+        }
+
+        let credentialName = "auth.json"
+        var linkInformation = stat()
+        guard Darwin.fstatat(
+            directoryDescriptor,
+            credentialName,
+            &linkInformation,
+            AT_SYMLINK_NOFOLLOW
+        ) == 0 else {
+            if errno == ENOENT { return }
+            throw GrokCLIHomeError.unavailable
+        }
+        guard linkInformation.st_mode & S_IFMT == S_IFREG,
+              linkInformation.st_uid == Darwin.getuid(),
+              linkInformation.st_nlink == 1,
+              linkInformation.st_mode & 0o077 == 0 else {
+            throw GrokCLIHomeError.unsafePath
+        }
+
+        let credentialDescriptor = Darwin.openat(
+            directoryDescriptor,
+            credentialName,
+            O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+        )
+        guard credentialDescriptor >= 0 else { throw GrokCLIHomeError.unsafePath }
+        defer { Darwin.close(credentialDescriptor) }
+
+        var openedInformation = stat()
+        guard Darwin.fstat(credentialDescriptor, &openedInformation) == 0,
+              openedInformation.st_dev == linkInformation.st_dev,
+              openedInformation.st_ino == linkInformation.st_ino,
+              openedInformation.st_uid == Darwin.getuid(),
+              openedInformation.st_nlink == 1,
+              openedInformation.st_mode & S_IFMT == S_IFREG,
+              openedInformation.st_mode & 0o077 == 0 else {
+            throw GrokCLIHomeError.unsafePath
+        }
+
+        var finalInformation = stat()
+        guard Darwin.fstatat(
+            directoryDescriptor,
+            credentialName,
+            &finalInformation,
+            AT_SYMLINK_NOFOLLOW
+        ) == 0,
+              finalInformation.st_dev == openedInformation.st_dev,
+              finalInformation.st_ino == openedInformation.st_ino,
+              finalInformation.st_uid == Darwin.getuid(),
+              finalInformation.st_nlink == 1,
+              finalInformation.st_mode & S_IFMT == S_IFREG,
+              finalInformation.st_mode & 0o077 == 0 else {
+            throw GrokCLIHomeError.unsafePath
+        }
+        guard Darwin.unlinkat(directoryDescriptor, credentialName, 0) == 0,
+              Darwin.fsync(directoryDescriptor) == 0 else {
+            throw GrokCLIHomeError.unavailable
+        }
+    }
+
     private static func requireDirectory(
         _ url: URL,
         createIfMissing: Bool,
@@ -1987,7 +2061,7 @@ enum OAuthCLIProcessSecurity {
             executableURL: executableURL,
             grokHomeDirectoryURL: grokHomeDirectoryURL,
             temporaryRootURL: temporaryRootURL,
-            arguments: ["--no-auto-update", "login", "--oauth"],
+            arguments: ["--no-auto-update", "login", "--device-auth"],
             substitutesWorkingDirectory: false,
             maximumLineBytes: 1_048_576
         )

@@ -38,6 +38,13 @@ struct AIOAuthDeviceCodePresentation: Equatable, Sendable {
     let userCode: String
 }
 
+struct AIOAuthLoginPresentation: Equatable, Sendable {
+    let attemptID: UUID
+    let authorizationURL: URL?
+    let browserLaunchMode: OAuthBrowserLaunchMode
+    let callbackMode: OAuthCallbackMode
+}
+
 struct FileCategoryAssignmentKey: Hashable, Sendable {
     let fileID: String
     let categoryID: UUID
@@ -1440,6 +1447,10 @@ final class AppModel: ObservableObject {
     var aiOAuthDeviceCodePresentations: [AIProviderKind: AIOAuthDeviceCodePresentation] {
         oauth.deviceCodePresentations
     }
+    var aiOAuthLoginPresentations: [AIProviderKind: AIOAuthLoginPresentation] {
+        oauth.loginPresentations
+    }
+    var aiOAuthDeviceCodeFallbacks: Set<AIProviderKind> { oauth.deviceCodeFallbacks }
     var aiOAuthVerificationsInFlight: Set<AIProviderKind> { oauth.verificationsInFlight }
 
     var savedSearches: [SavedSearch] { index.savedSearches }
@@ -1544,6 +1555,13 @@ final class AppModel: ObservableObject {
         for kind: AIProviderKind
     ) async -> AIOAuthDeviceCodePresentation? {
         await oauth.beginDeviceCodeLogin(for: kind)
+    }
+
+    @discardableResult
+    func switchToOAuthDeviceCodeLogin(
+        for kind: AIProviderKind
+    ) async -> AIOAuthDeviceCodePresentation? {
+        await oauth.switchToDeviceCodeLogin(for: kind)
     }
 
     func cancelOAuthLogin(for kind: AIProviderKind) async {

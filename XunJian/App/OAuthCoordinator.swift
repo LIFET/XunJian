@@ -24,6 +24,10 @@ final class OAuthCoordinator: ObservableObject {
     @Published private(set) var deviceCodePresentations: [
         AIProviderKind: AIOAuthDeviceCodePresentation
     ] = [:]
+    @Published private(set) var loginPresentations: [
+        AIProviderKind: AIOAuthLoginPresentation
+    ] = [:]
+    @Published private(set) var deviceCodeFallbacks = Set<AIProviderKind>()
     @Published private(set) var verificationsInFlight = Set<AIProviderKind>()
     @Published private(set) var models: [AIProviderKind: [OAuthBridgeModel]] = [:]
     @Published private(set) var selectedModels: [AIProviderKind: String] = [:]
@@ -53,6 +57,7 @@ final class OAuthCoordinator: ObservableObject {
     /// Called by the AI layer after a successful generation via OAuth, which
     /// proves the credential works and lets polling wind down.
     func markConnected(_ kind: AIProviderKind) {
+        clearLoginState(for: kind)
         states[kind] = .connected
         if modelCatalogIsReady(for: kind) {
             onProviderConnected?()
@@ -275,16 +280,20 @@ final class OAuthCoordinator: ObservableObject {
         }
     }
 
+    private var canPollForCurrentLifecycle: Bool {
+        isApplicationActive || states.values.contains(where: \.shouldPoll)
+    }
+
     private func startPolling() {
         guard pollingTask == nil,
-              isApplicationActive,
+              canPollForCurrentLifecycle,
               !isPollingPausedForVerification else { return }
         pollingTask = Task { [weak self] in
             guard let self else { return }
             var endedForLifecycleChange = false
             await self.refreshAllProviders(presentsFailure: false)
             while !Task.isCancelled {
-                guard self.isApplicationActive,
+                guard self.canPollForCurrentLifecycle,
                       !self.isPollingPausedForVerification else {
                     endedForLifecycleChange = true
                     break
@@ -293,18 +302,18 @@ final class OAuthCoordinator: ObservableObject {
                     Self.oauthProvider(for: kind) != nil
                         && self.states[kind]?.shouldPoll == true
                 }
-                guard shouldContinue else { return }
+                guard shouldContinue else { break }
                 do {
                     try await Task.sleep(for: .seconds(1))
                 } catch {
-                    return
+                    break
                 }
                 await self.refreshAllProviders(presentsFailure: false)
             }
             let wasCancelled = Task.isCancelled
             self.pollingTask = nil
             if (endedForLifecycleChange || wasCancelled),
-               self.isApplicationActive,
+               self.canPollForCurrentLifecycle,
                !self.isPollingPausedForVerification {
                 self.startPolling()
             }
@@ -319,7 +328,7 @@ final class OAuthCoordinator: ObservableObject {
         // confirmed verification can then race that teardown. Let an active
         // status request finish naturally. A sleeping poll has no RPC to
         // preserve and can stop immediately.
-        if statusInFlight.isEmpty {
+        if statusInFlight.isEmpty, !canPollForCurrentLifecycle {
             pollingTask?.cancel()
         }
     }
@@ -353,6 +362,21 @@ final class OAuthCoordinator: ObservableObject {
         return presentation
     }
 
+    @discardableResult
+    func switchToDeviceCodeLogin(
+        for kind: AIProviderKind
+    ) async -> AIOAuthDeviceCodePresentation? {
+        guard kind == .codex,
+              deviceCodeFallbacks.remove(kind) != nil else { return nil }
+        if loginStartGenerations[kind] != nil {
+            guard let provider = Self.oauthProvider(for: kind) else { return nil }
+            await cancelPendingLoginStart(for: kind, provider: provider)
+        } else if loginAttemptIDs[kind] != nil {
+            await cancelLogin(for: kind)
+        }
+        return await beginDeviceCodeLogin(for: kind)
+    }
+
     private func beginLogin(
         for kind: AIProviderKind,
         method: OAuthBridgeLoginMethod
@@ -370,8 +394,7 @@ final class OAuthCoordinator: ObservableObject {
         let generation = beginOperation(for: kind)
         loginStartGenerations[kind] = generation
         clearModels(for: kind)
-        loginAttemptIDs.removeValue(forKey: kind)
-        deviceCodePresentations.removeValue(forKey: kind)
+        clearLoginState(for: kind)
         states[kind] = .starting
         defer {
             if loginStartGenerations[kind] == generation {
@@ -389,9 +412,11 @@ final class OAuthCoordinator: ObservableObject {
             guard operationGenerations[kind] == generation else {
                 return nil
             }
-            guard attempt.provider == provider else {
+            guard Self.validLoginAttempt(attempt, provider: provider, method: method) else {
                 applyFailure(
-                    OAuthStateError.providerMismatch,
+                    attempt.provider == provider
+                        ? OAuthStateError.invalidLoginPresentation
+                        : OAuthStateError.providerMismatch,
                     to: kind,
                     generation: generation
                 )
@@ -399,20 +424,10 @@ final class OAuthCoordinator: ObservableObject {
             }
             switch method {
             case .browser:
-                guard attempt.userCode == nil else {
-                    applyFailure(
-                        OAuthStateError.invalidLoginPresentation,
-                        to: kind,
-                        generation: generation
-                    )
-                    return nil
-                }
+                break
             case .deviceCode:
-                guard kind == .codex,
-                      let verificationURL = attempt.authorizationURL,
-                      Self.validOAuthAuthorizationURL(verificationURL),
-                      let userCode = attempt.userCode,
-                      Self.validDeviceUserCode(userCode) else {
+                guard let verificationURL = attempt.authorizationURL,
+                      let userCode = attempt.userCode else {
                     applyFailure(
                         OAuthStateError.invalidLoginPresentation,
                         to: kind,
@@ -426,16 +441,28 @@ final class OAuthCoordinator: ObservableObject {
                     userCode: userCode
                 )
             }
+            loginPresentations[kind] = AIOAuthLoginPresentation(
+                attemptID: attempt.attemptID,
+                authorizationURL: attempt.authorizationURL,
+                browserLaunchMode: attempt.browserLaunchMode,
+                callbackMode: attempt.callbackMode
+            )
             loginAttemptIDs[kind] = attempt.attemptID
             states[kind] = .authenticating(
                 attemptID: attempt.attemptID,
                 authorizationURL: attempt.authorizationURL
             )
+            if !isRunningTests { startPolling() }
             return attempt.authorizationURL
         } catch is CancellationError {
             return nil
         } catch {
             applyFailure(error, to: kind, generation: generation)
+            if method == .browser,
+               Self.canOfferDeviceCodeFallback(for: kind, error: error),
+               operationGenerations[kind] == generation {
+                deviceCodeFallbacks.insert(kind)
+            }
             return nil
         }
     }
@@ -575,8 +602,7 @@ final class OAuthCoordinator: ObservableObject {
               loginStartGenerations[kind] == nil,
               mutationGenerations[kind] == nil else { return nil }
         mutationGenerations[kind] = generation
-        loginAttemptIDs.removeValue(forKey: kind)
-        deviceCodePresentations.removeValue(forKey: kind)
+        clearLoginState(for: kind)
         return generation
     }
 
@@ -592,8 +618,7 @@ final class OAuthCoordinator: ObservableObject {
         task?.cancel()
         let attempt = try? await task?.value
         loginStartGenerations.removeValue(forKey: kind)
-        loginAttemptIDs.removeValue(forKey: kind)
-        deviceCodePresentations.removeValue(forKey: kind)
+        clearLoginState(for: kind)
         if let attempt {
             _ = try? await bridgeService.cancelLogin(
                 for: provider,
@@ -700,8 +725,7 @@ final class OAuthCoordinator: ObservableObject {
 
         guard status.cliStatus == .available else {
             clearModels(for: kind)
-            loginAttemptIDs.removeValue(forKey: kind)
-            deviceCodePresentations.removeValue(forKey: kind)
+            clearLoginState(for: kind)
             states[kind] = .unavailable(status.cliStatus)
             onProviderUnavailable?(kind, true)
             return false
@@ -718,6 +742,10 @@ final class OAuthCoordinator: ObservableObject {
             if deviceCodePresentations[kind]?.attemptID != attemptID {
                 deviceCodePresentations.removeValue(forKey: kind)
             }
+            if loginPresentations[kind]?.attemptID != attemptID {
+                loginPresentations.removeValue(forKey: kind)
+            }
+            deviceCodeFallbacks.remove(kind)
             loginAttemptIDs[kind] = attemptID
             states[kind] = .authenticating(
                 attemptID: attemptID,
@@ -726,8 +754,7 @@ final class OAuthCoordinator: ObservableObject {
             return false
         }
 
-        loginAttemptIDs.removeValue(forKey: kind)
-        deviceCodePresentations.removeValue(forKey: kind)
+        clearLoginState(for: kind)
         switch status.credentialState {
         case .unknown:
             clearModels(for: kind)
@@ -767,8 +794,7 @@ final class OAuthCoordinator: ObservableObject {
         presentsFailure: Bool = true
     ) {
         guard operationGenerations[kind] == generation else { return }
-        loginAttemptIDs.removeValue(forKey: kind)
-        deviceCodePresentations.removeValue(forKey: kind)
+        clearLoginState(for: kind)
         let message = Self.message(for: error)
         states[kind] = .failed(message)
         onProviderUnavailable?(kind, true)
@@ -785,6 +811,51 @@ final class OAuthCoordinator: ObservableObject {
         case .grok: .grok
         case .deepSeek, .qwen: nil
         }
+    }
+
+    static func validLoginAttempt(
+        _ attempt: OAuthBridgeLoginAttempt,
+        provider: OAuthBridgeProvider,
+        method: OAuthBridgeLoginMethod
+    ) -> Bool {
+        guard attempt.provider == provider, attempt.method == method else { return false }
+        switch (provider, method, attempt.browserLaunchMode, attempt.callbackMode) {
+        case (.codex, .browser, .application, .automatic):
+            return attempt.userCode == nil
+                && attempt.authorizationURL.map(validOAuthAuthorizationURL) == true
+        case (.codex, .deviceCode, .application, .manualFallback):
+            return attempt.authorizationURL.map(validOAuthAuthorizationURL) == true
+                && attempt.userCode.map(validDeviceUserCode) == true
+        case (.grok, .browser, .providerRuntime, .automatic):
+            return attempt.authorizationURL == nil && attempt.userCode == nil
+        default:
+            return false
+        }
+    }
+
+    static func canOfferDeviceCodeFallback(
+        for kind: AIProviderKind,
+        error: Error
+    ) -> Bool {
+        guard kind == .codex,
+              let clientError = error as? OAuthBridgeClientError else { return false }
+        switch clientError {
+        case .requestTimedOut:
+            return true
+        case let .service(payload):
+            return payload.code == .unsupportedOperation
+                || payload.code == .authenticationFailed
+        case .connectionFailed, .signingRequirementUnavailable, .invalidRequest,
+             .invalidResponse, .protocolMismatch, .requestMismatch:
+            return false
+        }
+    }
+
+    private func clearLoginState(for kind: AIProviderKind) {
+        loginAttemptIDs.removeValue(forKey: kind)
+        deviceCodePresentations.removeValue(forKey: kind)
+        loginPresentations.removeValue(forKey: kind)
+        deviceCodeFallbacks.remove(kind)
     }
 
     enum OAuthStateError: LocalizedError {

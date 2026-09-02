@@ -325,7 +325,7 @@ private final class OAuthBridgeReplyBox: @unchecked Sendable {
         }
         didReply = true
         lock.unlock()
-        let fallback = Data(#"{"protocolVersion":6,"requestID":null,"result":null,"error":{"code":"internalFailure","message":"OAuth bridge response encoding failed."}}"#.utf8)
+        let fallback = Data(#"{"protocolVersion":8,"requestID":null,"result":null,"error":{"code":"internalFailure","message":"OAuth bridge response encoding failed."}}"#.utf8)
         reply((try? OAuthBridgeCodec.encode(response)) ?? fallback)
     }
 }
@@ -821,6 +821,9 @@ private actor OAuthBridgeCoordinator {
             return OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: attemptID,
+                method: method,
+                browserLaunchMode: .application,
+                callbackMode: method == .browser ? .automatic : .manualFallback,
                 authorizationURL: attempt.authorizationURL,
                 userCode: attempt.userCode
             )
@@ -866,6 +869,9 @@ private actor OAuthBridgeCoordinator {
             return OAuthBridgeLoginAttempt(
                 provider: .grok,
                 attemptID: attemptID,
+                method: .browser,
+                browserLaunchMode: .providerRuntime,
+                callbackMode: .automatic,
                 authorizationURL: nil
             )
         }
@@ -1602,6 +1608,7 @@ private actor OAuthBridgeCoordinator {
             }
 
             let root = Self.makeTemporaryRootURL()
+            defer { Self.removeTemporaryRoot(root) }
             do {
                 let configuration = try OAuthCLIProcessSecurity.makeGrokLogoutConfiguration(
                     executableURL: executable,
@@ -1620,14 +1627,22 @@ private actor OAuthBridgeCoordinator {
                 try await waitForGrokLogout(process)
                 await process.close()
             } catch {
-                Self.removeTemporaryRoot(root)
-                throw error
+                // Grok's logout command can fail after the local credential was
+                // already invalidated. The private credential file remains the
+                // authoritative local logout boundary and is removed securely below.
             }
-            Self.removeTemporaryRoot(root)
             guard try prepareGrokCLIHome() == cliHome else {
                 throw Failure.response(
                     .safeVerificationUnavailable,
                     "XunJian's private Grok login directory changed unexpectedly."
+                )
+            }
+            do {
+                try cliHome.removeCredentialIfPresent()
+            } catch {
+                throw Failure.response(
+                    .authenticationFailed,
+                    "Grok logout did not clear XunJian's private login."
                 )
             }
             let credentialURL = cliHome.rootURL.appending(path: "auth.json")

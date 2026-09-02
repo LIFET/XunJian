@@ -79,6 +79,7 @@ private struct StorageInsightsPresentation: ViewModifier {
                 StorageInsightsView()
                     .environmentObject(appModel)
                     .environment(\.locale, locale)
+                    .xunjianThinScrollers()
             }
     }
 }
@@ -99,6 +100,7 @@ private struct TextPreviewPresentation: ViewModifier {
                 TextPreviewView(file: previewed, initialQuery: appModel.highlightQuery)
                     .environmentObject(appModel)
                     .environment(\.locale, locale)
+                    .xunjianThinScrollers()
             }
     }
 }

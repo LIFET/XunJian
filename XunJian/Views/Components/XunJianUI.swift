@@ -232,15 +232,38 @@ final class XunJianThinScrollerHostView: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
+        NotificationCenter.default.removeObserver(
+            self,
+            name: NSWindow.didBecomeKeyNotification,
+            object: nil
+        )
+        if window != nil {
+            NotificationCenter.default.addObserver(
+                self,
+                selector: #selector(windowDidBecomeKey(_:)),
+                name: NSWindow.didBecomeKeyNotification,
+                object: nil
+            )
+        }
         scheduleApply()
     }
 
     func scheduleApply() {
+        scheduleApply(in: window)
+    }
+
+    @objc private func windowDidBecomeKey(_ notification: Notification) {
+        guard let targetWindow = notification.object as? NSWindow else { return }
+        scheduleApply(in: targetWindow)
+    }
+
+    private func scheduleApply(in targetWindow: NSWindow?) {
         applyTask?.cancel()
-        applyTask = Task { @MainActor [weak self] in
+        applyTask = Task { @MainActor [weak self, weak targetWindow] in
             await Task.yield()
             guard !Task.isCancelled,
-                  let contentView = self?.window?.contentView else { return }
+                  self != nil,
+                  let contentView = targetWindow?.contentView else { return }
             XunJianScrollAppearance.applyRecursively(in: contentView)
         }
     }

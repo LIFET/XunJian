@@ -302,8 +302,7 @@ actor CodexAppServerClient {
             method: "account/login/start",
             params: .object([
                 "type": .string("chatgpt"),
-                "useHostedLoginSuccessPage": .bool(true),
-                "appBrand": .string("chatgpt")
+                "useHostedLoginSuccessPage": .bool(false)
             ])
         )
         guard let object = result.objectValue,

@@ -207,6 +207,7 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
     private var statusPlans: [StatusPlan] = []
     private var loginAttemptResult: Result<OAuthBridgeLoginAttempt, FakeOAuthBridgeError> =
         .failure(.missingStub)
+    private var loginError: OAuthBridgeClientError?
     private var loginGate: OAuthStatusGate?
     private var cancelResult: Result<OAuthBridgeAuthStatus, FakeOAuthBridgeError> =
         .failure(.missingStub)
@@ -249,7 +250,13 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
         gate: OAuthStatusGate? = nil
     ) {
         loginAttemptResult = .success(attempt)
+        loginError = nil
         loginGate = gate
+    }
+
+    func configureLoginError(_ error: OAuthBridgeClientError) {
+        loginError = error
+        loginGate = nil
     }
 
     func configureCancelStatus(
@@ -318,6 +325,7 @@ private actor FakeOAuthBridgeService: OAuthBridgeServicing {
             await loginGate.wait()
         }
         try Task.checkCancellation()
+        if let loginError { throw loginError }
         return try loginAttemptResult.get()
     }
 
@@ -437,7 +445,7 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertFalse(statusSource.contains("performGrokVerification"))
     }
 
-    func testProtocolV7GenerationRequestRoundTripPreservesTypedArguments() throws {
+    func testProtocolV8GenerationRequestRoundTripPreservesTypedArguments() throws {
         let attemptID = UUID(uuidString: "991E6827-4F90-4980-963C-BF9AA5736571")!
         let cancelRequest = OAuthBridgeRequest(
             operation: .cancelLogin,
@@ -472,7 +480,7 @@ final class OAuthBridgeTests: XCTestCase {
             requestID: UUID(uuidString: "C6257F3C-8947-4485-8F87-B9B0306A290C")!
         )
 
-        XCTAssertEqual(OAuthBridgeConstants.protocolVersion, 7)
+        XCTAssertEqual(OAuthBridgeConstants.protocolVersion, 8)
         XCTAssertEqual(
             try OAuthBridgeCodec.decode(
                 OAuthBridgeRequest.self,
@@ -518,6 +526,9 @@ final class OAuthBridgeTests: XCTestCase {
         let attempt = OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: UUID(uuidString: "2B168CFF-462E-4539-9B45-A2D10EC94166")!,
+            method: .deviceCode,
+            browserLaunchMode: .application,
+            callbackMode: .manualFallback,
             authorizationURL: URL(string: "https://auth.openai.com/device")!,
             userCode: "ABCD-EFGH"
         )
@@ -536,6 +547,111 @@ final class OAuthBridgeTests: XCTestCase {
             decoded.result?.loginAttempt?.authorizationURL,
             URL(string: "https://auth.openai.com/device")!
         )
+    }
+
+    func testLoginAttemptRoundTripPreservesBrowserPresentationOwnership() throws {
+        let attempt = OAuthBridgeLoginAttempt(
+            provider: .grok,
+            attemptID: UUID(uuidString: "8E38C402-8D53-49C1-A269-9F2350A9D823")!,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: nil,
+            userCode: nil
+        )
+        let response = OAuthBridgeResponse.success(
+            requestID: UUID(uuidString: "633971B5-5F78-4584-950E-C69664433633")!,
+            result: .loginAttempt(attempt)
+        )
+
+        let decoded = try OAuthBridgeCodec.decode(
+            OAuthBridgeResponse.self,
+            from: OAuthBridgeCodec.encode(response)
+        )
+
+        XCTAssertEqual(decoded.result?.loginAttempt, attempt)
+        XCTAssertEqual(decoded.result?.loginAttempt?.browserLaunchMode, .providerRuntime)
+        XCTAssertEqual(decoded.result?.loginAttempt?.callbackMode, .automatic)
+    }
+
+    func testGrokLoginKeepsCompleteAuthorizationURLInsideOfficialRuntime() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: projectRoot.appending(path: "XunJianOAuthBridge/main.swift"),
+            encoding: .utf8
+        )
+        let start = try XCTUnwrap(source.range(of: "private func startLogin(")?.lowerBound)
+        let end = try XCTUnwrap(
+            source.range(of: "private func cancelLogin(", range: start..<source.endIndex)?.lowerBound
+        )
+        let loginSource = source[start..<end]
+
+        XCTAssertTrue(loginSource.contains("method: .browser"))
+        XCTAssertTrue(loginSource.contains("browserLaunchMode: .providerRuntime"))
+        XCTAssertTrue(loginSource.contains("callbackMode: .automatic"))
+        XCTAssertFalse(loginSource.contains("verification_uri_complete"))
+    }
+
+    func testDeviceCodeControlsStayHiddenUntilFallbackIsExplicitlyAvailable() {
+        let disconnected = OAuthLoginActionPresentation.make(
+            state: .disconnected,
+            hasDeviceCodePresentation: false,
+            fallbackAvailable: false,
+            browserLaunchMode: nil
+        )
+        let providerManaged = OAuthLoginActionPresentation.make(
+            state: .authenticating(
+                attemptID: UUID(uuidString: "D545D78A-A911-4AA1-8C43-C8E1476137A6")!,
+                authorizationURL: nil
+            ),
+            hasDeviceCodePresentation: false,
+            fallbackAvailable: false,
+            browserLaunchMode: .providerRuntime
+        )
+        let fallback = OAuthLoginActionPresentation.make(
+            state: .failed("Browser callback timed out"),
+            hasDeviceCodePresentation: false,
+            fallbackAvailable: true,
+            browserLaunchMode: nil
+        )
+        let deviceCode = OAuthLoginActionPresentation.make(
+            state: .authenticating(
+                attemptID: UUID(uuidString: "FB1E585A-E23B-4948-BED0-326B1DAB6C38")!,
+                authorizationURL: URL(string: "https://auth.openai.com/device")!
+            ),
+            hasDeviceCodePresentation: true,
+            fallbackAvailable: false,
+            browserLaunchMode: .application
+        )
+
+        XCTAssertTrue(disconnected.showsPrimaryLogin)
+        XCTAssertFalse(disconnected.showsDeviceCodeFallback)
+        XCTAssertFalse(disconnected.showsCopyCode)
+        XCTAssertTrue(providerManaged.showsBrowserWaitingMessage)
+        XCTAssertTrue(fallback.showsDeviceCodeFallback)
+        XCTAssertTrue(fallback.showsPrimaryLogin)
+        XCTAssertTrue(deviceCode.showsCopyCode)
+        XCTAssertFalse(deviceCode.showsDeviceCodeFallback)
+        XCTAssertFalse(deviceCode.showsBrowserWaitingMessage)
+    }
+
+    func testOAuthLoginUIAvoidsEmbeddedBrowserAutomation() throws {
+        let projectRoot = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let source = try String(
+            contentsOf: projectRoot.appending(
+                path: "XunJian/Views/Settings/AIProviderSettingsRow.swift"
+            ),
+            encoding: .utf8
+        )
+
+        XCTAssertFalse(source.contains("WKWebView"))
+        XCTAssertFalse(source.contains("document.cookie"))
+        XCTAssertFalse(source.contains("evaluateJavaScript"))
+        XCTAssertFalse(source.contains("querySelector"))
     }
 
     func testProtocolEnvelopeRoundTripPreservesRequestIdentity() throws {
@@ -1234,6 +1350,187 @@ final class OAuthBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testLoginRestartsPollingAfterEarlierTerminalPollCompleted() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: false)
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        )))
+
+        coordinator.applicationBecameActive()
+        await waitForCallCount(2, fake: fake)
+        for _ in 0..<20 { await Task.yield() }
+
+        let attemptID = UUID(uuidString: "7D8D4015-FB9B-4DA2-A932-484661206B3D")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .grok,
+            attemptID: attemptID,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: nil
+        ))
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedIn,
+            connectionState: .authenticated
+        )))
+
+        _ = await coordinator.beginLogin(for: .grok)
+        await waitForCallCount(5, fake: fake)
+        coordinator.applicationResignedActive()
+
+        XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
+        let calls = await fake.calls()
+        XCTAssertEqual(
+            calls,
+            [
+                .status(.codex), .status(.grok),
+                .start(.grok, .browser),
+                .status(.codex), .status(.grok)
+            ]
+        )
+    }
+
+    @MainActor
+    func testLoginRestartsPollingAfterSleepingPollWasCancelled() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: false)
+        let firstAttemptID = UUID(uuidString: "A49A9A1F-20F1-4595-AB86-49A8509EFCF7")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .grok,
+            attemptID: firstAttemptID,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: nil
+        ))
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedOut,
+            connectionState: .authorizing,
+            loginAttemptID: firstAttemptID
+        )))
+
+        _ = await coordinator.beginLogin(for: .grok)
+        await waitForCallCount(3, fake: fake)
+        await fake.configureLogoutStatus(status(
+            provider: .grok,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        ))
+        await coordinator.logout(for: .grok)
+        coordinator.applicationResignedActive()
+
+        let secondAttemptID = UUID(uuidString: "F14483B5-D03B-487C-9B9B-5DA7B1779A82")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .grok,
+            attemptID: secondAttemptID,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: nil
+        ))
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedOut,
+            connectionState: .disconnected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .signedIn,
+            connectionState: .authenticated
+        )))
+
+        _ = await coordinator.beginLogin(for: .grok)
+        await waitForCallCount(7, fake: fake)
+
+        XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
+        let calls = await fake.calls()
+        XCTAssertEqual(
+            calls,
+            [
+                .start(.grok, .browser),
+                .status(.codex), .status(.grok),
+                .logout(.grok),
+                .start(.grok, .browser),
+                .status(.codex), .status(.grok)
+            ]
+        )
+    }
+
+    @MainActor
+    func testActiveBrowserLoginKeepsPollingAfterApplicationResignsActive() async {
+        let fake = FakeOAuthBridgeService()
+        let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: false)
+        let attemptID = UUID(uuidString: "8F268741-978E-4C93-A811-ED21700AE874")!
+        let authorizationURL = URL(string: "https://auth.openai.com/authorize")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .codex,
+            attemptID: attemptID,
+            method: .browser,
+            browserLaunchMode: .application,
+            callbackMode: .automatic,
+            authorizationURL: authorizationURL
+        ))
+        _ = await coordinator.beginLogin(for: .codex)
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedOut,
+            connectionState: .authorizing,
+            loginAttemptID: attemptID
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .unknown,
+            connectionState: .disconnected
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedIn,
+            connectionState: .authenticated
+        )))
+        await fake.enqueueStatus(.success(status(
+            provider: .grok,
+            credentialState: .unknown,
+            connectionState: .disconnected
+        )))
+
+        coordinator.applicationBecameActive()
+        await waitForCallCount(3, fake: fake)
+        coordinator.applicationResignedActive()
+        await waitForCallCount(5, fake: fake)
+
+        XCTAssertEqual(coordinator.states[.codex], .signedInUnverified)
+        let calls = await fake.calls()
+        XCTAssertEqual(
+            calls,
+            [
+                .start(.codex, .browser),
+                .status(.codex), .status(.grok),
+                .status(.codex), .status(.grok)
+            ]
+        )
+    }
+
+    @MainActor
     func testCancelledStatusRefreshPreservesTheCurrentLoginState() async {
         let fake = FakeOAuthBridgeService()
         let coordinator = OAuthCoordinator(bridgeService: fake, isRunningTests: true)
@@ -1468,6 +1765,9 @@ final class OAuthBridgeTests: XCTestCase {
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: attemptID,
+            method: .browser,
+            browserLaunchMode: .application,
+            callbackMode: .automatic,
             authorizationURL: authorizationURL
         ))
 
@@ -1561,6 +1861,117 @@ final class OAuthBridgeTests: XCTestCase {
     }
 
     @MainActor
+    func testGrokProviderManagedLoginPublishesPresentationWithoutApplicationURL() async {
+        let fake = FakeOAuthBridgeService()
+        let model = AppModel(oauthBridgeService: fake)
+        let attemptID = UUID(uuidString: "81B3FCE0-D2A6-41E7-AC97-F5E85DDC781F")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .grok,
+            attemptID: attemptID,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: nil,
+            userCode: nil
+        ))
+
+        let returnedURL = await model.beginOAuthLogin(for: .grok)
+
+        XCTAssertNil(returnedURL)
+        XCTAssertEqual(
+            model.aiOAuthLoginPresentations[.grok],
+            AIOAuthLoginPresentation(
+                attemptID: attemptID,
+                authorizationURL: nil,
+                browserLaunchMode: .providerRuntime,
+                callbackMode: .automatic
+            )
+        )
+        XCTAssertFalse(model.aiOAuthDeviceCodeFallbacks.contains(.grok))
+    }
+
+    @MainActor
+    func testCodexDeviceCodeFallbackIsLimitedToRecoverableBrowserFailures() {
+        XCTAssertTrue(OAuthCoordinator.canOfferDeviceCodeFallback(
+            for: .codex,
+            error: OAuthBridgeClientError.requestTimedOut
+        ))
+        XCTAssertTrue(OAuthCoordinator.canOfferDeviceCodeFallback(
+            for: .codex,
+            error: OAuthBridgeClientError.service(OAuthBridgeErrorPayload(
+                code: .unsupportedOperation,
+                message: "unsupported"
+            ))
+        ))
+        XCTAssertFalse(OAuthCoordinator.canOfferDeviceCodeFallback(
+            for: .grok,
+            error: OAuthBridgeClientError.requestTimedOut
+        ))
+        XCTAssertFalse(OAuthCoordinator.canOfferDeviceCodeFallback(
+            for: .codex,
+            error: OAuthBridgeClientError.protocolMismatch
+        ))
+    }
+
+    @MainActor
+    func testCodexRejectsProviderManagedBrowserPresentation() async {
+        let fake = FakeOAuthBridgeService()
+        let model = AppModel(oauthBridgeService: fake)
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .codex,
+            attemptID: UUID(uuidString: "BF022078-DF25-41D8-8868-0B31B0E18793")!,
+            method: .browser,
+            browserLaunchMode: .providerRuntime,
+            callbackMode: .automatic,
+            authorizationURL: URL(string: "https://auth.openai.com/authorize")!,
+            userCode: nil
+        ))
+
+        let returnedURL = await model.beginOAuthLogin(for: .codex)
+
+        XCTAssertNil(returnedURL)
+        XCTAssertTrue(model.aiOAuthLoginPresentations.isEmpty)
+        guard case .failed = model.aiOAuthStates[.codex] else {
+            return XCTFail("Expected invalid mixed presentation to fail closed")
+        }
+    }
+
+    @MainActor
+    func testCodexRecoverableBrowserFailureSwitchesToDeviceCodeExactlyOnce() async {
+        let fake = FakeOAuthBridgeService()
+        let model = AppModel(oauthBridgeService: fake)
+        await fake.configureLoginError(.requestTimedOut)
+
+        let browserURL = await model.beginOAuthLogin(for: .codex)
+        XCTAssertNil(browserURL)
+        XCTAssertTrue(model.aiOAuthDeviceCodeFallbacks.contains(.codex))
+
+        let attemptID = UUID(uuidString: "A97AD516-6F08-45BD-A52F-27B20F259B56")!
+        let verificationURL = URL(string: "https://auth.openai.com/device")!
+        await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
+            provider: .codex,
+            attemptID: attemptID,
+            method: .deviceCode,
+            browserLaunchMode: .application,
+            callbackMode: .manualFallback,
+            authorizationURL: verificationURL,
+            userCode: "ABCD-EFGH"
+        ))
+
+        let presentation = await model.switchToOAuthDeviceCodeLogin(for: .codex)
+        let duplicate = await model.switchToOAuthDeviceCodeLogin(for: .codex)
+
+        XCTAssertEqual(presentation?.attemptID, attemptID)
+        XCTAssertNil(duplicate)
+        XCTAssertFalse(model.aiOAuthDeviceCodeFallbacks.contains(.codex))
+        let calls = await fake.calls()
+        XCTAssertEqual(
+            calls,
+            [.start(.codex, .browser), .start(.codex, .deviceCode)]
+        )
+    }
+
+    @MainActor
     func testAppModelPublishesLoginAndCancelStateForCodex() async {
         let fake = FakeOAuthBridgeService()
         let model = AppModel(oauthBridgeService: fake)
@@ -1570,6 +1981,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: attemptID,
+                method: .browser,
+                browserLaunchMode: .application,
+                callbackMode: .automatic,
                 authorizationURL: authorizationURL
             )
         )
@@ -1610,6 +2024,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: attemptID,
+                method: .deviceCode,
+                browserLaunchMode: .application,
+                callbackMode: .manualFallback,
                 authorizationURL: verificationURL,
                 userCode: "ABCD-EFGH"
             )
@@ -1659,6 +2076,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .grok,
                 attemptID: UUID(uuidString: "B5FE6F1E-D820-47C0-86D9-B44EB30F11CE")!,
+                method: .deviceCode,
+                browserLaunchMode: .application,
+                callbackMode: .manualFallback,
                 authorizationURL: URL(string: "https://auth.openai.com/device")!,
                 userCode: "ABCD-EFGH"
             )
@@ -1685,6 +2105,9 @@ final class OAuthBridgeTests: XCTestCase {
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: firstAttemptID,
+            method: .deviceCode,
+            browserLaunchMode: .application,
+            callbackMode: .manualFallback,
             authorizationURL: verificationURL,
             userCode: "WXYZ-1234"
         ))
@@ -1726,6 +2149,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: attemptID,
+                method: .browser,
+                browserLaunchMode: .application,
+                callbackMode: .automatic,
                 authorizationURL: URL(string: "https://auth.openai.com/authorize")!
             ),
             gate: gate
@@ -1762,6 +2188,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: firstAttemptID,
+                method: .browser,
+                browserLaunchMode: .application,
+                callbackMode: .automatic,
                 authorizationURL: URL(string: "https://auth.openai.com/first")!
             ),
             gate: gate
@@ -1777,6 +2206,9 @@ final class OAuthBridgeTests: XCTestCase {
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: secondAttemptID,
+            method: .browser,
+            browserLaunchMode: .application,
+            callbackMode: .automatic,
             authorizationURL: secondURL
         ))
         let returnedURL = await model.beginOAuthLogin(for: .codex)
@@ -1799,6 +2231,9 @@ final class OAuthBridgeTests: XCTestCase {
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: firstAttemptID,
+            method: .browser,
+            browserLaunchMode: .application,
+            callbackMode: .automatic,
             authorizationURL: authorizationURL
         ))
         await fake.enqueueStatus(.success(status(
@@ -2024,6 +2459,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .codex,
                 attemptID: attemptID,
+                method: .browser,
+                browserLaunchMode: .application,
+                callbackMode: .automatic,
                 authorizationURL: URL(string: "https://auth.openai.com/authorize")!
             ),
             gate: gate
@@ -2060,6 +2498,9 @@ final class OAuthBridgeTests: XCTestCase {
             OAuthBridgeLoginAttempt(
                 provider: .grok,
                 attemptID: attemptID,
+                method: .browser,
+                browserLaunchMode: .providerRuntime,
+                callbackMode: .automatic,
                 authorizationURL: nil
             ),
             gate: gate
@@ -2090,6 +2531,9 @@ final class OAuthBridgeTests: XCTestCase {
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .codex,
             attemptID: attemptID,
+            method: .browser,
+            browserLaunchMode: .application,
+            callbackMode: .automatic,
             authorizationURL: URL(string: "https://auth.openai.com/authorize")!
         ))
         await fake.configureCancelStatus(status(
@@ -2318,6 +2762,10 @@ final class OAuthBridgeTests: XCTestCase {
         model.oauth.selectModel("gpt-5.5", for: .codex)
         await model.verifyOAuthConnection(for: .codex)
         model.setActiveOAuthAIProvider(.codex)
+        for _ in 0..<200 where model.databaseState == .opening {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertEqual(model.databaseState, .available)
         try await model.performAISearch("合同")
 
         XCTAssertEqual(model.activeAIProviderKind, .codex)
@@ -2556,6 +3004,36 @@ final class OAuthBridgeTests: XCTestCase {
         XCTAssertEqual(calls, [.status(.codex), .listModels(.codex)])
     }
 
+    @MainActor
+    func testConnectedOAuthWithEmptyModelCatalogFailsWithoutSavingEmptySelection() async {
+        let fake = FakeOAuthBridgeService()
+        let suiteName = "XunJianTests.OAuthEmptyModels.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = AIConfigurationStore(defaults: defaults)
+        store.activeKind = .codex
+        store.activeAuthenticationMode = .oauth
+        store.setOAuthModel("previous-model", for: .codex)
+        await fake.enqueueStatus(.success(status(
+            provider: .codex,
+            credentialState: .signedIn,
+            connectionState: .connected
+        )))
+        await fake.configureModels(.success([]))
+        let model = AppModel(
+            oauthBridgeService: fake,
+            aiConfigurationStore: store
+        )
+
+        await model.refreshOAuthStatus(for: .codex)
+
+        XCTAssertEqual(store.oauthModel(for: .codex), "previous-model")
+        XCTAssertNil(model.activeAIProviderKind)
+        guard case .failed = model.oauth.modelLoadStates[.codex] else {
+            return XCTFail("Expected an empty catalog to publish a model-load failure")
+        }
+    }
+
     private func status(
         provider: OAuthBridgeProvider,
         cliStatus: OAuthCLIProbe.Status = .available,
@@ -2577,9 +3055,11 @@ final class OAuthBridgeTests: XCTestCase {
         _ expectedCount: Int,
         fake: FakeOAuthBridgeService
     ) async {
-        for _ in 0..<1_000 {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while clock.now < deadline {
             if await fake.calls().count >= expectedCount { return }
-            await Task.yield()
+            try? await Task.sleep(for: .milliseconds(1))
         }
         XCTFail("Timed out waiting for fake OAuth bridge call")
     }

@@ -2,6 +2,7 @@
 
 ## 发布状态
 
+- [ ] 0.1.7（build 8）已完成设置草稿、正文预览命令、全窗口细滚动条与 OAuth 最终体验修复；真实 Codex/Grok OAuth 与模型列表验收通过，未发送模型请求。主工程/OAuth Process 共 463 项、5 万/10 万门禁、Analyze 与静态门禁已通过；待完成三架构 Developer ID 签名、公证、GitHub Release 与 Sparkle appcast。
 - [x] 0.1.6（build 7）已完成菜单栏后台偏好通知崩溃、SQLite 启动阻塞/状态误报与全局滚动条回退修复；主工程 406 项（2 项大型门禁跳过）、OAuth Process 38 项及 5 万/10 万门禁均 0 失败。修复版三架构 Developer ID DMG、Apple 公证、staple、Gatekeeper、挂载复验、GitHub Release、Sparkle EdDSA 与线上 digest/size/下载均已完成。
 - [x] 0.1.4（build 5）已完成索引迁移性能修复、三架构签名/公证/门禁、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 - [x] 0.1.5（build 6）已完成扫描/监控/排除、原子正文索引、OAuth 模型恢复、UTF-8 Prompt 门禁、大结果集全选/导出、确认框与无障碍修复；主工程 401 项（2 项大型门禁跳过）、OAuth 进程 38 项及 5 万/10 万门禁均 0 失败。三架构已完成 Developer ID、公证、staple/validate、Gatekeeper、挂载签名/架构、官方 Runtime、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
@@ -447,6 +448,17 @@
 - [x] 验收：App 401 项（2 项大型门禁按默认跳过）和 OAuth Process 38 项均 0 失败；显式 5 万/10 万门禁 2/2 通过；`xcodebuild analyze`、`git diff --check` 通过。
 
 边界：未运行真实 OAuth/AI、计费请求或用户目录全盘扫描；未提交、未推送、未发布。
+
+### 8U OAuth 最终登录体验（已完成）
+
+- [x] 协议升至 v8，登录尝试显式携带登录方式、浏览器归属与回调模式；不匹配组合 fail closed。
+- [x] Grok 主流程使用内置官方 Runtime `login --device-auth`，由 Runtime 消费完整授权 URL；寻简不解析日志、不注入浏览器环境或网页脚本。
+- [x] Codex 保持 Browser OAuth + PKCE 自动回跳；Device Code 默认隐藏，仅可恢复失败后显示一次备用入口并原子切换 attempt。
+- [x] 登录成功复用现有模型加载与选择恢复链路；空模型明确失败且不覆盖历史选择。
+- [x] 设置页仅在真实 Device Code 展示存在时显示短码、复制与验证入口；没有粘贴验证码、WKWebView、Cookie/DOM/JavaScript 自动化。
+- [x] 离线验收：主工程 418 项执行（2 项发布级大型门禁按默认跳过）与 OAuth Process 39 项，0 失败；Analyze、XML、Plist、源码安全扫描及 `git diff --check` 通过。
+- [x] 真实 OAuth/UI 验收：Codex Browser OAuth + PKCE 自动回跳成功；Grok 官方完整短码授权 URL 登录、登出与重新登录成功；连接状态与模型列表均自动更新，未发送真实模型请求。外部授权页保留官方完成页，寻简不自动化关闭浏览器进程、窗口或其他标签。
+- [x] 用户已确认提交、推送、升级版本并正式发布；0.1.7（build 8）发布流程已启动。
 
 ## 风险
 

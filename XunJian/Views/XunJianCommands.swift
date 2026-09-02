@@ -4,6 +4,7 @@ struct XunJianCommandAvailability: Equatable, Sendable {
     let canCreateCategory: Bool
     let canAddFolder: Bool
     let canActOnSelection: Bool
+    let canPreviewText: Bool
     let canSelectAll: Bool
     let canDeselect: Bool
     let canSearch: Bool
@@ -15,6 +16,7 @@ struct XunJianCommandAvailability: Equatable, Sendable {
         canCreateCategory: false,
         canAddFolder: false,
         canActOnSelection: false,
+        canPreviewText: false,
         canSelectAll: false,
         canDeselect: false,
         canSearch: false,
@@ -27,6 +29,7 @@ struct XunJianCommandAvailability: Equatable, Sendable {
         destination: NavigationDestination,
         databaseAvailable: Bool,
         hasSelectedFile: Bool,
+        selectedFileSupportsText: Bool = false,
         selectedFileCount: Int,
         hasCommandTargets: Bool,
         canToggleInspector: Bool,
@@ -43,6 +46,10 @@ struct XunJianCommandAvailability: Equatable, Sendable {
             canCreateCategory: databaseAvailable,
             canAddFolder: databaseAvailable,
             canActOnSelection: databaseAvailable && isFilePage && hasSelectedFile,
+            canPreviewText: databaseAvailable
+                && isFilePage
+                && hasSelectedFile
+                && selectedFileSupportsText,
             canSelectAll: databaseAvailable && isFilePage && hasCommandTargets,
             canDeselect: isFilePage && selectedFileCount > 0,
             canSearch: databaseAvailable,
@@ -297,7 +304,7 @@ struct XunJianCommands: Commands {
                 commandContext?.previewSelectedText()
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
-            .disabled(!availability.canActOnSelection)
+            .disabled(!availability.canPreviewText)
 
             Button(AppLanguage.localized("存储洞察…", english: "Storage Insights…")) {
                 commandContext?.showStorageInsights()

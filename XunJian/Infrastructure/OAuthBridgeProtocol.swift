@@ -2,7 +2,7 @@ import Foundation
 import Security
 
 enum OAuthBridgeConstants {
-    static let protocolVersion = 7
+    static let protocolVersion = 8
     static let serviceName = "com.xingmingbo.XunJian.OAuthBridge"
     static let trustedApplicationIdentifier = "com.xingmingbo.XunJian"
     static let maximumPayloadBytes = 1_048_576
@@ -56,6 +56,16 @@ enum OAuthBridgeProvider: String, CaseIterable, Codable, Sendable {
 enum OAuthBridgeLoginMethod: String, Codable, Equatable, Sendable {
     case browser
     case deviceCode
+}
+
+enum OAuthBrowserLaunchMode: String, Codable, Equatable, Sendable {
+    case application
+    case providerRuntime
+}
+
+enum OAuthCallbackMode: String, Codable, Equatable, Sendable {
+    case automatic
+    case manualFallback
 }
 
 enum OAuthBridgeOperation: String, CaseIterable, Codable, Sendable {
@@ -249,17 +259,26 @@ struct OAuthBridgeAuthStatus: Codable, Equatable, Sendable {
 struct OAuthBridgeLoginAttempt: Codable, Equatable, Sendable {
     let provider: OAuthBridgeProvider
     let attemptID: UUID
+    let method: OAuthBridgeLoginMethod
+    let browserLaunchMode: OAuthBrowserLaunchMode
+    let callbackMode: OAuthCallbackMode
     let authorizationURL: URL?
     let userCode: String?
 
     init(
         provider: OAuthBridgeProvider,
         attemptID: UUID,
+        method: OAuthBridgeLoginMethod,
+        browserLaunchMode: OAuthBrowserLaunchMode,
+        callbackMode: OAuthCallbackMode,
         authorizationURL: URL?,
         userCode: String? = nil
     ) {
         self.provider = provider
         self.attemptID = attemptID
+        self.method = method
+        self.browserLaunchMode = browserLaunchMode
+        self.callbackMode = callbackMode
         self.authorizationURL = authorizationURL
         self.userCode = userCode
     }

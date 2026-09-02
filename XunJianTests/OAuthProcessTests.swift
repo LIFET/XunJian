@@ -1164,6 +1164,30 @@ final class OAuthProcessTests: XCTestCase {
         }
     }
 
+    func testGrokLoginUsesOfficialCompleteDeviceAuthorizationFlow() throws {
+        let root = try makePrivateTemporaryDirectory(label: "grok-device-auth")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let userHome = root.appending(path: "user-home", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: userHome,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let grokHome = try GrokCLIHome.prepare(userHomeDirectoryURL: userHome)
+
+        let configuration = try OAuthCLIProcessSecurity.makeGrokLoginConfiguration(
+            executableURL: URL(fileURLWithPath: "/usr/bin/true"),
+            grokHomeDirectoryURL: grokHome.rootURL,
+            temporaryRootURL: root.appending(path: "login", directoryHint: .isDirectory)
+        )
+
+        XCTAssertEqual(
+            configuration.arguments,
+            ["--no-auto-update", "login", "--device-auth"]
+        )
+        XCTAssertNil(configuration.environment["BROWSER"])
+    }
+
     func testGrokRuntimeCreatesExactPrivateAgentProfileOnlyForACP() async throws {
         let root = try makePrivateTemporaryDirectory(label: "grok-agent-profile")
         defer { try? FileManager.default.removeItem(at: root) }

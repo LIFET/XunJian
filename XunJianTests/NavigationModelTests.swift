@@ -756,6 +756,22 @@ final class NavigationModelTests: XCTestCase {
     }
 
     @MainActor
+    func testAIProviderDraftStoreKeepsUnsavedFieldsUntilExplicitlyCleared() {
+        let store = AIProviderSettingsDraftStore()
+        let draft = AIProviderSettingsDraft(
+            baseURL: "https://example.invalid/v1",
+            model: "draft-model",
+            apiKey: "draft-secret"
+        )
+
+        store.save(draft, for: .codex)
+
+        XCTAssertEqual(store.draft(for: .codex), draft)
+        store.clear(for: .codex)
+        XCTAssertNil(store.draft(for: .codex))
+    }
+
+    @MainActor
     func testCollapsedProviderStatusUsesCurrentOAuthModeInsteadOfAPIKeyFallback() {
         let status = AIProviderCollapsedStatusPresentation.make(
             supportsOAuth: true,
@@ -1267,6 +1283,72 @@ final class NavigationModelTests: XCTestCase {
         XCTAssertFalse(unavailable.canAddFolder)
         XCTAssertFalse(unavailable.canExport)
         XCTAssertTrue(unavailable.canDeselect)
+    }
+
+    @MainActor
+    func testTextPreviewMenuRequiresExtractableText() {
+        let unsupported = XunJianCommandAvailability.resolve(
+            destination: .allFiles,
+            databaseAvailable: true,
+            hasSelectedFile: true,
+            selectedFileSupportsText: false,
+            selectedFileCount: 1,
+            hasCommandTargets: true,
+            canToggleInspector: true,
+            isExporting: false
+        )
+        let supported = XunJianCommandAvailability.resolve(
+            destination: .allFiles,
+            databaseAvailable: true,
+            hasSelectedFile: true,
+            selectedFileSupportsText: true,
+            selectedFileCount: 1,
+            hasCommandTargets: true,
+            canToggleInspector: true,
+            isExporting: false
+        )
+
+        XCTAssertFalse(unsupported.canPreviewText)
+        XCTAssertTrue(supported.canPreviewText)
+    }
+
+    @MainActor
+    func testThinScrollerHostAppliesAppearanceToNewPresentedWindows() async {
+        let primaryWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let primaryContent = NSView(frame: primaryWindow.contentLayoutRect)
+        primaryWindow.contentView = primaryContent
+        primaryContent.addSubview(XunJianThinScrollerHostView(frame: .zero))
+
+        let presentedWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 300, height: 220),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: presentedWindow.contentLayoutRect)
+        scrollView.hasVerticalScroller = true
+        scrollView.scrollerStyle = .legacy
+        scrollView.verticalScroller?.controlSize = .regular
+        presentedWindow.contentView = scrollView
+
+        NotificationCenter.default.post(
+            name: NSWindow.didBecomeKeyNotification,
+            object: presentedWindow
+        )
+        for _ in 0..<200 where scrollView.scrollerStyle != .overlay
+            || scrollView.autohidesScrollers == false
+            || scrollView.verticalScroller?.controlSize != .small {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+
+        XCTAssertEqual(scrollView.scrollerStyle, .overlay)
+        XCTAssertTrue(scrollView.autohidesScrollers)
+        XCTAssertEqual(scrollView.verticalScroller?.controlSize, .small)
     }
 
     @MainActor
