@@ -2,7 +2,7 @@
 
 ## 当前项目状态
 
-寻简 0.1.7（build 8）候选版已完成设置草稿、正文预览菜单、全窗口滚动条及 OAuth 最终体验，并完成真实 OAuth/UI 验收；当前正在执行发布门禁，尚未提交或发布。
+寻简 0.1.7（build 8）已完成设置草稿、正文预览菜单、全窗口滚动条及 OAuth 最终体验，并完成真实 OAuth/UI 验收、三架构签名公证与正式发布。
 
 ## 已完成内容
 
@@ -18,6 +18,7 @@
 - OAuth 最终体验第 4 阶段完成：设置页默认只显示 Provider 主登录；Grok 授权中展示由官方 Runtime 管理的浏览器等待状态；Codex 仅在可恢复失败后显示“改用设备码登录”，且只有真实 Device Code 展示存在时才显示短码、复制和验证页入口。
 - Codex 已通过系统浏览器 Browser OAuth + PKCE 自动回跳；Grok 已通过官方完整短码授权 URL 登录，二者均自动保存连接并加载模型列表，无需手动刷新。
 - Grok 登出在官方 Runtime 返回异常时仍以安全文件校验清除本地私有凭据；OAuth 轮询在正常结束和取消后都会清理任务，可立即重新登录。
+- 0.1.7 三架构正式 DMG 已通过 Developer ID 深层签名、Apple 公证、staple、Gatekeeper、版本/架构、Sparkle Team/时间戳及 OpenAI/xAI Runtime 官方签名复验；GitHub Release 与 Sparkle appcast 已发布。
 ## 验证与边界
 
 - 主工程 409 项执行、2 项大型门禁跳过、0 失败；OAuth Process 38 项、0 失败。
@@ -29,10 +30,10 @@
 - `xcodebuild analyze`、`xmllint`、两份 Info.plist、OAuth 禁用 API/浏览器注入源码扫描及 `git diff --check` 均通过。
 - 5 万/10 万门禁 2/2 通过，分别 0.857s / 4.276s。
 - `xcodebuild analyze`、`xmllint`、`plutil`、`git diff --check` 通过；仅有 macOS 测试宿主 `linkd` 环境噪声。
-- 三架构 DMG 均通过 0.1.6/build 7、App/XPC 精确架构、深层签名、Sparkle Team/时间戳、OpenAI/xAI 官方 Runtime 签名、`hdiutil verify`、Apple 公证、staple 与 Gatekeeper。
+- 三架构 DMG 均通过 0.1.7/build 8、App/XPC 精确架构、深层签名、Sparkle Team/时间戳、OpenAI/xAI 官方 Runtime 签名、`hdiutil verify`、Apple 公证、staple 与 Gatekeeper。
 - 真实 Codex/Grok OAuth 已完成登出、登录、自动状态更新和模型加载验收；OAuth Bridge/Protocol Client 最终 149/149、0 失败。未运行 AI、模型或付费请求；VoiceOver 等其余系统集成项仍以 `docs/MANUAL_ACCEPTANCE.md` 为准。
 - 0.1.7 发布门禁：主工程 424 项（2 项大型门禁默认跳过）与 OAuth Process 39 项共 463 项、0 失败；5 万/10 万门禁 2/2、0 失败；Analyze、Runtime、XML、Plist、OAuth 源码安全扫描及 `git diff --check` 均通过。
 
 ## 下一步
 
-OAuth 人工验收已完成，用户已确认提交、推送并发布 0.1.7（build 8）；不发送模型请求。官方授权页只能自行关闭本次标签或显示完成页，寻简不会自动化关闭浏览器进程、窗口或其他标签。
+0.1.7（build 8）发布已完成；不发送模型请求。官方授权页只能自行关闭本次标签或显示完成页，寻简不会自动化关闭浏览器进程、窗口或其他标签。

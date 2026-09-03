@@ -2,7 +2,7 @@
 
 ## 发布状态
 
-- [ ] 0.1.7（build 8）已完成设置草稿、正文预览命令、全窗口细滚动条与 OAuth 最终体验修复；真实 Codex/Grok OAuth 与模型列表验收通过，未发送模型请求。主工程/OAuth Process 共 463 项、5 万/10 万门禁、Analyze 与静态门禁已通过；待完成三架构 Developer ID 签名、公证、GitHub Release 与 Sparkle appcast。
+- [x] 0.1.7（build 8）已完成设置草稿、正文预览命令、全窗口细滚动条与 OAuth 最终体验修复；真实 Codex/Grok OAuth 与模型列表验收通过，未发送模型请求。主工程/OAuth Process 共 463 项、5 万/10 万门禁、Analyze 与静态门禁已通过；三架构 Developer ID 签名、公证、GitHub Release 与 Sparkle appcast 均已完成。
 - [x] 0.1.6（build 7）已完成菜单栏后台偏好通知崩溃、SQLite 启动阻塞/状态误报与全局滚动条回退修复；主工程 406 项（2 项大型门禁跳过）、OAuth Process 38 项及 5 万/10 万门禁均 0 失败。修复版三架构 Developer ID DMG、Apple 公证、staple、Gatekeeper、挂载复验、GitHub Release、Sparkle EdDSA 与线上 digest/size/下载均已完成。
 - [x] 0.1.4（build 5）已完成索引迁移性能修复、三架构签名/公证/门禁、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。
 - [x] 0.1.5（build 6）已完成扫描/监控/排除、原子正文索引、OAuth 模型恢复、UTF-8 Prompt 门禁、大结果集全选/导出、确认框与无障碍修复；主工程 401 项（2 项大型门禁跳过）、OAuth 进程 38 项及 5 万/10 万门禁均 0 失败。三架构已完成 Developer ID、公证、staple/validate、Gatekeeper、挂载签名/架构、官方 Runtime、GitHub Release、Sparkle EdDSA 与 HTTPS 验收。

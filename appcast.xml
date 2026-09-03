@@ -6,6 +6,21 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.7</title>
+            <pubDate>Thu, 03 Sep 2026 12:16:25 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.7</link>
+            <sparkle:version>8</sparkle:version>
+            <sparkle:shortVersionString>0.1.7</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.7
+
+- 优化 Codex Browser OAuth + PKCE 与 Grok 官方短码授权流程，登录后自动恢复连接并加载模型列表。
+- 完善 AI Provider 会话草稿、正文预览菜单与全窗口原生细滚动条。
+- 修复菜单栏偏好通知、OAuth 轮询和登出清理等稳定性问题。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.7/XunJian-0.1.7-macOS.dmg" length="303400400" type="application/octet-stream" sparkle:edSignature="dOgjmy0W++KMluhkg2qUFprB0bRHa/GIM22Z5ujgGGOGJ8fiFqfxxyA8WnaisPEQLbCiP7HwCRfK/b4xUSqbCg=="/>
+        </item>
+        <item>
             <title>0.1.6</title>
             <pubDate>Tue, 25 Aug 2026 00:28:48 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.6</link>

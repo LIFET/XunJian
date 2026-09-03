@@ -603,7 +603,7 @@ Expected: `ANALYZE SUCCEEDED`，XML/Plist/diff 全部通过。
 
 在 `docs/HANDOFF.md` 与 `docs/PLANS.md` 记录：实现范围、自动化测试数量、真实 OAuth 是否执行、浏览器关闭边界、未发送真实模型请求。
 
-- [ ] **Step 5: 验收通过后再提交与发布**
+- [x] **Step 5: 验收通过后再提交与发布**
 
 先检查仅包含本计划和进入本轮前已有的用户改动：
 
