@@ -12,6 +12,8 @@ struct GlobalPresentations: ViewModifier {
     @Environment(\.locale) private var locale
 
     @Binding var selection: NavigationDestination?
+    @Binding var settingsPage: SettingsPage
+    var commandNotificationCenter: NotificationCenter = .default
 
     @State private var showsCommandPalette = false
     @State private var showsStorageInsights = false
@@ -21,7 +23,8 @@ struct GlobalPresentations: ViewModifier {
         content
             .modifier(CommandPalettePresentation(
                 selection: $selection,
-                isPresented: $showsCommandPalette
+                isPresented: $showsCommandPalette,
+                notificationCenter: commandNotificationCenter
             ))
             .modifier(StorageInsightsPresentation(isPresented: $showsStorageInsights))
             .modifier(TextPreviewPresentation(file: $textPreviewFile))
@@ -30,7 +33,10 @@ struct GlobalPresentations: ViewModifier {
                       let format = FileListExport.Format(rawValue: raw) else { return }
                 FileListExport.run(appModel: appModel, format: format)
             }
-            .onReceive(NotificationCenter.default.publisher(for: .xunJianOpenSettings)) { _ in
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianOpenSettings)) { notification in
+                if let page = notification.object as? SettingsPage {
+                    settingsPage = page
+                }
                 selection = .settings
             }
     }
@@ -41,27 +47,28 @@ private struct CommandPalettePresentation: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Binding var selection: NavigationDestination?
     @Binding var isPresented: Bool
+    var notificationCenter: NotificationCenter = .default
 
     func body(content: Content) -> some View {
         content
             .accessibilityHidden(isPresented)
-            .onReceive(NotificationCenter.default.publisher(for: .xunJianShowCommandPalette)) { _ in
+            .onReceive(notificationCenter.publisher(for: .xunJianShowCommandPalette)) { _ in
                 isPresented = true
             }
             .overlay {
-                if isPresented {
-                    CommandPaletteView(isPresented: $isPresented, selection: $selection)
-                        .environment(\.locale, locale)
-                        .transition(paletteTransition)
+                ZStack {
+                    if isPresented {
+                        CommandPaletteView(isPresented: $isPresented, selection: $selection)
+                            .environment(\.locale, locale)
+                            .transition(paletteTransition)
+                    }
                 }
+                .xunjianAnimation(.easeOut(duration: 0.16), value: isPresented)
             }
-            .xunjianAnimation(XunJianUI.overlayAnimation, value: isPresented)
     }
 
     private var paletteTransition: AnyTransition {
-        reduceMotion
-            ? .opacity
-            : .opacity.combined(with: .scale(scale: 0.97, anchor: .top))
+        .opacity
     }
 }
 

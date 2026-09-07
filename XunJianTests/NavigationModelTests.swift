@@ -1,10 +1,269 @@
 import AppKit
 import CoreFoundation
 import CoreServices
+import SQLite3
 import XCTest
 @testable import XunJian
 
 final class NavigationModelTests: XCTestCase {
+    func testSettingsHidesDirectoryWithoutChangingWorkspacePreference() {
+        var layout = AppShellResponsiveLayoutState()
+        layout.update(windowWidth: 1400)
+        XCTAssertTrue(layout.showsSidebar(for: .allFiles))
+        XCTAssertFalse(layout.showsSidebar(for: .settings))
+        layout.setSidebarVisible(false, for: .settings)
+        XCTAssertTrue(layout.showsSidebar(for: .allFiles))
+        layout.setSidebarVisible(false, for: .allFiles)
+        layout.setSidebarVisible(true, for: .settings)
+        XCTAssertFalse(layout.showsSidebar(for: .allFiles))
+    }
+
+    func testWorkspaceModesKeepCategoryNavigationAndSettingsDistinct() {
+        XCTAssertEqual(AppShellView.workspaceMode(for: .allFiles), .allFiles)
+        XCTAssertEqual(AppShellView.workspaceMode(for: .home), .home)
+        XCTAssertEqual(AppShellView.workspaceMode(for: .category(UUID())), .categories)
+        XCTAssertEqual(AppShellView.workspaceMode(for: .settings), .settings)
+    }
+
+    func testOnDemandDirectoryDoesNotOpenItselfAfterWindowResize() {
+        var layout = AppShellResponsiveLayoutState(prefersSidebarVisible: false)
+        layout.update(windowWidth: 1400)
+        XCTAssertFalse(layout.showsSidebar)
+        layout.update(windowWidth: 720)
+        layout.update(windowWidth: 1400)
+        XCTAssertFalse(layout.showsSidebar)
+        layout.setSidebarVisible(true)
+        XCTAssertTrue(layout.showsSidebar)
+    }
+
+    func testSidebarKeyboardReentersListFromSettingsAndClampsEdges() {
+        let destinations: [NavigationDestination] = [.home, .allFiles, .categories]
+        XCTAssertEqual(SidebarNavigationStep.destination(current: .settings, destinations: destinations, forward: true), .home)
+        XCTAssertEqual(SidebarNavigationStep.destination(current: .settings, destinations: destinations, forward: false), .categories)
+        XCTAssertEqual(SidebarNavigationStep.destination(current: .home, destinations: destinations, forward: false), .home)
+        XCTAssertEqual(SidebarNavigationStep.destination(current: .categories, destinations: destinations, forward: true), .categories)
+        XCTAssertNil(SidebarNavigationStep.destination(current: nil, destinations: [], forward: true))
+    }
+
+    @MainActor
+    func testFullScanRequestsWaitForSameSourceIncrementalWork() async throws {
+        let suite = "XunJian.FullScanFence.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let coordinator = FileIndexCoordinator(isRunningTests: true, fileSystemEventDefaults: defaults)
+        defer { coordinator.cancelAllTasks() }
+        let sourceID = UUID()
+        let otherSourceID = UUID()
+        let barrier = IncrementalRefreshCommitBarrier()
+        coordinator.receiveFileSystemChanges([
+            FileSystemChangeEvent(path: "/isolated-fullscan/A", kinds: [.modified], isDirectory: false)
+        ], for: sourceID, rootPath: "/isolated-fullscan", lastEventID: 11)
+        let incremental = Task { @MainActor in
+            await coordinator.consumeFileSystemChanges(for: sourceID) { _ in
+                await barrier.waitAfterPreparation()
+                return true
+            }
+        }
+        await barrier.waitUntilPrepared()
+        XCTAssertFalse(coordinator.prepareFullScan(for: [sourceID]), "单来源重扫不得越过同来源增量正文")
+        XCTAssertFalse(coordinator.prepareFullScan(for: [sourceID, otherSourceID]), "刷新全部不得绕过同一门禁")
+        XCTAssertTrue(coordinator.prepareFullScan(for: [otherSourceID]), "不阻止独立来源")
+        await barrier.release()
+        await incremental.value
+        XCTAssertTrue(coordinator.prepareFullScan(for: [sourceID]), "在途结束后可启动重扫")
+    }
+
+    func testPendingTextRefreshUsesHiddenPathsRelativeToAuthorizedRoot() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try FileIndexDatabase(databaseURL: directory.appendingPathComponent("index.sqlite3"))
+        let root = directory.appendingPathComponent(".workspace-👨‍👩‍👧‍👦-e\u{301}")
+        let source = try await database.upsertSource(displayName: "Hidden root", path: root.path, bookmark: Data())
+        let visible = IndexedFile(id: "visible-child", sourceID: source.id, name: "Visible.txt",
+            path: root.appendingPathComponent("Visible.txt").path, fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date())
+        let hidden = IndexedFile(id: "hidden-child", sourceID: source.id, name: "Hidden.txt",
+            path: root.appendingPathComponent(".nested/Hidden.txt").path, fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date())
+        try await database.replaceFiles(for: source.id, with: [visible, hidden])
+        let pendingVisible = try await database.fetchPendingTextRefreshFileIDs(forSourceID: source.id, includesHiddenFiles: false)
+        XCTAssertEqual(pendingVisible, [visible.id])
+        let visibleSources = try await database.fetchSourcesRequiringTextRefresh(includesHiddenFiles: false)
+        XCTAssertEqual(visibleSources, [source.id])
+        try await database.updateTextContents([FileTextContentUpdate(fileID: visible.id, textContent: "finished")])
+        let hiddenOnlySources = try await database.fetchSourcesRequiringTextRefresh(includesHiddenFiles: false)
+        XCTAssertTrue(hiddenOnlySources.isEmpty, "不反复补扫不可见的隐藏后代")
+        let allPending = try await database.fetchPendingTextRefreshFileIDs(forSourceID: source.id, includesHiddenFiles: true)
+        XCTAssertEqual(allPending, [hidden.id])
+    }
+
+    @MainActor
+    func testCoordinatorCursorWaitsForInFlightBatchAndLaterEvent() async throws {
+        let suite = "XunJian.IndexCursor.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let coordinator = FileIndexCoordinator(isRunningTests: true, fileSystemEventDefaults: defaults)
+        defer { coordinator.cancelAllTasks() }
+        let sourceID = UUID()
+        let rootPath = "/isolated-index-test"
+        let key = FileIndexCoordinator.fileSystemMonitorKey(sourceID: sourceID, rootPath: rootPath)
+        coordinator.receiveFileSystemChanges([], for: sourceID, rootPath: rootPath, lastEventID: 10)
+        let barrier = IncrementalRefreshCommitBarrier()
+        coordinator.receiveFileSystemChanges([
+            FileSystemChangeEvent(path: rootPath + "/A", kinds: [.modified], isDirectory: true)
+        ], for: sourceID, rootPath: rootPath, lastEventID: 11)
+        let first = Task { @MainActor in
+            await coordinator.consumeFileSystemChanges(for: sourceID) { _ in
+                await barrier.waitAfterPreparation()
+                return true
+            }
+        }
+        await barrier.waitUntilPrepared()
+        coordinator.receiveFileSystemChanges([
+            FileSystemChangeEvent(path: rootPath + "/B", kinds: [.metadata], isDirectory: false)
+        ], for: sourceID, rootPath: rootPath, lastEventID: 12)
+        var secondRan = false
+        await coordinator.consumeFileSystemChanges(for: sourceID) { _ in
+            secondRan = true
+            return true
+        }
+        XCTAssertFalse(secondRan, "同来源 B 不应越过在途 A")
+        XCTAssertEqual(defaults.dictionary(forKey: FileIndexPreferences.fileSystemEventCursorsKey)?[key] as? String, "10")
+        coordinator.receiveFileSystemChanges([], for: sourceID, rootPath: rootPath, lastEventID: 13)
+        XCTAssertEqual(defaults.dictionary(forKey: FileIndexPreferences.fileSystemEventCursorsKey)?[key] as? String, "10")
+        await barrier.release()
+        await first.value
+        await coordinator.consumeFileSystemChanges(for: sourceID) { _ in true }
+        XCTAssertEqual(defaults.dictionary(forKey: FileIndexPreferences.fileSystemEventCursorsKey)?[key] as? String, "13")
+    }
+
+    @MainActor
+    func testCoordinatorFailedBatchCannotBeClearedByLaterSuccess() async throws {
+        let suite = "XunJian.IndexFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let coordinator = FileIndexCoordinator(isRunningTests: true, fileSystemEventDefaults: defaults)
+        defer { coordinator.cancelAllTasks() }
+        let sourceID = UUID()
+        let rootPath = "/isolated-index-failure"
+        let key = FileIndexCoordinator.fileSystemMonitorKey(sourceID: sourceID, rootPath: rootPath)
+        coordinator.receiveFileSystemChanges([], for: sourceID, rootPath: rootPath, lastEventID: 10)
+        coordinator.receiveFileSystemChanges([
+            FileSystemChangeEvent(path: rootPath + "/A", kinds: [.modified], isDirectory: false)
+        ], for: sourceID, rootPath: rootPath, lastEventID: 11)
+        await coordinator.consumeFileSystemChanges(for: sourceID) { _ in false }
+        coordinator.receiveFileSystemChanges([
+            FileSystemChangeEvent(path: rootPath + "/B", kinds: [.metadata], isDirectory: false)
+        ], for: sourceID, rootPath: rootPath, lastEventID: 12)
+        await coordinator.consumeFileSystemChanges(for: sourceID) { _ in true }
+        XCTAssertEqual(defaults.dictionary(forKey: FileIndexPreferences.fileSystemEventCursorsKey)?[key] as? String, "10")
+        coordinator.recordSuccessfulFileSystemBaseline(for: [sourceID])
+        XCTAssertEqual(defaults.dictionary(forKey: FileIndexPreferences.fileSystemEventCursorsKey)?[key] as? String, "12")
+        XCTAssertEqual(defaults.stringArray(forKey: FileIndexPreferences.fileSystemBaselineSourceIDsKey), [sourceID.uuidString])
+    }
+
+    func testTextRefreshRemainsPendingAfterMetadataCommitDiscardAndReopen() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite3")
+        let database = try FileIndexDatabase(databaseURL: url)
+        let source = try await database.upsertSource(displayName: "Dirty", path: directory.path, bookmark: Data())
+        let before = IndexedFile(id: "changed", sourceID: source.id, name: "Changed.txt",
+            path: directory.appendingPathComponent("Changed.txt").path, fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: Date(timeIntervalSince1970: 1), indexedAt: Date(), textContent: "oldword")
+        try await database.replaceFiles(for: source.id, with: [before])
+        let cleanScan = UUID()
+        try await database.stageTextContents([FileTextContentUpdate(fileID: before.id, textContent: "oldword")], scanID: cleanScan)
+        try await database.commitStagedTextContentUpdates(scanID: cleanScan)
+        let changed = IndexedFile(id: before.id, sourceID: source.id, name: before.name, path: before.path,
+            fileExtension: "txt", kind: .document, size: 2, createdAt: nil,
+            modifiedAt: Date(timeIntervalSince1970: 2), indexedAt: Date())
+        let added = IndexedFile(id: "added", sourceID: source.id, name: "Added.txt",
+            path: directory.appendingPathComponent("Added.txt").path, fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date())
+        try await database.replaceFiles(for: source.id, with: [changed, added], preservesExistingText: true)
+        let cancelledScan = UUID()
+        try await database.stageTextContents([FileTextContentUpdate(fileID: changed.id, textContent: "newword")], scanID: cancelledScan)
+        try await database.discardStagedTextContents(scanID: cancelledScan)
+        XCTAssertEqual(try pendingTextRefreshIDs(at: url), [changed.id, added.id])
+        let reopened = try FileIndexDatabase(databaseURL: url)
+        let oldText = try await reopened.fetchTextContent(forFileID: changed.id)
+        XCTAssertEqual(oldText, "oldword")
+        let files = try await reopened.fetchFiles(forSourceID: source.id)
+        try await reopened.replaceFiles(for: source.id, with: files, preservesExistingText: true)
+        XCTAssertEqual(try pendingTextRefreshIDs(at: url), [changed.id, added.id], "无变化复扫不能清除未完成正文")
+        let pendingIDs = try await reopened.fetchPendingTextRefreshFileIDs(forSourceID: source.id)
+        let refreshFiles = FileIndexCoordinator.filesRequiringTextRefresh(
+            scannedFiles: files, existingFiles: files, forcesFullRefresh: false, pendingFileIDs: pendingIDs
+        )
+        XCTAssertEqual(Set(refreshFiles.map(\.id)), [changed.id, added.id])
+        let dirtySources = try await reopened.fetchSourcesRequiringTextRefresh()
+        XCTAssertEqual(dirtySources, [source.id])
+        let recovery = UUID()
+        try await reopened.stageTextContents([
+            FileTextContentUpdate(fileID: changed.id, textContent: "newword"),
+            FileTextContentUpdate(fileID: added.id, textContent: "addedword")
+        ], scanID: recovery)
+        try executeIndexFixtureSQL(at: url, sql: """
+            CREATE TRIGGER fixture_fail_content BEFORE UPDATE OF text_content ON files
+            WHEN new.text_content = 'newword'
+            BEGIN SELECT RAISE(ABORT, 'fixture content failure'); END;
+            """)
+        do {
+            try await reopened.commitStagedTextContentUpdates(scanID: recovery)
+            XCTFail("正文提交应由隔离触发器阻止")
+        } catch { }
+        XCTAssertEqual(try pendingTextRefreshIDs(at: url), [changed.id, added.id], "失败回滚不能丢失 dirty")
+        let retainedText = try await reopened.fetchTextContent(forFileID: changed.id)
+        XCTAssertEqual(retainedText, "oldword")
+        try executeIndexFixtureSQL(at: url, sql: "DROP TRIGGER fixture_fail_content;")
+        try await reopened.commitStagedTextContentUpdates(scanID: recovery)
+        XCTAssertTrue(try pendingTextRefreshIDs(at: url).isEmpty)
+        let finalDatabase = try FileIndexDatabase(databaseURL: url)
+        XCTAssertTrue(try pendingTextRefreshIDs(at: url).isEmpty, "新版本重开不能重新标脏")
+        let matches = try await finalDatabase.searchFiles(matching: "newword").map(\.id)
+        XCTAssertEqual(matches, [changed.id])
+    }
+
+    func testLegacyTextRefreshMigrationAndDisabledContentRemainRecoverable() async throws {
+        let directory = try makeTemporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let url = directory.appendingPathComponent("index.sqlite3")
+        let original = try FileIndexDatabase(databaseURL: url)
+        let source = try await original.upsertSource(displayName: "Legacy", path: directory.path, bookmark: Data())
+        let file = IndexedFile(id: "legacy", sourceID: source.id, name: "Legacy.txt",
+            path: directory.appendingPathComponent("Legacy.txt").path, fileExtension: "txt", kind: .document,
+            size: 1, createdAt: nil, modifiedAt: nil, indexedAt: Date(), textContent: "legacyword")
+        try await original.replaceFiles(for: source.id, with: [file])
+        let category = try await original.createCategory(name: "Migration retained", symbolName: "folder")
+        try await original.setCategory(category.id, assigned: true, toFile: file.id)
+        // 隔离真实 v5 表结构：移除仅 v6 拥有的列/索引/触发器，再由正式迁移打开。
+        try executeIndexFixtureSQL(at: url, sql: """
+            DROP TRIGGER files_mark_text_refresh;
+            DROP INDEX files_pending_text_refresh_source_idx;
+            ALTER TABLE files DROP COLUMN text_needs_refresh;
+            PRAGMA user_version = 5;
+            """)
+        let upgraded = try FileIndexDatabase(databaseURL: url)
+        let pending = try await upgraded.fetchPendingTextRefreshFileIDs(forSourceID: source.id)
+        XCTAssertEqual(pending, [file.id])
+        let text = try await upgraded.fetchTextContent(forFileID: file.id)
+        XCTAssertEqual(text, "legacyword")
+        let links = try await upgraded.fetchFileCategoryLinks(fileIDs: [file.id])
+        XCTAssertTrue(links[file.id, default: []].contains(category.id))
+        let scanID = UUID()
+        try await upgraded.stageTextContents([FileTextContentUpdate(fileID: file.id, textContent: "currentword")], scanID: scanID)
+        try await upgraded.commitStagedTextContents(scanID: scanID, sourceID: source.id)
+        let reopened = try FileIndexDatabase(databaseURL: url)
+        XCTAssertTrue(try pendingTextRefreshIDs(at: url).isEmpty)
+        try await reopened.clearTextContents()
+        let disabledText = try await reopened.fetchTextContent(forFileID: file.id)
+        XCTAssertNil(disabledText)
+        let afterDisable = try FileIndexDatabase(databaseURL: url)
+        let recoverable = try await afterDisable.fetchSourcesRequiringTextRefresh()
+        XCTAssertEqual(recoverable, [source.id], "禁用后再次启用仍须补齐正文")
+    }
+
     func testUpdateConfigurationRequiresHTTPSFeedAndSigningKey() {
         XCTAssertNil(AppUpdateConfiguration.validated(
             feed: "http://updates.example.com/appcast.xml",
@@ -1169,7 +1428,22 @@ final class NavigationModelTests: XCTestCase {
         state.update(windowWidth: XunJianUI.Breakpoint.sidebarAutoCollapse - 1)
         state.setSidebarVisible(true)
         state.update(windowWidth: XunJianUI.Breakpoint.sidebarRestore + 1)
-        XCTAssertFalse(state.showsSidebar, "A forced-width toggle must not overwrite user intent")
+        XCTAssertTrue(state.showsSidebar, "An explicit open must survive the width cycle")
+    }
+
+    @MainActor
+    func testCompactSidebarExplicitOpenSurvivesMeasurementAndManualClose() {
+        var state = AppShellResponsiveLayoutState()
+        state.update(windowWidth: 900)
+        XCTAssertFalse(state.showsSidebar)
+        state.setSidebarVisible(true)
+        XCTAssertTrue(state.showsSidebar, "The native sidebar button must work at compact widths")
+        state.update(windowWidth: 900)
+        state.update(windowWidth: 920)
+        XCTAssertTrue(state.showsSidebar, "Repeated layout measurements must not undo a deliberate open")
+        state.setSidebarVisible(false)
+        state.update(windowWidth: 1_200)
+        XCTAssertFalse(state.showsSidebar, "A manual close must persist when widening")
     }
 
     @MainActor
@@ -1209,6 +1483,8 @@ final class NavigationModelTests: XCTestCase {
     func testMenuRoutesSearchAndViewCommandsToARealVisibleTarget() {
         XCTAssertEqual(AppShellView.searchCommandRoute(for: .home), .focusVisibleField)
         XCTAssertEqual(AppShellView.searchCommandRoute(for: .allFiles), .focusVisibleField)
+        XCTAssertEqual(AppShellView.searchCommandRoute(for: .categories), .focusVisibleField)
+        XCTAssertEqual(AppShellView.searchFieldScope(for: .categories)?.rawValue, "collections")
         XCTAssertEqual(AppShellView.searchFieldScope(for: .home), .home)
         XCTAssertEqual(AppShellView.searchFieldScope(for: .allFiles), .allFiles)
         XCTAssertEqual(
@@ -4771,6 +5047,37 @@ final class PhaseSixAITests: XCTestCase {
         XCTAssertTrue(sent.contains("Briefly explain"))
         XCTAssertFalse(sent.contains("用简体中文"))
     }
+}
+
+private func executeIndexFixtureSQL(at url: URL, sql: String) throws {
+    var handle: OpaquePointer?
+    guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let handle else {
+        throw NSError(domain: "IndexFixture", code: 1)
+    }
+    defer { sqlite3_close(handle) }
+    let result = sqlite3_exec(handle, sql, nil, nil, nil)
+    guard result == SQLITE_OK else {
+        throw NSError(domain: "IndexFixture", code: Int(result), userInfo: [NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(handle))])
+    }
+}
+
+private func pendingTextRefreshIDs(at url: URL) throws -> Set<String> {
+    var handle: OpaquePointer?
+    guard sqlite3_open_v2(url.path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle else {
+        throw NSError(domain: "IndexFixture", code: 1)
+    }
+    defer { sqlite3_close(handle) }
+    var statement: OpaquePointer?
+    guard sqlite3_prepare_v2(handle, "SELECT id FROM files WHERE text_needs_refresh = 1;", -1, &statement, nil) == SQLITE_OK else {
+        // 旧版没有持久化待刷新状态；以空集呈现原缺陷，避免编译失败代替 RED。
+        return []
+    }
+    defer { sqlite3_finalize(statement) }
+    var ids = Set<String>()
+    while sqlite3_step(statement) == SQLITE_ROW {
+        if let raw = sqlite3_column_text(statement, 0) { ids.insert(String(cString: raw)) }
+    }
+    return ids
 }
 
 private func makeTemporaryDirectory() throws -> URL {

@@ -286,6 +286,7 @@ final class OAuthCoordinator: ObservableObject {
 
     private func startPolling() {
         guard pollingTask == nil,
+              loginStartGenerations.isEmpty,
               canPollForCurrentLifecycle,
               !isPollingPausedForVerification else { return }
         pollingTask = Task { [weak self] in
@@ -400,6 +401,11 @@ final class OAuthCoordinator: ObservableObject {
             if loginStartGenerations[kind] == generation {
                 loginStartGenerations.removeValue(forKey: kind)
                 loginStartTasks.removeValue(forKey: kind)
+                // A cancelled sleeping poll can unwind while startLogin is
+                // suspended. Restart only after the new attempt is ready.
+                if !isRunningTests, states[kind]?.shouldPoll == true {
+                    startPolling()
+                }
             }
         }
 
@@ -452,7 +458,6 @@ final class OAuthCoordinator: ObservableObject {
                 attemptID: attempt.attemptID,
                 authorizationURL: attempt.authorizationURL
             )
-            if !isRunningTests { startPolling() }
             return attempt.authorizationURL
         } catch is CancellationError {
             return nil

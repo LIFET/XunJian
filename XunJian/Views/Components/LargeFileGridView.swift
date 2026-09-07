@@ -12,6 +12,9 @@ import SwiftUI
 struct LargeFileGridView: NSViewRepresentable {
     typealias NSViewType = NSScrollView
 
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
+
     let files: [IndexedFile]
     let idIndex: [String: Int]
     let contentVersion: Int
@@ -97,6 +100,7 @@ struct LargeFileGridView: NSViewRepresentable {
 
         context.coordinator.collectionView = collectionView
         scrollView.documentView = collectionView
+        NativeFileBrowserThemeAppearance.apply(visualTheme, scheme: colorScheme, to: collectionView, in: scrollView)
         context.coordinator.replaceSnapshot(with: self, in: collectionView, force: true)
         return scrollView
     }
@@ -105,6 +109,7 @@ struct LargeFileGridView: NSViewRepresentable {
         guard let collectionView = scrollView.documentView as? LargeFileNSCollectionView else {
             return
         }
+        NativeFileBrowserThemeAppearance.apply(visualTheme, scheme: colorScheme, to: collectionView, in: scrollView)
         context.coordinator.replaceSnapshot(with: self, in: collectionView, force: false)
     }
 

@@ -2,6 +2,21 @@ import AppKit
 import Combine
 import Foundation
 
+/// MB 输入和字节转换共用同一边界，避免浮点舍入到 Int64 上界后触发 trap。
+enum FileSizeFilter {
+    static let bytesPerMegabyte = 1_024.0 * 1_024.0
+    static let maximumMegabytes = Double(Int64.max).nextDown / bytesPerMegabyte
+
+    static func bytes(fromMegabytes value: Double) -> Int64? {
+        guard value.isFinite, value >= 0, value <= maximumMegabytes else { return nil }
+        return Int64(value * bytesPerMegabyte)
+    }
+
+    static func megabytes(fromBytes value: Int64) -> Double {
+        min(Double(max(0, value)) / bytesPerMegabyte, maximumMegabytes)
+    }
+}
+
 struct PaginatedSelectAllContext: Equatable {
     let query: String
     let kind: FileKind?
@@ -175,7 +190,20 @@ final class AppModel: ObservableObject {
     // Manual filter values (N02), persisted so saved searches can restore
     // them. MB is the UI unit; bytes are derived by the view.
     @Published var filterMinSizeMB: Double {
-        didSet { scheduleManualFilterPersistence() }
+        didSet {
+            if FileSizeFilter.bytes(fromMegabytes: filterMinSizeMB) == nil {
+                filterMinSizeMB = FileSizeFilter.bytes(fromMegabytes: oldValue) == nil ? 0 : oldValue
+                hasInvalidSizeFilterInput = true
+            } else {
+                hasInvalidSizeFilterInput = false
+            }
+            scheduleManualFilterPersistence()
+        }
+    }
+    @Published private(set) var hasInvalidSizeFilterInput = false
+
+    var minimumFilterSizeBytes: Int64 {
+        FileSizeFilter.bytes(fromMegabytes: filterMinSizeMB) ?? 0
     }
     @Published var filterMinDate: Double {
         didSet { scheduleManualFilterPersistence() }
@@ -185,6 +213,7 @@ final class AppModel: ObservableObject {
     /// text field, and writing UserDefaults on every typed digit was
     /// pointless churn. Flushed immediately when the app resigns active.
     private var manualFilterPersistenceTask: Task<Void, Never>?
+    private let filterPreferences: UserDefaults
 
     private func scheduleManualFilterPersistence() {
         guard !isRunningTests else { return }
@@ -194,8 +223,8 @@ final class AppModel: ObservableObject {
         manualFilterPersistenceTask = Task {
             try? await Task.sleep(for: .milliseconds(400))
             guard !Task.isCancelled else { return }
-            UserDefaults.standard.set(minSize, forKey: "allFiles.filterMinSizeMB")
-            UserDefaults.standard.set(minDate, forKey: "allFiles.filterMinDate")
+            filterPreferences.set(minSize, forKey: "allFiles.filterMinSizeMB")
+            filterPreferences.set(minDate, forKey: "allFiles.filterMinDate")
         }
     }
 
@@ -203,12 +232,12 @@ final class AppModel: ObservableObject {
         manualFilterPersistenceTask?.cancel()
         manualFilterPersistenceTask = nil
         guard !isRunningTests else { return }
-        UserDefaults.standard.set(filterMinSizeMB, forKey: "allFiles.filterMinSizeMB")
-        UserDefaults.standard.set(filterMinDate, forKey: "allFiles.filterMinDate")
+        filterPreferences.set(filterMinSizeMB, forKey: "allFiles.filterMinSizeMB")
+        filterPreferences.set(filterMinDate, forKey: "allFiles.filterMinDate")
     }
 
     func applyManualFilter(minSizeBytes: Int64, minDate: Date?) {
-        filterMinSizeMB = Double(minSizeBytes) / (1_024 * 1_024)
+        filterMinSizeMB = FileSizeFilter.megabytes(fromBytes: minSizeBytes)
         filterMinDate = minDate?.timeIntervalSince1970 ?? 0
     }
 
@@ -373,7 +402,7 @@ final class AppModel: ObservableObject {
             var ids = try await index.searchFileIDs(
                 matching: context.query,
                 kind: context.kind,
-                minimumSize: Int64(context.minimumSizeMB * 1_024 * 1_024),
+                minimumSize: FileSizeFilter.bytes(fromMegabytes: context.minimumSizeMB) ?? 0,
                 minimumDate: context.minimumDate > 0
                     ? Date(timeIntervalSince1970: context.minimumDate)
                     : nil
@@ -581,11 +610,13 @@ final class AppModel: ObservableObject {
     init(
         oauthBridgeService: any OAuthBridgeServicing = OAuthBridgeClient.shared,
         credentialStore: LocalCredentialStore = LocalCredentialStore(),
-        aiConfigurationStore: AIConfigurationStore = AIConfigurationStore()
+        aiConfigurationStore: AIConfigurationStore = AIConfigurationStore(),
+        filterPreferences: UserDefaults = .standard
     ) {
         self.oauthBridgeService = oauthBridgeService
         self.credentialStore = credentialStore
         self.aiConfigurationStore = aiConfigurationStore
+        self.filterPreferences = filterPreferences
         let isRunningTests = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         self.isRunningTests = isRunningTests
         self.oauth = OAuthCoordinator(
@@ -606,10 +637,13 @@ final class AppModel: ObservableObject {
             isRunningTests: isRunningTests,
             browseSearchStore: browseSearchStore
         )
-        self.filterMinSizeMB = UserDefaults.standard.double(
+        let storedMinimumSize = filterPreferences.double(
             forKey: "allFiles.filterMinSizeMB"
         )
-        self.filterMinDate = UserDefaults.standard.double(
+        self.filterMinSizeMB = FileSizeFilter.bytes(fromMegabytes: storedMinimumSize) == nil
+            ? 0 : storedMinimumSize
+        self.hasInvalidSizeFilterInput = FileSizeFilter.bytes(fromMegabytes: storedMinimumSize) == nil
+        self.filterMinDate = filterPreferences.double(
             forKey: "allFiles.filterMinDate"
         )
         wireOAuthCoordinator()
@@ -1486,7 +1520,7 @@ final class AppModel: ObservableObject {
         index.saveSearch(
             name: search.name,
             query: searchText,
-            minSizeBytes: Int64(filterMinSizeMB * 1_024 * 1_024),
+            minSizeBytes: minimumFilterSizeBytes,
             minDate: filterMinDate > 0 ? Date(timeIntervalSince1970: filterMinDate) : nil,
             fileKind: selectedKind,
             id: search.id,

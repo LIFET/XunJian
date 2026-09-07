@@ -10,11 +10,11 @@ enum NavigationDestination: Hashable, Sendable {
     func title(categories: [FileCategory]) -> String {
         switch self {
         case .home:
-            AppLanguage.localized("首页", english: "Home")
+            AppLanguage.localized("最近", english: "Recent")
         case .allFiles:
-            AppLanguage.localized("所有文件", english: "All Files")
+            AppLanguage.localized("查找", english: "Search")
         case .categories:
-            AppLanguage.localized("分类", english: "Categories")
+            AppLanguage.localized("资料集", english: "Collections")
         case let .category(categoryID):
             categories.first(where: { $0.id == categoryID })?.localizedDisplayName
                 ?? AppLanguage.localized("分类", english: "Categories")
@@ -23,4 +23,3 @@ enum NavigationDestination: Hashable, Sendable {
         }
     }
 }
-

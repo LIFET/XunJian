@@ -114,15 +114,32 @@ enum FileListExport {
         let categoryNames = await appModel.categoryNamesForExport(files)
         let filesSnapshot = files
         appModel.startFileListExport(totalCount: files.count) { reportProgress in
-            try await Task.detached(priority: .userInitiated) {
-                try write(
-                    files: filesSnapshot,
-                    format: format,
-                    categoryNames: categoryNames,
-                    to: url,
-                    progress: reportProgress
-                )
-            }.value
+            try await writeInBackground(
+                files: filesSnapshot,
+                format: format,
+                categoryNames: categoryNames,
+                to: url,
+                progress: reportProgress
+            )
+        }
+    }
+
+    static func writeInBackground(
+        files: [IndexedFile],
+        format: Format,
+        categoryNames: [String: [String]],
+        to destinationURL: URL,
+        progress: (@Sendable (Int) -> Void)? = nil
+    ) async throws {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
+            try write(files: files, format: format, categoryNames: categoryNames, to: destinationURL, progress: progress)
+        }
+        try await withTaskCancellationHandler {
+            try await worker.value
+            try Task.checkCancellation()
+        } onCancel: {
+            worker.cancel()
         }
     }
 
@@ -185,6 +202,7 @@ enum FileListExport {
         to destinationURL: URL,
         progress: (@Sendable (Int) -> Void)? = nil
     ) throws {
+        try Task.checkCancellation()
         let fileManager = FileManager.default
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appendingPathComponent(".xunjian-export-\(UUID().uuidString).tmp")
@@ -245,8 +263,10 @@ enum FileListExport {
             }
         }
 
+        try Task.checkCancellation()
         try handle.synchronize()
         try handle.close()
+        try Task.checkCancellation()
         if fileManager.fileExists(atPath: destinationURL.path) {
             _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {
@@ -266,6 +286,7 @@ enum FileListExport {
         progress: (@Sendable (Int) -> Void)? = nil,
         page: @escaping @MainActor @Sendable ([String]) async -> FileExportPage
     ) async throws {
+        try Task.checkCancellation()
         let fileManager = FileManager.default
         let temporaryURL = destinationURL.deletingLastPathComponent()
             .appendingPathComponent(".xunjian-export-\(UUID().uuidString).tmp")
@@ -307,6 +328,7 @@ enum FileListExport {
             let end = min(start + pageSize, orderedIDs.count)
             let pageIDs = Array(orderedIDs[start..<end])
             let resolved = await page(pageIDs)
+            try Task.checkCancellation()
             guard resolved.files.count == pageIDs.count else {
                 throw CocoaError(.fileReadNoSuchFile)
             }
@@ -332,8 +354,10 @@ enum FileListExport {
             progress?(end)
         }
 
+        try Task.checkCancellation()
         try handle.synchronize()
         try handle.close()
+        try Task.checkCancellation()
         if fileManager.fileExists(atPath: destinationURL.path) {
             _ = try fileManager.replaceItemAt(destinationURL, withItemAt: temporaryURL)
         } else {

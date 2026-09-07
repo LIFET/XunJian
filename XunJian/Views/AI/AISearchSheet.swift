@@ -14,8 +14,8 @@ struct AISearchSheet: View {
         AISheetScaffold(
             title: AppLanguage.localized("AI 搜文件", english: "AI File Search"),
             subtitle: AppLanguage.localized(
-                "AI 只理解你的描述并生成检索条件；文件候选筛选和结果匹配均在本地完成。",
-                english: "AI only understands your description and turns it into search criteria. Matching files stays on this Mac."
+                "你的描述会发给 AI，用来生成搜索条件。文件匹配在这台 Mac 上完成。",
+                english: "Your description is sent to AI to create search filters. Files are matched on this Mac."
             ),
             idealWidth: 520,
             maxWidth: 560
@@ -39,7 +39,7 @@ struct AISearchSheet: View {
                 if isWorking {
                     ProgressView()
                         .controlSize(.small)
-                    Text(AppLanguage.localized("正在理解查找条件…", english: "Understanding the search…"))
+                    Text(AppLanguage.localized("正在生成搜索条件…", english: "Creating search filters…"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }

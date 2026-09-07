@@ -1,6 +1,7 @@
 import AppKit
 import QuickLookThumbnailing
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// AppKit-backed file table for very large browse snapshots.
 ///
@@ -12,12 +13,21 @@ import SwiftUI
 struct LargeFileTableView: NSViewRepresentable {
     typealias NSViewType = NSScrollView
 
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
+
     let files: [IndexedFile]
     let idIndex: [String: Int]
     let contentVersion: Int
     let categoryVersion: UInt64
     let autosaveName: String
     let locale: Locale
+    let presentation: FileListPresentation
+    let resultQuery: String
+    let resultTextProvider: ((IndexedFile) async -> String?)?
+    private var resultPresentationToken: String {
+        "\(presentation.rawValue)|\(visualTheme.rawValue)|\(colorScheme)|\(resultQuery)"
+    }
     @Binding var selection: Set<String>
 
     /// Evaluated only for category cells that NSTableView makes visible.
@@ -37,6 +47,9 @@ struct LargeFileTableView: NSViewRepresentable {
         categoryVersion: UInt64 = 0,
         autosaveName: String = "XunJian.AllFiles.LargeTable",
         locale: Locale = .autoupdatingCurrent,
+        presentation: FileListPresentation = .table,
+        resultQuery: String = "",
+        resultTextProvider: ((IndexedFile) async -> String?)? = nil,
         selection: Binding<Set<String>>,
         categoryText: @escaping (IndexedFile) -> String,
         onSelectionLeadChange: @escaping (IndexedFile?) -> Void,
@@ -51,6 +64,9 @@ struct LargeFileTableView: NSViewRepresentable {
         self.categoryVersion = categoryVersion
         self.autosaveName = autosaveName
         self.locale = locale
+        self.presentation = presentation
+        self.resultQuery = resultQuery
+        self.resultTextProvider = resultTextProvider
         _selection = selection
         self.categoryText = categoryText
         self.onSelectionLeadChange = onSelectionLeadChange
@@ -76,13 +92,13 @@ struct LargeFileTableView: NSViewRepresentable {
         let tableView = LargeFileNSTableView()
         tableView.delegate = context.coordinator
         tableView.dataSource = context.coordinator
-        tableView.headerView = NSTableHeaderView()
-        tableView.allowsColumnReordering = true
-        tableView.allowsColumnResizing = true
+        tableView.headerView = presentation == .results ? nil : NSTableHeaderView()
+        tableView.allowsColumnReordering = presentation == .table
+        tableView.allowsColumnResizing = presentation == .table
         tableView.allowsColumnSelection = false
         tableView.allowsMultipleSelection = true
         tableView.allowsEmptySelection = true
-        tableView.usesAlternatingRowBackgroundColors = true
+        tableView.usesAlternatingRowBackgroundColors = presentation == .table
         tableView.selectionHighlightStyle = .regular
         tableView.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         tableView.rowHeight = 34
@@ -94,8 +110,8 @@ struct LargeFileTableView: NSViewRepresentable {
 
         context.coordinator.installColumns(on: tableView)
         tableView.autosaveName = NSTableView.AutosaveName(autosaveName)
-        tableView.autosaveTableColumns = true
-        context.coordinator.installHeaderMenu(on: tableView)
+        tableView.autosaveTableColumns = presentation == .table
+        if presentation == .table { context.coordinator.installHeaderMenu(on: tableView) }
 
         tableView.target = context.coordinator
         tableView.doubleAction = #selector(Coordinator.performDoubleClick(_:))
@@ -118,16 +134,18 @@ struct LargeFileTableView: NSViewRepresentable {
 
         context.coordinator.tableView = tableView
         scrollView.documentView = tableView
+        NativeFileBrowserThemeAppearance.apply(visualTheme, scheme: colorScheme, to: tableView, in: scrollView, presentation: presentation)
         // NSTableView restores its autosaved width/order while it is being
         // mounted. Apply the dedicated visibility preference afterwards so
         // autosave cannot win over the explicit v4 policy on first entry.
-        context.coordinator.restoreColumnVisibility(on: tableView)
+        if presentation == .table { context.coordinator.restoreColumnVisibility(on: tableView) }
         context.coordinator.replaceSnapshot(with: self, in: tableView, force: true)
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let tableView = scrollView.documentView as? LargeFileNSTableView else { return }
+        NativeFileBrowserThemeAppearance.apply(visualTheme, scheme: colorScheme, to: tableView, in: scrollView, presentation: presentation)
         context.coordinator.replaceSnapshot(with: self, in: tableView, force: false)
     }
 
@@ -139,6 +157,71 @@ struct LargeFileTableView: NSViewRepresentable {
         coordinator.stopObservingFinderTagChanges()
         coordinator.tableView?.delegate = nil
         coordinator.tableView?.dataSource = nil
+    }
+}
+
+/// Changes presentation only: no snapshot traversal, data reload, column reset,
+/// or custom selection drawing. AppKit continues to own active/inactive and
+/// increased-contrast selection appearance.
+@MainActor
+enum NativeFileBrowserThemeAppearance {
+    static func apply(
+        _ theme: AppVisualTheme,
+        scheme: ColorScheme,
+        to tableView: NSTableView,
+        in scrollView: NSScrollView,
+        presentation: FileListPresentation = .table
+    ) {
+        let background = NSColor(theme.palette(for: scheme).canvas)
+        apply(background: background, to: scrollView)
+        if tableView.backgroundColor != background {
+            tableView.backgroundColor = background
+            tableView.needsDisplay = true
+        }
+        if tableView.usesAlternatingRowBackgroundColors {
+            tableView.usesAlternatingRowBackgroundColors = false
+        }
+        let rowHeight: CGFloat = presentation == .results
+            ? FileResultPresentation.rowHeight(for: theme) : 38
+        if tableView.rowHeight != rowHeight {
+            // Retain the top file and relative offset without enumerating any
+            // rows; changing density must not jump to a different document.
+            let origin = scrollView.contentView.bounds.origin
+            let topRow = tableView.row(at: origin)
+            let previousRect = topRow >= 0 ? tableView.rect(ofRow: topRow) : .zero
+            let offset = previousRect.height > 0
+                ? (origin.y - previousRect.minY) / previousRect.height : 0
+            tableView.rowHeight = rowHeight
+            if topRow >= 0 {
+                tableView.layoutSubtreeIfNeeded()
+                let updatedRect = tableView.rect(ofRow: topRow)
+                scrollView.contentView.scroll(to: NSPoint(
+                    x: origin.x,
+                    y: updatedRect.minY + offset * updatedRect.height
+                ))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+        }
+    }
+
+    static func apply(
+        _ theme: AppVisualTheme,
+        scheme: ColorScheme,
+        to collectionView: NSCollectionView,
+        in scrollView: NSScrollView
+    ) {
+        let background = NSColor(theme.palette(for: scheme).canvas)
+        apply(background: background, to: scrollView)
+        if collectionView.backgroundColors != [background] {
+            collectionView.backgroundColors = [background]
+        }
+    }
+
+    private static func apply(background: NSColor, to scrollView: NSScrollView) {
+        if scrollView.backgroundColor != background {
+            scrollView.backgroundColor = background
+        }
+        scrollView.drawsBackground = true
     }
 }
 
@@ -155,10 +238,37 @@ extension LargeFileTableView {
         private var appliedContentVersion: Int?
         private var appliedCategoryVersion: UInt64?
         private var appliedLocaleIdentifier = ""
+        private var appliedResultPresentation = ""
         private var isApplyingSelection = false
         private var selectionEchoGuard = NativeSelectionEchoGuard()
         private var selectionPublicationTask: Task<Void, Never>?
         private var observesFinderTagChanges = false
+        private var resultTextCache: [String: String] = [:]
+        private var resultTextCacheOrder: [String] = []
+        private var activeTextRequests = 0
+
+        /// Visible cells alone enter this bounded queue. Cancelled reused cells
+        /// never start extraction, and each fetched prefix is at most 8 KiB.
+        private func resultText(for file: IndexedFile, revision: Int) async -> String? {
+            let key = "\(file.id)|\(file.modifiedAt?.timeIntervalSince1970 ?? 0)|\(revision)"
+            if let cached = resultTextCache[key] { return cached.isEmpty ? nil : cached }
+            while activeTextRequests >= 3 {
+                do { try await Task.sleep(for: .milliseconds(20)) } catch { return nil }
+            }
+            guard !Task.isCancelled, let provider = parent.resultTextProvider else { return nil }
+            activeTextRequests += 1
+            defer { activeTextRequests -= 1 }
+            let text = await provider(file)
+            guard !Task.isCancelled else { return nil }
+            if resultTextCache[key] == nil {
+                resultTextCacheOrder.append(key)
+                if resultTextCacheOrder.count > 64 {
+                    resultTextCache.removeValue(forKey: resultTextCacheOrder.removeFirst())
+                }
+            }
+            resultTextCache[key] = String((text ?? "").prefix(8_192))
+            return resultTextCache[key]
+        }
 
         init(parent: LargeFileTableView) {
             self.parent = parent
@@ -176,6 +286,7 @@ extension LargeFileTableView {
             let metadataChanged = force
                 || appliedCategoryVersion != newParent.categoryVersion
                 || appliedLocaleIdentifier != newParent.locale.identifier
+                || appliedResultPresentation != newParent.resultPresentationToken
 
             if contentChanged {
                 cancelPendingSelectionPublication()
@@ -193,16 +304,19 @@ extension LargeFileTableView {
 
             appliedCategoryVersion = newParent.categoryVersion
             appliedLocaleIdentifier = newParent.locale.identifier
+            appliedResultPresentation = newParent.resultPresentationToken
             synchronizeSelection(in: tableView)
         }
 
         fileprivate func installColumns(on tableView: NSTableView) {
             for descriptor in LargeFileTableColumn.allCases {
+                if parent.presentation == .results, descriptor != .name { continue }
                 let column = NSTableColumn(identifier: descriptor.identifier)
                 column.title = descriptor.localizedTitle
                 column.minWidth = descriptor.minimumWidth
                 column.width = descriptor.idealWidth
-                column.maxWidth = descriptor.maximumWidth
+                column.maxWidth = parent.presentation == .results ? .greatestFiniteMagnitude : descriptor.maximumWidth
+                if parent.presentation == .results { column.width = 600; column.minWidth = 160 }
                 column.resizingMask = [.userResizingMask, .autoresizingMask]
                 tableView.addTableColumn(column)
             }
@@ -263,7 +377,15 @@ extension LargeFileTableView {
                 let identifier = NSUserInterfaceItemIdentifier("LargeFileTable.NameCell")
                 let cell = (tableView.makeView(withIdentifier: identifier, owner: self)
                     as? LargeFileNameCellView) ?? LargeFileNameCellView(identifier: identifier)
-                cell.configure(file: file, accessibilityLabel: accessibilityLabel(for: file))
+                if parent.presentation == .results {
+                    let revision = parent.contentVersion
+                    cell.configureResult(file: file, query: parent.resultQuery, theme: parent.visualTheme,
+                                         scheme: parent.colorScheme, date: dateText(file.modifiedAt)) { [weak self] in
+                        await self?.resultText(for: file, revision: revision)
+                    }
+                } else {
+                    cell.configure(file: file, accessibilityLabel: accessibilityLabel(for: file))
+                }
                 return cell
             }
 
@@ -327,6 +449,16 @@ extension LargeFileTableView {
                 (rowView.view(atColumn: tagsColumn) as? LargeFileFinderTagCellView)?
                     .cancelTagRequest()
             }
+        }
+
+        func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
+            guard parent.presentation == .results else { return nil }
+            let view = FileResultRowView()
+            view.appearanceProvider = { [weak self] in
+                guard let self else { return (.reading, .light) }
+                return (self.parent.visualTheme, self.parent.colorScheme)
+            }
+            return view
         }
 
         func tableView(
@@ -928,9 +1060,50 @@ private final class LargeFileFinderTagCellView: NSTableCellView {
 }
 
 @MainActor
+final class FileResultRowView: NSTableRowView {
+    var appearanceProvider: (() -> (AppVisualTheme, ColorScheme))?
+
+    override func drawBackground(in dirtyRect: NSRect) {
+        super.drawBackground(in: dirtyRect)
+        guard appearanceProvider != nil else { return }
+        NSColor.separatorColor.withAlphaComponent(0.4).setFill()
+        NSRect(x: 0, y: bounds.height - 1, width: bounds.width, height: 0.5).fill()
+    }
+
+    override func drawSelection(in dirtyRect: NSRect) {
+        // A selected file remains identifiable when the inspector/non-key
+        // window owns focus. High-contrast selection stays platform-native.
+        guard !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast,
+              let (theme, scheme) = appearanceProvider?() else {
+            super.drawSelection(in: dirtyRect)
+            return
+        }
+        NSColor(theme.palette(for: scheme).selection)
+            .withAlphaComponent(isEmphasized ? 1 : 0.72).setFill()
+        bounds.fill()
+        NSColor(theme.palette(for: scheme).accent).setFill()
+        NSRect(x: 0, y: 0, width: 2, height: bounds.height).fill()
+    }
+
+    override var interiorBackgroundStyle: NSView.BackgroundStyle {
+        if isSelected, !NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast { return .normal }
+        return super.interiorBackgroundStyle
+    }
+}
+
+@MainActor
 final class LargeFileNameCellView: NSTableCellView {
     private let iconView = LargeFileNameImageView()
     private let label = LargeFileNameTextField(labelWithString: "")
+    private let excerptLabel = NSTextField(wrappingLabelWithString: "")
+    private let pathLabel = NSTextField(labelWithString: "")
+    private let dateLabel = NSTextField(labelWithString: "")
+    private let matchLabel = NSTextField(labelWithString: "")
+    private var compactConstraints: [NSLayoutConstraint] = []
+    private var resultConstraints: [NSLayoutConstraint] = []
+    private var resultRequestID = UUID()
+    private var resultTitle: NSAttributedString?
+    private var resultExcerpt: NSAttributedString?
     private var representedFileID: String?
     private var thumbnailTask: Task<Void, Never>?
     private var pendingMouseDownEvent: NSEvent?
@@ -960,7 +1133,7 @@ final class LargeFileNameCellView: NSTableCellView {
         label.routedMouseDown = { [weak self] event in
             self?.beginMouseDown(event) ?? false
         }
-        NSLayoutConstraint.activate([
+        compactConstraints = [
             iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 24),
@@ -968,7 +1141,49 @@ final class LargeFileNameCellView: NSTableCellView {
             label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 8),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
-        ])
+        ]
+        NSLayoutConstraint.activate(compactConstraints)
+        for field in [excerptLabel, pathLabel, dateLabel, matchLabel] {
+            field.translatesAutoresizingMaskIntoConstraints = false
+            field.setAccessibilityElement(false)
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            field.textColor = .secondaryLabelColor
+            field.isHidden = true
+            addSubview(field)
+        }
+        excerptLabel.maximumNumberOfLines = 2
+        excerptLabel.lineBreakMode = .byTruncatingTail
+        pathLabel.lineBreakMode = .byTruncatingMiddle
+        dateLabel.lineBreakMode = .byTruncatingTail
+        matchLabel.lineBreakMode = .byTruncatingTail
+        matchLabel.maximumNumberOfLines = 1
+        matchLabel.alignment = .right
+        matchLabel.setContentHuggingPriority(.required, for: .horizontal)
+        matchLabel.setContentCompressionResistancePriority(.defaultHigh, for: .horizontal)
+        excerptLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        pathLabel.setContentCompressionResistancePriority(.required, for: .vertical)
+        resultConstraints = [
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 14),
+            iconView.topAnchor.constraint(equalTo: topAnchor, constant: 12),
+            iconView.widthAnchor.constraint(equalToConstant: 32),
+            iconView.heightAnchor.constraint(equalToConstant: 40),
+            label.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            label.trailingAnchor.constraint(equalTo: matchLabel.leadingAnchor, constant: -10),
+            label.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            matchLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            matchLabel.centerYAnchor.constraint(equalTo: label.centerYAnchor),
+            excerptLabel.leadingAnchor.constraint(equalTo: label.leadingAnchor),
+            excerptLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            excerptLabel.topAnchor.constraint(equalTo: label.bottomAnchor, constant: 4),
+            excerptLabel.heightAnchor.constraint(equalToConstant: 34),
+            excerptLabel.bottomAnchor.constraint(lessThanOrEqualTo: pathLabel.topAnchor, constant: -4),
+            pathLabel.leadingAnchor.constraint(equalTo: label.leadingAnchor),
+            pathLabel.trailingAnchor.constraint(lessThanOrEqualTo: dateLabel.leadingAnchor, constant: -8),
+            pathLabel.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -8),
+            pathLabel.heightAnchor.constraint(equalToConstant: 14),
+            dateLabel.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16),
+            dateLabel.centerYAnchor.constraint(equalTo: pathLabel.centerYAnchor)
+        ]
     }
 
     @available(*, unavailable)
@@ -977,6 +1192,31 @@ final class LargeFileNameCellView: NSTableCellView {
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    override var backgroundStyle: NSView.BackgroundStyle {
+        didSet { updateResultTextContrast() }
+    }
+
+    private func updateResultTextContrast() {
+        guard let resultTitle, let resultExcerpt else { return }
+        if backgroundStyle == .emphasized {
+            for (field, original) in [(label as NSTextField, resultTitle), (excerptLabel, resultExcerpt)] {
+                let selected = NSMutableAttributedString(attributedString: original)
+                selected.addAttribute(.foregroundColor, value: NSColor.selectedControlTextColor,
+                                      range: NSRange(location: 0, length: selected.length))
+                field.attributedStringValue = selected
+            }
+            pathLabel.textColor = .selectedControlTextColor
+            dateLabel.textColor = .selectedControlTextColor
+            matchLabel.textColor = .selectedControlTextColor
+        } else {
+            label.attributedStringValue = resultTitle
+            excerptLabel.attributedStringValue = resultExcerpt
+            pathLabel.textColor = .secondaryLabelColor
+            dateLabel.textColor = .secondaryLabelColor
+            matchLabel.textColor = .secondaryLabelColor
+        }
+    }
 
     /// Treat the thumbnail, label, and remaining name-column space as one
     /// native table cell. This keeps the first click from being consumed by
@@ -1020,6 +1260,12 @@ final class LargeFileNameCellView: NSTableCellView {
 
     func configure(file: IndexedFile, accessibilityLabel: String) {
         thumbnailTask?.cancel()
+        resultTitle = nil
+        resultExcerpt = nil
+        resultRequestID = UUID()
+        NSLayoutConstraint.deactivate(resultConstraints)
+        NSLayoutConstraint.activate(compactConstraints)
+        for field in [excerptLabel, pathLabel, dateLabel, matchLabel] { field.isHidden = true }
         representedFileID = file.id
         toolTip = file.name
         label.stringValue = file.name
@@ -1043,9 +1289,77 @@ final class LargeFileNameCellView: NSTableCellView {
         }
     }
 
+    func configureResult(
+        file: IndexedFile, query: String, theme: AppVisualTheme, scheme: ColorScheme,
+        date: String, loadText: @escaping () async -> String?
+    ) {
+        thumbnailTask?.cancel()
+        let requestID = UUID()
+        resultRequestID = requestID
+        representedFileID = file.id
+        NSLayoutConstraint.deactivate(compactConstraints)
+        NSLayoutConstraint.activate(resultConstraints)
+        excerptLabel.isHidden = false
+        pathLabel.isHidden = false
+        dateLabel.isHidden = false
+        matchLabel.isHidden = false
+        let titleFont = NSFont.systemFont(ofSize: 14, weight: .semibold)
+        let excerptFont = NSFont.systemFont(ofSize: 13)
+        label.font = titleFont
+        excerptLabel.font = excerptFont
+        pathLabel.font = .systemFont(ofSize: 11)
+        dateLabel.font = .systemFont(ofSize: 11)
+        matchLabel.font = .systemFont(ofSize: 11)
+        dateLabel.stringValue = date
+        iconView.image = NSWorkspace.shared.icon(for: UTType(filenameExtension: file.url.pathExtension) ?? .data)
+        let accent = NSColor(theme.palette(for: scheme).accent)
+        resultTitle = Self.highlight(file.name, query: query, color: accent, font: titleFont)
+        pathLabel.stringValue = FileResultPresentation.parentBreadcrumb(for: file.url)
+        pathLabel.toolTip = file.url.deletingLastPathComponent().path
+        toolTip = file.url.path
+        let metadata = "\(file.kind.localizedTitle) · \(ByteFormatting.string(forByteCount: file.size))"
+        func apply(_ text: String?) {
+            let summary = FileResultPresentation.summary(textContent: text, query: query, metadata: metadata)
+            matchLabel.stringValue = FileResultPresentation.matchLabel(summary: summary, filename: file.name, query: query) ?? ""
+            resultExcerpt = Self.highlight(summary.text, query: query, color: accent,
+                                           font: excerptFont, secondary: true)
+            updateResultTextContrast()
+            setAccessibilityLabel("\(file.name), \(matchLabel.stringValue), \(summary.text), \(file.url.deletingLastPathComponent().path)")
+        }
+        apply(file.textContent)
+        guard file.textContent?.isEmpty != false else { return }
+        thumbnailTask = Task { [weak self] in
+            // Avoid starting disk extraction for rows swept past during a fling.
+            do { try await Task.sleep(for: .milliseconds(90)) } catch { return }
+            let text = await loadText()
+            guard !Task.isCancelled, let self, self.resultRequestID == requestID,
+                  self.representedFileID == file.id else { return }
+            let summary = FileResultPresentation.summary(textContent: text, query: query, metadata: metadata)
+            self.matchLabel.stringValue = FileResultPresentation.matchLabel(summary: summary, filename: file.name, query: query) ?? ""
+            self.resultExcerpt = Self.highlight(summary.text, query: query, color: accent,
+                                                font: excerptFont, secondary: true)
+            self.updateResultTextContrast()
+            self.setAccessibilityLabel("\(file.name), \(self.matchLabel.stringValue), \(summary.text), \(file.url.deletingLastPathComponent().path)")
+        }
+    }
+
+    private static func highlight(_ text: String, query: String, color: NSColor, font: NSFont,
+                                  secondary: Bool = false) -> NSAttributedString {
+        let result = NSMutableAttributedString(string: text, attributes: [
+            .font: font, .foregroundColor: secondary ? NSColor.secondaryLabelColor : NSColor.labelColor
+        ])
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !needle.isEmpty, let range = text.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) {
+            result.addAttribute(.foregroundColor, value: color, range: NSRange(range, in: text))
+            result.addAttribute(.underlineStyle, value: NSUnderlineStyle.single.rawValue, range: NSRange(range, in: text))
+        }
+        return result
+    }
+
     func cancelThumbnailRequest() {
         thumbnailTask?.cancel()
         thumbnailTask = nil
+        resultRequestID = UUID()
         representedFileID = nil
     }
 

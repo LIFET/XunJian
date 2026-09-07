@@ -1,18 +1,43 @@
 import SwiftUI
 
+@MainActor
+final class CollectionBrowseContext: ObservableObject {
+    struct Filters: Equatable {
+        var query = ""
+        var kind: FileKind?
+    }
+    @Published var directoryQuery = ""
+    @Published var filters: [UUID: Filters] = [:]
+}
+
 struct CategoriesView: View {
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
     let selectedCategory: FileCategory?
     let openCategory: (FileCategory) -> Void
     let showAllCategories: () -> Void
+    let statusContent: AnyView?
 
     @State private var showsNewCategory = false
     @State private var categoryToRename: FileCategory?
     @State private var categoryToDelete: FileCategory?
     @State private var hoveredCategoryID: UUID?
-    @State private var categoryQuery = ""
+    @ObservedObject private var browseContext: CollectionBrowseContext
+    private var collectionQuery: String {
+        get { browseContext.directoryQuery }
+        nonmutating set { browseContext.directoryQuery = newValue }
+    }
+    @State private var isCollectionSearchFocused = false
+    private var categoryQuery: String {
+        get { selectedCategory.flatMap { browseContext.filters[$0.id]?.query } ?? "" }
+        nonmutating set {
+            guard let id = selectedCategory?.id else { return }
+            browseContext.filters[id, default: .init()].query = newValue
+        }
+    }
     @State private var displayedFiles: [IndexedFile] = []
     @State private var displayedFileIDs: Set<String> = []
     /// Ordered positions for `displayedFiles`, so selection and arrow-key
@@ -29,47 +54,89 @@ struct CategoriesView: View {
     @AppStorage("category.viewMode") private var viewMode = FileBrowseViewMode.list
     @AppStorage("category.sortOrder") private var sortOrder = FileSortOrder.modifiedAt
     @AppStorage("category.sortAscending") private var sortAscending = false
-    @State private var selectedKind: FileKind?
+    private var selectedKind: FileKind? {
+        get { selectedCategory.flatMap { browseContext.filters[$0.id]?.kind } }
+        nonmutating set {
+            guard let id = selectedCategory?.id else { return }
+            browseContext.filters[id, default: .init()].kind = newValue
+        }
+    }
     @AppStorage(FileActivationBehavior.storageKey)
     private var doubleClickBehavior = FileActivationBehavior.open
 
     @ScaledMetric(relativeTo: .body) private var categoryIconSize: CGFloat = 16
     @ScaledMetric(relativeTo: .body) private var categoryIconContainer: CGFloat = 32
 
-    private let columns = [
-        GridItem(.adaptive(minimum: XunJianUI.Breakpoint.categoryCardMin), spacing: 12)
-    ]
+    private var palette: ThemePalette { visualTheme.palette(for: colorScheme) }
 
     init(
         selectedCategory: FileCategory?,
+        browseContext: CollectionBrowseContext = CollectionBrowseContext(),
         openCategory: @escaping (FileCategory) -> Void = { _ in },
-        showAllCategories: @escaping () -> Void = {}
+        showAllCategories: @escaping () -> Void = {},
+        statusContent: AnyView? = nil
     ) {
         self.selectedCategory = selectedCategory
+        self.browseContext = browseContext
         self.openCategory = openCategory
         self.showAllCategories = showAllCategories
+        self.statusContent = statusContent
     }
 
     var body: some View {
         GeometryReader { geometry in
-            if let selectedCategory {
-                VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
-                    header
-                    categoryFiles(selectedCategory, contentWidth: geometry.size.width)
-                }
-                .padding(XunJianUI.pagePadding(for: geometry.size.width))
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
-                        header
-                        categoryOverview
+            Group {
+                if let selectedCategory {
+                    VStack(alignment: .leading, spacing: 0) {
+                        categoryWorkspaceHeader(contentWidth: geometry.size.width)
+                        if let statusContent { statusContent }
+                        HStack {
+                            Text(verbatim: AppLanguage.fileCount(categoryFileCount))
+                                .monospacedDigit()
+                            Spacer(minLength: 0)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 16)
+                        .frame(height: 32)
+                        WorkspaceRowSeparator()
+                        categoryFiles(selectedCategory, contentWidth: geometry.size.width)
                     }
-                    .padding(XunJianUI.pagePadding(for: geometry.size.width))
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 20) {
+                            header
+                            NativeSearchField(
+                                text: Binding(get: { collectionQuery }, set: { collectionQuery = $0 }),
+                                isFocused: $isCollectionSearchFocused,
+                                prompt: AppLanguage.localized("查找资料集…", english: "Find a collection…"),
+                                accessibilityLabel: AppLanguage.localized("查找资料集", english: "Find a Collection"),
+                                accessibilityHelp: AppLanguage.localized("按名称查找资料集", english: "Find collections by name"),
+                                controlSize: .large,
+                                onSubmit: { _ in },
+                                onCancel: {
+                                    if collectionQuery.isEmpty { isCollectionSearchFocused = false }
+                                    else { collectionQuery = "" }
+                                }
+                            )
+                                .frame(maxWidth: 360, minHeight: 40, maxHeight: 40)
+                                .accessibilityIdentifier("collections.search")
+                                .onReceive(NotificationCenter.default.publisher(for: .xunJianFocusSearchField)) { note in
+                                    guard note.object as? String == XunJianSearchFieldScope.collections.rawValue else { return }
+                                    isCollectionSearchFocused = true
+                                }
+                            categoryOverview
+                        }
+                        .frame(maxWidth: 920, alignment: .leading)
+                        .padding(24)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
             }
+            .toolbar { categoryFileToolbar(contentWidth: geometry.size.width) }
         }
+        .background(palette.canvas)
         .onAppear {
             if selectedCategory != nil {
                 appModel.highlightQuery = categoryQuery
@@ -81,8 +148,6 @@ struct CategoriesView: View {
             await refreshCategoryFilesSnapshot()
         }
         .onChange(of: selectedCategory?.id) { _, _ in
-            categoryQuery = ""
-            selectedKind = nil
             displayedFiles = []
             displayedFileIDs = []
             displayedFileOrderedIDs = []
@@ -90,7 +155,7 @@ struct CategoriesView: View {
             categoryFileCount = 0
             displayedSignature = nil
             appModel.updateCommandTargetFiles([])
-            appModel.highlightQuery = ""
+            appModel.highlightQuery = categoryQuery
             clearSelectionIfHidden()
         }
         .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
@@ -112,7 +177,7 @@ struct CategoriesView: View {
         }
         .sheet(isPresented: $showsNewCategory) {
             CategoryEditorSheet(
-                title: AppLanguage.localized("新建分类", english: "New Category")
+                title: AppLanguage.localized("新建资料集", english: "New Collection")
             ) { name, symbolName in
                 try await appModel.createCategory(name: name, symbolName: symbolName)
             }
@@ -120,7 +185,7 @@ struct CategoriesView: View {
         }
         .sheet(item: $categoryToRename) { category in
             CategoryEditorSheet(
-                title: AppLanguage.localized("修改分类名称", english: "Rename Category"),
+                title: AppLanguage.localized("重命名资料集", english: "Rename Collection"),
                 initialName: category.name,
                 initialSymbol: category.symbolName,
                 allowsSymbolEditing: false
@@ -130,7 +195,7 @@ struct CategoriesView: View {
             .environment(\.locale, locale)
         }
         .alert(
-            AppLanguage.localized("删除分类？", english: "Delete Category?"),
+            AppLanguage.localized("删除资料集？", english: "Delete Collection?"),
             isPresented: Binding(
                 get: { categoryToDelete != nil },
                 set: { if !$0 { categoryToDelete = nil } }
@@ -140,7 +205,7 @@ struct CategoriesView: View {
                 categoryToDelete = nil
             }
             Button(
-                AppLanguage.localized("删除分类", english: "Delete Category"),
+                AppLanguage.localized("删除资料集", english: "Delete Collection"),
                 role: .destructive
             ) {
                 if let categoryToDelete {
@@ -154,47 +219,6 @@ struct CategoriesView: View {
     }
 
     private var header: some View {
-        Group {
-            if let selectedCategory {
-                HStack(spacing: 10) {
-                    Button(action: showAllCategories) {
-                        Label(
-                            AppLanguage.localized("全部分类", english: "All Categories"),
-                            systemImage: "chevron.left"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-
-                    Spacer(minLength: 0)
-
-                    Menu {
-                        Button {
-                            categoryToRename = selectedCategory
-                        } label: {
-                            Label(
-                                AppLanguage.localized("修改名称…", english: "Rename…"),
-                                systemImage: "pencil"
-                            )
-                        }
-                        Divider()
-                        Button(role: .destructive) {
-                            categoryToDelete = selectedCategory
-                        } label: {
-                            Label(
-                                AppLanguage.localized("删除分类…", english: "Delete Category…"),
-                                systemImage: "trash"
-                            )
-                        }
-                    } label: {
-                        Label(
-                            AppLanguage.localized("编辑分类", english: "Edit Category"),
-                            systemImage: "pencil"
-                        )
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .controlSize(.regular)
-            } else {
                 ViewThatFits(in: .horizontal) {
                     HStack(alignment: .center, spacing: XunJianUI.Spacing.sectionInner) {
                         categoryOverviewHeading
@@ -207,18 +231,140 @@ struct CategoriesView: View {
                         headerAction
                     }
                 }
+    }
+
+    @ToolbarContentBuilder
+    private func categoryFileToolbar(contentWidth: CGFloat) -> some ToolbarContent {
+        if selectedCategory != nil {
+            ToolbarItem(id: "category.back", placement: .navigation) {
+                Button(action: showAllCategories) {
+                    Label(AppLanguage.localized("资料集", english: "Collections"), systemImage: "chevron.left")
+                }
+                .help(AppLanguage.localized("返回资料集", english: "Back to Collections"))
             }
         }
     }
 
-    private var categoryOverviewHeading: some View {
-        PageHeader(
-            title: AppLanguage.localized("整理分类", english: "Organize with Categories"),
-            subtitle: AppLanguage.localized(
-                "创建自己的文件视图；分类不会移动或复制原文件。",
-                english: "Create personal file views without moving or copying the originals."
+    private func categoryWorkspaceHeader(contentWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            SearchField(
+                text: Binding(get: { categoryQuery }, set: { categoryQuery = $0 }),
+                prompt: AppLanguage.localized("在此资料集中搜索…", english: "Search this collection…"),
+                accessibilityHint: AppLanguage.localized("只搜索当前资料集中的文件", english: "Searches only files in this collection"),
+                focusScope: .category,
+                onMoveSelection: { offset in
+                    guard !displayedFileOrderedIDs.isEmpty else { return false }
+                    appModel.moveDisplayedSelection(by: offset, inIDs: displayedFileOrderedIDs,
+                                                    extending: false, idIndex: displayedFileIDIndex)
+                    return true
+                }
             )
-        )
+            .accessibilityIdentifier("collection.search")
+            HStack(spacing: 12) {
+                Menu { categoryTypeChoices } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: selectedKind == nil ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill")
+                        if contentWidth >= 440 { Text(selectedKind?.localizedTitle ?? AppLanguage.localized("全部类型", english: "All Types")) }
+                    }
+                    .frame(minWidth: 18, minHeight: 26)
+                }
+                .help(AppLanguage.localized("按文件类型筛选", english: "Filter by File Type"))
+                .accessibilityLabel(AppLanguage.localized("筛选文件", english: "Filter Files"))
+                Menu {
+                    Section(AppLanguage.localized("显示方式", english: "View")) { categoryDisplayChoices }
+                    Section(AppLanguage.localized("排序", english: "Sort")) { categorySortChoices }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: viewMode == .grid ? "square.grid.2x2" : "list.bullet")
+                        if contentWidth >= 440 { Text(AppLanguage.localized("视图", english: "View")) }
+                    }
+                    .frame(minWidth: 18, minHeight: 26)
+                }
+                .accessibilityLabel(AppLanguage.localized("视图", english: "View"))
+                Spacer(minLength: 0)
+                Menu { categoryActionChoices } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "ellipsis.circle")
+                        if contentWidth >= 440 { Text(AppLanguage.localized("操作", english: "Actions")) }
+                    }
+                    .frame(minWidth: 18, minHeight: 26)
+                }
+                .help(AppLanguage.localized("AI 与资料集操作", english: "AI and Collection Actions"))
+                .accessibilityLabel(AppLanguage.localized("资料集操作", english: "Collection Actions"))
+            }
+            .controlSize(.large)
+            .menuStyle(.button)
+        }
+        .padding(contentWidth < 440 ? 12 : 20)
+        .background(palette.surface)
+    }
+
+    private var categoryAIChoices: some View {
+        Group {
+            Button(AppLanguage.localized("解释所选文件", english: "Explain Selected File")) {
+                if let file = appModel.selectedFile { appModel.aiSheetRequest = .explain(file) }
+            }
+            Button(AppLanguage.localized("向所选文件提问", english: "Ask About Selected File")) {
+                if let file = appModel.selectedFile { appModel.aiSheetRequest = .ask(file) }
+            }
+        }
+        .disabled(appModel.activeAIProviderKind == nil || appModel.selectedFileIDs.count != 1
+                  || appModel.selectedFile.map { !appModel.supportsTextContent($0) } != false)
+    }
+
+    private var categoryActionChoices: some View {
+        Group {
+            Section("AI") { categoryAIChoices }
+            if let selectedCategory {
+                Section(AppLanguage.localized("资料集操作", english: "Collection Actions")) {
+                    Button(AppLanguage.localized("重命名资料集…", english: "Rename Collection…")) { categoryToRename = selectedCategory }
+                    Button(AppLanguage.localized("删除资料集…", english: "Delete Collection…"), role: .destructive) { categoryToDelete = selectedCategory }
+                }
+            }
+        }
+    }
+
+    private var categoryTypeChoices: some View {
+        Group {
+            Toggle(AppLanguage.localized("所有类型", english: "All Types"), isOn: Binding(
+                get: { selectedKind == nil }, set: { if $0 { selectedKind = nil } }))
+            ForEach(FileKind.allCases) { kind in
+                Toggle(kind.localizedTitle, isOn: Binding(
+                    get: { selectedKind == kind }, set: { if $0 { selectedKind = kind } }))
+            }
+        }
+    }
+
+    private var categorySortChoices: some View {
+        Group {
+            ForEach(FileSortOrder.allCases.filter { $0 != .relevance }) { order in
+                Toggle(order.localizedTitle, isOn: Binding(get: { sortOrder == order }, set: { selected in
+                    guard selected, sortOrder != order else { return }
+                    sortOrder = order
+                    sortAscending = order == .name || order == .kind
+                }))
+            }
+            Divider()
+            Toggle(AppLanguage.localized("升序", english: "Ascending"), isOn: $sortAscending)
+        }
+    }
+
+    private var categoryDisplayChoices: some View {
+        ForEach(FileBrowseViewMode.allCases) { mode in
+            Toggle(mode.localizedTitle, isOn: Binding(get: { viewMode == mode }, set: { if $0 { viewMode = mode } }))
+        }
+    }
+
+    private var categoryOverviewHeading: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(AppLanguage.localized("资料集", english: "Collections"))
+                .font(.system(size: 24, weight: .semibold))
+            Text(AppLanguage.localized("\(appModel.categories.count) 个资料集 · 只建立关联，原文件仍在原处。", english: "\(appModel.categories.count) collections · Linked here, kept in their original locations."))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -228,13 +374,14 @@ struct CategoriesView: View {
                 showsNewCategory = true
             } label: {
                 Label(
-                    AppLanguage.localized("新建分类", english: "New Category"),
+                    AppLanguage.localized("新建资料集", english: "New Collection"),
                     systemImage: "plus"
                 )
             }
             .labelStyle(.titleAndIcon)
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
+            .frame(minHeight: XunJianUI.controlHeight)
             .fixedSize(horizontal: true, vertical: false)
         }
     }
@@ -242,14 +389,14 @@ struct CategoriesView: View {
     @ViewBuilder
     private var categoryOverview: some View {
         if appModel.categories.isEmpty {
-            InsetSurface(padding: 0) {
+            Group {
                 ContentUnavailableView(
-                    AppLanguage.localized("还没有分类", english: "No Categories Yet"),
+                    AppLanguage.localized("还没有资料集", english: "No Collections Yet"),
                     systemImage: "folder.badge.plus",
                     description: Text(
                         AppLanguage.localized(
-                            "创建分类后，可以从文件右键菜单或详情栏添加。",
-                            english: "After you create a category, add files from the context menu or inspector."
+                            "创建资料集后，可以从文件右键菜单或信息栏添加文件。",
+                            english: "Create a collection, then add files from the context menu or information pane."
                         )
                     )
                 )
@@ -259,48 +406,37 @@ struct CategoriesView: View {
                 )
             }
         } else {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                ForEach(appModel.categories) { category in
+            LazyVStack(spacing: 0) {
+                ForEach(appModel.categories.filter {
+                    collectionQuery.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                        || $0.localizedDisplayName.localizedStandardContains(collectionQuery.trimmingCharacters(in: .whitespacesAndNewlines))
+                }) { category in
                     Button {
                         openCategory(category)
                     } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: category.symbolName)
-                                .font(.system(size: categoryIconSize, weight: .medium))
-                                .foregroundStyle(.tint)
-                                .frame(width: categoryIconContainer, height: categoryIconContainer)
-                                .background(
-                                    Color.accentColor.opacity(0.10),
-                                    in: RoundedRectangle(
-                                        cornerRadius: XunJianUI.Radius.chip,
-                                        style: .continuous
-                                    )
-                                )
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(verbatim: category.localizedDisplayName)
-                                    .font(XunJianUI.Typography.itemTitle)
-                                    .lineLimit(1)
-                                    .help(category.localizedDisplayName)
-                                Text(verbatim: AppLanguage.fileCount(appModel.fileCount(in: category)))
-                                    .font(.caption)
+                        HStack(spacing: 16) {
+                                Image(systemName: category.symbolName)
+                                    .font(.system(size: 18, weight: .regular))
+                                    .frame(width: 32)
                                     .foregroundStyle(.secondary)
-                            }
-                            Spacer(minLength: 0)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.tertiary)
+                            Text(verbatim: category.localizedDisplayName)
+                                .font(.system(size: 15, weight: .medium))
+                                .lineLimit(1)
+                                .help(category.localizedDisplayName)
+                            Spacer(minLength: 16)
+                            Text(verbatim: AppLanguage.fileCount(appModel.fileCount(in: category)))
+                                .font(.callout).monospacedDigit()
+                                .foregroundStyle(.secondary)
+                            Image(systemName: "chevron.right").font(.system(size: 11)).foregroundStyle(.tertiary)
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 14)
-                        .background {
-                            InteractiveCardBackground(
-                                isHovered: hoveredCategoryID == category.id
-                            )
-                        }
+                        .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .background(hoveredCategoryID == category.id ? palette.selection : palette.canvas)
+                        .overlay(alignment: .bottom) { WorkspaceRowSeparator() }
+                        .xunjianAnimation(value: hoveredCategoryID == category.id)
                         .contentShape(Rectangle())
                     }
-                    .buttonStyle(SoftCardButtonStyle())
+                    .buttonStyle(.plain)
                     .onHover { isHovering in
                         hoveredCategoryID = isHovering ? category.id : nil
                     }
@@ -316,11 +452,16 @@ struct CategoriesView: View {
                         }
                         Divider()
                         Button(
-                            AppLanguage.localized("删除分类", english: "Delete Category"),
+                            AppLanguage.localized("删除资料集", english: "Delete Collection"),
                             role: .destructive
                         ) { categoryToDelete = category }
                     }
                 }
+            }
+            if !collectionQuery.isEmpty && !appModel.categories.contains(where: { $0.localizedDisplayName.localizedStandardContains(collectionQuery.trimmingCharacters(in: .whitespacesAndNewlines)) }) {
+                ContentUnavailableView.search(text: collectionQuery)
+                Button(AppLanguage.localized("清除搜索", english: "Clear Search")) { collectionQuery = "" }
+                    .buttonStyle(.bordered)
             }
         }
     }
@@ -345,14 +486,14 @@ struct CategoriesView: View {
         } else if categoryFileCount == 0 {
             ContentUnavailableView(
                 AppLanguage.localized(
-                    "这个分类里还没有文件",
-                    english: "No Files in This Category"
+                    "资料集里还没有文件",
+                    english: "No Files in This Collection"
                 ),
                 systemImage: category.symbolName,
                 description: Text(
                     AppLanguage.localized(
-                        "从文件右键菜单或详情栏为文件添加分类。",
-                        english: "Add files to this category from the context menu or inspector."
+                        "从文件右键菜单或信息栏，将文件添加到这个资料集。",
+                        english: "Add files to this collection from the context menu or information pane."
                     )
                 )
             )
@@ -360,40 +501,12 @@ struct CategoriesView: View {
                 maxWidth: .infinity,
                 minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
             )
-            .background(
-                XunJianUI.Fill.quiet,
-                in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-            )
         } else {
             VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-                HStack(spacing: 8) {
-                    SearchField(
-                        text: $categoryQuery,
-                        prompt: AppLanguage.localized(
-                            "在此分类中搜索…",
-                            english: "Search in this category…"
-                        ),
-                        accessibilityHint: AppLanguage.localized(
-                            "只搜索当前分类中的文件",
-                            english: "Searches only files in this category"
-                        ),
-                        focusScope: .category
-                    )
-                    if isCategorySearching {
-                        ProgressView()
-                            .controlSize(.small)
-                            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                                "正在搜索",
-                                english: "Searching"
-                            )))
-                    }
+                if isCategorySearching, !files.isEmpty {
+                    ProgressView(AppLanguage.localized("正在搜索…", english: "Searching…"))
+                        .controlSize(.small)
                 }
-                FileBrowseToolbar(
-                    selectedKind: $selectedKind,
-                    sortOrder: $sortOrder,
-                    sortAscending: $sortAscending,
-                    viewMode: $viewMode
-                )
                 if appModel.selectedFileIDs.count > 1 {
                     FileBatchActionBar(
                         contentWidth: contentWidth,
@@ -409,6 +522,7 @@ struct CategoriesView: View {
                 } else if viewMode == .grid {
                     ScrollView {
                         categoryFileGrid(files)
+                            .padding(XunJianUI.pagePadding(for: contentWidth))
                             .fileListKeyboardNavigation(
                                 files: files,
                                 orderedIDs: displayedFileOrderedIDs,
@@ -453,10 +567,6 @@ struct CategoriesView: View {
         .frame(
             maxWidth: .infinity,
             minHeight: XunJianUI.Breakpoint.categoryEmptyStateHeight
-        )
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
         )
     }
 
@@ -750,9 +860,9 @@ struct CategoriesView: View {
 
     private var deleteMessage: String {
         let name = categoryToDelete?.localizedDisplayName
-            ?? AppLanguage.localized("这个分类", english: "this category")
+            ?? AppLanguage.localized("这个资料集", english: "this collection")
         return AppLanguage.localized(
-            "只会删除“\(name)”及其分类关系，不会删除任何真实文件。",
+            "只会删除“\(name)”及其文件关联，不会删除任何原文件。",
             english: "Only “\(name)” and its category relationships will be deleted. No files will be deleted."
         )
     }
@@ -781,6 +891,8 @@ private struct CategoryFilesRefreshKey: Equatable {
 }
 
 struct CategoryEditorSheet: View {
+    @Environment(\.appVisualTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     let title: String
     let allowsSymbolEditing: Bool
     let submit: (String, String) async throws -> Void
@@ -816,7 +928,7 @@ struct CategoryEditorSheet: View {
             Text(verbatim: title)
                 .font(XunJianUI.Typography.sheetTitle)
             TextField(
-                AppLanguage.localized("分类名称", english: "Category Name"),
+                AppLanguage.localized("资料集名称", english: "Collection Name"),
                 text: $name
             )
                 .textFieldStyle(.roundedBorder)
@@ -841,7 +953,7 @@ struct CategoryEditorSheet: View {
                 }
                 .pickerStyle(.palette)
             }
-
+            WorkspaceRowSeparator()
             HStack {
                 Spacer()
                 Button(AppLanguage.localized("取消", english: "Cancel")) { dismiss() }
@@ -855,6 +967,8 @@ struct CategoryEditorSheet: View {
         }
         .padding(24)
         .frame(minWidth: 280, idealWidth: 440, maxWidth: 520, alignment: .leading)
+        .controlSize(.large)
+        .background(theme.palette(for: colorScheme).canvas)
         .onAppear { isNameFocused = true }
         .interactiveDismissDisabled(isSaving)
     }
@@ -897,7 +1011,7 @@ struct CategoryEditorSheet: View {
         case "star":
             AppLanguage.localized("星标图标", english: "Star icon")
         default:
-            AppLanguage.localized("分类图标", english: "Category icon")
+            AppLanguage.localized("资料集图标", english: "Collection icon")
         }
     }
 }

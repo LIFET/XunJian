@@ -1706,6 +1706,91 @@ actor FileIndexDatabase {
         )
     }
 
+    func fetchPendingTextRefreshFileIDs(
+        forSourceID sourceID: UUID,
+        includesHiddenFiles: Bool = true
+    ) throws -> Set<String> {
+        let statement = try pendingTextRefreshStatement(
+            forSourceID: sourceID, includesHiddenFiles: includesHiddenFiles, firstOnly: false
+        )
+        defer { sqlite3_finalize(statement) }
+        var ids = Set<String>()
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return ids }
+            guard result == SQLITE_ROW else {
+                throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
+            }
+            ids.insert(text(statement, column: 0))
+        }
+    }
+
+    func fetchSourcesRequiringTextRefresh(includesHiddenFiles: Bool = true) throws -> Set<UUID> {
+        let statement = try prepare("SELECT DISTINCT source_id FROM files WHERE text_needs_refresh = 1;")
+        defer { sqlite3_finalize(statement) }
+        var ids = Set<UUID>()
+        while true {
+            let result = sqlite3_step(statement)
+            if result == SQLITE_DONE { return ids }
+            guard result == SQLITE_ROW else {
+                throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
+            }
+            guard let id = UUID(uuidString: text(statement, column: 0)) else { continue }
+            if includesHiddenFiles {
+                ids.insert(id)
+                continue
+            }
+            let pending = try pendingTextRefreshStatement(
+                forSourceID: id, includesHiddenFiles: false, firstOnly: true
+            )
+            defer { sqlite3_finalize(pending) }
+            let pendingResult = sqlite3_step(pending)
+            if pendingResult == SQLITE_ROW {
+                ids.insert(id)
+            } else if pendingResult != SQLITE_DONE {
+                throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
+            }
+        }
+    }
+
+    private func pendingTextRefreshStatement(
+        forSourceID sourceID: UUID,
+        includesHiddenFiles: Bool,
+        firstOnly: Bool
+    ) throws -> OpaquePointer {
+        let rootStatement = try prepare("SELECT path FROM sources WHERE id = ?;")
+        defer { sqlite3_finalize(rootStatement) }
+        try bind(sourceID.uuidString, at: 1, to: rootStatement)
+        let rootResult = sqlite3_step(rootStatement)
+        guard rootResult == SQLITE_ROW || rootResult == SQLITE_DONE else {
+            throw FileIndexError.database(String(cString: sqlite3_errmsg(connection.pointer)))
+        }
+        let rootPath = rootResult == SQLITE_ROW
+            ? FilePathCanonicalizer.path(text(rootStatement, column: 0)) : "/"
+        let rootPrefix = rootPath == "/" ? rootPath : rootPath + "/"
+        // 隐藏规则相对授权根：隐藏目录本身可被明确授权，但隐藏后代仍按偏好排除。
+        // SQLite length 在数据库侧计算 Unicode 长度，避免 emoji/组合字符的下标差异。
+        let statement = try prepare("""
+            SELECT id FROM files
+            WHERE source_id = ? AND text_needs_refresh = 1
+              AND (? = 1 OR (
+                substr(path, length(?) + 1) NOT GLOB '.*'
+                AND substr(path, length(?) + 1) NOT GLOB '*/.*'
+              ))
+            \(firstOnly ? "LIMIT 1" : "");
+            """)
+        do {
+            try bind(sourceID.uuidString, at: 1, to: statement)
+            try bind(includesHiddenFiles ? 1 : 0, at: 2, to: statement)
+            try bind(rootPrefix, at: 3, to: statement)
+            try bind(rootPrefix, at: 4, to: statement)
+            return statement
+        } catch {
+            sqlite3_finalize(statement)
+            throw error
+        }
+    }
+
     func fetchTextContent(forFileID fileID: String) throws -> String? {
         let statement = try prepare(
             "SELECT text_content FROM files WHERE id = ? LIMIT 1;"
@@ -1751,7 +1836,7 @@ actor FileIndexDatabase {
         guard !updates.isEmpty else { return }
         try transaction {
             let statement = try prepare(
-                "UPDATE files SET text_content = ? WHERE id = ?;"
+                "UPDATE files SET text_content = ?, text_needs_refresh = 0 WHERE id = ?;"
             )
             defer { sqlite3_finalize(statement) }
             var updatedFileIDs: [String] = []
@@ -1835,7 +1920,7 @@ actor FileIndexDatabase {
             let clearStatement = try prepare(
                 """
                 UPDATE files
-                SET text_content = NULL
+                SET text_content = NULL, text_needs_refresh = 0
                 WHERE source_id = ?
                   AND id NOT IN (SELECT file_id FROM preserved_text_content_ids);
                 """
@@ -1847,7 +1932,7 @@ actor FileIndexDatabase {
             let applyStatement = try prepare(
                 """
                 UPDATE files
-                SET text_content = (
+                SET text_needs_refresh = 0, text_content = (
                     SELECT staged_text_contents.text_content
                     FROM staged_text_contents
                     WHERE staged_text_contents.scan_id = ?
@@ -1885,7 +1970,7 @@ actor FileIndexDatabase {
             let statement = try prepare(
                 """
                 UPDATE files
-                SET text_content = (
+                SET text_needs_refresh = 0, text_content = (
                     SELECT staged_text_contents.text_content
                     FROM staged_text_contents
                     WHERE staged_text_contents.scan_id = ?
@@ -1914,7 +1999,7 @@ actor FileIndexDatabase {
 
     func clearTextContents() throws {
         try transaction {
-            try Self.execute("UPDATE files SET text_content = NULL;", on: connection.pointer)
+            try Self.execute("UPDATE files SET text_content = NULL, text_needs_refresh = 1;", on: connection.pointer)
             // FTS5 applies UPDATE as a bulk delete/insert internally. Updating
             // the derived column in one statement avoids preparing three SQL
             // statements per file, which made opting out of content indexing
@@ -2892,6 +2977,30 @@ actor FileIndexDatabase {
                 """
                 ALTER TABLE saved_searches ADD COLUMN file_kind TEXT;
                 PRAGMA user_version = 5;
+                """,
+                on: database
+            )
+        }
+
+        if try userVersion(database) < 6 {
+            // 旧库无法区分“已完成正文”和“metadata 已提交但正文中断”，
+            // 升级只标脏一次；保留旧正文，直到一次成功提取原子替换。
+            try execute(
+                """
+                BEGIN IMMEDIATE TRANSACTION;
+                ALTER TABLE files ADD COLUMN text_needs_refresh INTEGER NOT NULL DEFAULT 1;
+                CREATE INDEX files_pending_text_refresh_source_idx
+                    ON files(source_id) WHERE text_needs_refresh = 1;
+                CREATE TRIGGER files_mark_text_refresh
+                AFTER UPDATE OF size, modified_at, extension ON files
+                WHEN old.size IS NOT new.size
+                    OR old.modified_at IS NOT new.modified_at
+                    OR old.extension IS NOT new.extension
+                BEGIN
+                    UPDATE files SET text_needs_refresh = 1 WHERE id = new.id;
+                END;
+                PRAGMA user_version = 6;
+                COMMIT;
                 """,
                 on: database
             )

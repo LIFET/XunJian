@@ -20,9 +20,31 @@
 
 前往 [GitHub Releases](https://github.com/LIFET/XunJian/releases/latest) 下载适合当前 Mac 的安装包，要求 macOS 14 或更高版本：
 
-- `XunJian-0.1.2-macOS.dmg`：Universal，兼容 Apple silicon 与 Intel。
-- `XunJian-0.1.2-Apple-Silicon.dmg`：仅 Apple silicon（M 系列芯片）。
-- `XunJian-0.1.2-Intel.dmg`：仅 Intel。
+- 文件名以 `-macOS.dmg` 结尾：Universal，兼容 Apple silicon 与 Intel。
+- 文件名以 `-Apple-Silicon.dmg` 结尾：仅 Apple silicon（M 系列芯片）。
+- 文件名以 `-Intel.dmg` 结尾：仅 Intel。
+
+## 界面
+
+以下为当前原生界面的实际截图，使用隔离的演示文件；不含个人文件或账号信息。搜索图为完整窗口，资料集与设置图为对应页面。
+
+### 搜索与阅读
+
+在结果旁查看文件正文，不用来回切换窗口。支持按类型筛选、排序和保存搜索。
+
+![搜索结果与文件预览](docs/images/search-preview.png)
+
+### 资料集
+
+按项目或用途归类，只建立关联，原文件仍在原处。
+
+![资料集页面](docs/images/collections.png)
+
+### 设置
+
+外观、文件授权、索引和 AI 连接分区管理。
+
+![通用设置页面](docs/images/settings.png)
 
 ## 为什么做寻简
 
@@ -34,10 +56,11 @@
 - **整台 Mac 扫描**：高级模式按受控范围分批扫描，可暂停、继续和断点恢复；不可访问的系统与隐私位置会跳过并明确提示。
 - **快速检索**：文件名、路径、分类与可提取正文全文搜索，支持类型、日期和排序筛选。
 - **列表与网格浏览**：多选、键盘操作、快速查看、Finder 定位、重命名、移动和移到废纸篓。
-- **自定义分类**：文件可关联多个分类，支持拖放、批量操作与 AI 建议后的人工确认。
+- **资料集**：文件可关联多个资料集，支持拖放、批量操作与 AI 建议后的人工确认。
+- **存储与查重**：查看索引范围内的文件数量与大小，按内容识别重复文件；清理前复验，支持撤销。
 - **AI 文件理解**：结构化“看文件”、带片段依据的连续“问文件”、自然语言搜索和批量分类。
 - **多种认证方式**：Codex/ChatGPT 与 Grok 使用应用专属 OAuth；DeepSeek、Qwen 等兼容 Provider 使用用户自己的 API Key。
-- **在线更新基础设施**：已接入 Sparkle 2，并使用公开 HTTPS [appcast](https://lifet.github.io/XunJian/appcast.xml)；正式发布仍需签名更新包并完成公证验证。
+- **在线更新**：通过 Sparkle 2 和 HTTPS [appcast](https://lifet.github.io/XunJian/appcast.xml) 检查已签名的更新。
 
 ## 隐私与安全
 

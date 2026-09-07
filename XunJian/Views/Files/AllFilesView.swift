@@ -9,12 +9,19 @@ struct AllFilesView: View {
     @EnvironmentObject private var searchProgressStore: SearchProgressStore
     @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
 
     let windowWidth: CGFloat
-    let contentWidth: CGFloat
+    private let initialContentWidth: CGFloat
+    @State private var measuredResultsWidth: CGFloat?
+    private var contentWidth: CGFloat { measuredResultsWidth ?? initialContentWidth }
     var isVisible = true
+    var statusContent: AnyView? = nil
+    var workspaceInspector: WorkspaceInspectorModifier? = nil
 
     @AppStorage("allFiles.viewMode") private var viewMode = ViewMode.list
+    @AppStorage("allFiles.listPresentation") private var listPresentation = FileListPresentation.defaultValue
     @AppStorage(FileActivationBehavior.storageKey)
     private var doubleClickBehavior = FileActivationBehavior.open
     @AppStorage("allFiles.sortOrder") private var browseSortOrder = FileSortOrder.modifiedAt
@@ -52,20 +59,20 @@ struct AllFilesView: View {
     // on top of whatever search/AI narrowing is active. Values live on
     // AppModel so saved searches can restore them.
     @State private var showsFilterPopover = false
+    @State private var showsSaveSearch = false
     @State private var savedSearchName = ""
-
-    // F03: toolbar rows grow with the text size setting instead of clipping
-    // at a fixed 32pt.
-    @ScaledMetric(relativeTo: .body) private var toolbarControlHeight = FileToolbarMetrics.controlHeight
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
     }
 
-    init(windowWidth: CGFloat, contentWidth: CGFloat, isVisible: Bool = true) {
+    init(windowWidth: CGFloat, contentWidth: CGFloat, isVisible: Bool = true, statusContent: AnyView? = nil,
+         workspaceInspector: WorkspaceInspectorModifier? = nil) {
         self.windowWidth = windowWidth
-        self.contentWidth = contentWidth
+        self.initialContentWidth = contentWidth
         self.isVisible = isVisible
+        self.statusContent = statusContent
+        self.workspaceInspector = workspaceInspector
     }
 
     var body: some View {
@@ -97,11 +104,12 @@ struct AllFilesView: View {
             if liveGridScrollPosition == nil, !gridScrollPosition.isEmpty {
                 liveGridScrollPosition = gridScrollPosition
             }
-            tableSelectedIDs = appModel.selectedFileIDs
+            synchronizeSelectionFromModel(appModel.selectedFileIDs)
         }
         .onChange(of: isVisible) { _, visible in
             guard visible else { return }
             appModel.highlightQuery = appModel.searchText
+            synchronizeSelectionFromModel(appModel.selectedFileIDs)
             // The retained All Files view may still hold the previous
             // page's snapshot. Publish only after the current filters
             // have been recomputed so commands cannot target stale rows.
@@ -113,7 +121,8 @@ struct AllFilesView: View {
         }
         .onChange(of: appModel.selectedFileID) { _, id in
             guard isVisible, let id else { return }
-            if FileBrowsePerformancePolicy.usesNativeBrowser(fileCount: appModel.files.count),
+            if (listPresentation == .results && viewMode == .list
+                || FileBrowsePerformancePolicy.usesNativeBrowser(fileCount: appModel.files.count)),
                nativeSelectionLeadID == id {
                 nativeSelectionLeadID = nil
                 return
@@ -127,9 +136,7 @@ struct AllFilesView: View {
             scheduleScrollPositionPersistence(id, mode: viewMode)
         }
         .onChange(of: appModel.selectedFileIDs) { _, ids in
-            guard tableSelectedIDs != ids else { return }
-            tableSelectedIDs = ids
-            tableSelectionEpoch &+= 1
+            synchronizeSelectionFromModel(ids)
         }
         .onReceive(NotificationCenter.default.publisher(for: .xunJianSetBrowseViewMode)) { note in
             guard isVisible,
@@ -141,14 +148,33 @@ struct AllFilesView: View {
 
     private func content(filesSnapshot: [IndexedFile]) -> some View {
         VStack(spacing: 0) {
+            librarySearchHeader
+            WorkspaceRowSeparator()
+            if let workspaceInspector {
+                resultsWorkspace(filesSnapshot: filesSnapshot).modifier(workspaceInspector)
+            } else {
+                resultsWorkspace(filesSnapshot: filesSnapshot)
+            }
+        }
+        .background(visualTheme.palette(for: colorScheme).canvas)
+    }
+
+    private func resultsWorkspace(filesSnapshot: [IndexedFile]) -> some View {
+        VStack(spacing: 0) {
             fileHeader(filesSnapshot: filesSnapshot)
             emptyState(files: filesSnapshot)
+            fileLocationFooter(resultCount: filesSnapshot.count)
+        }
+        .background(visualTheme.palette(for: colorScheme).surface)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width in
+            measuredResultsWidth = width
         }
     }
 
     @ViewBuilder
     private func fileHeader(filesSnapshot: [IndexedFile]) -> some View {
-        header(resultCount: filesSnapshot.count)
+        if activeFilterCount > 0 { activeFilterSummary }
+        if let statusContent { statusContent }
         if appModel.selectedFileIDs.count > 1 {
             FileBatchActionBar(contentWidth: contentWidth)
         }
@@ -177,30 +203,195 @@ struct AllFilesView: View {
         }
     }
 
-    private func header(resultCount: Int) -> some View {
-        VStack(alignment: .trailing, spacing: 6) {
-            HStack(spacing: 12) {
-                headerSummary(resultCount: resultCount)
-                    .layoutPriority(1)
-                Spacer(minLength: 8)
-                filterButton
-                responsiveFileToolbar
+    private var librarySearchHeader: some View {
+        HStack(spacing: 12) {
+            workspaceSearch
+            if initialContentWidth >= 800 {
+                Menu {
+                    Picker(AppLanguage.localized("文件类型", english: "File Type"), selection: $appModel.selectedKind) {
+                        Text(AppLanguage.localized("所有类型", english: "All Types")).tag(Optional<FileKind>.none)
+                    ForEach(FileKind.allCases) { kind in
+                        Text(kind.localizedTitle).tag(Optional(kind))
+                    }
+                    }.pickerStyle(.inline)
+                } label: {
+                    Text(appModel.selectedKind?.localizedTitle ?? AppLanguage.localized("所有类型", english: "All Types"))
+                }
+                .fixedSize()
+                .help(AppLanguage.localized("文件类型", english: "File Type"))
+                Menu { resultSortChoices
+                } label: {
+                    Text(activeSortOrder.localizedTitle)
+                }
+                .fixedSize()
+                .help(sortDescription)
+                Menu { resultDisplayChoices } label: {
+                    Image(systemName: viewMode.symbolName).frame(width: 28, height: 32)
+                }
+                .fixedSize()
+                .help(AppLanguage.localized("显示方式", english: "View Mode"))
+                .accessibilityLabel(AppLanguage.localized("显示方式", english: "View Mode"))
+            } else {
+                Menu {
+                    Section(AppLanguage.localized("文件类型", english: "File Type")) {
+                        Picker(AppLanguage.localized("类型", english: "Kind"), selection: $appModel.selectedKind) {
+                            Text(AppLanguage.localized("所有类型", english: "All Types")).tag(Optional<FileKind>.none)
+                            ForEach(FileKind.allCases) { Text($0.localizedTitle).tag(Optional($0)) }
+                        }.pickerStyle(.inline)
+                    }
+                    Section(AppLanguage.localized("排序", english: "Sort")) { resultSortChoices }
+                    Section(AppLanguage.localized("显示方式", english: "View Mode")) { resultDisplayChoices }
+                } label: { Image(systemName: viewMode.symbolName).frame(width: 28, height: 32) }
+                .fixedSize().accessibilityLabel(AppLanguage.localized("类型、排序与显示", english: "Type, Sort and View"))
+                .help(AppLanguage.localized("类型、排序与显示", english: "Type, Sort and View"))
             }
-            if searchProgressStore.isSearching || appModel.hasMoreSearchResults {
-                searchProgress
+            filterButton
+            Button {
+                savedSearchName = ""
+                showsSaveSearch = true
+            } label: {
+                Label(AppLanguage.localized("保存搜索", english: "Save Search"), systemImage: "bookmark")
+                    .labelStyle(.iconOnly)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
+            .help(AppLanguage.localized("保存当前搜索与筛选", english: "Save this search and filters"))
+            .disabled(!Self.canSaveSearch(name: "Search", query: appModel.searchText,
+                hasManualFilter: hasActiveManualFilter, kind: appModel.selectedKind) || appModel.hasInvalidSizeFilterInput)
+            .sheet(isPresented: $showsSaveSearch) { saveSearchForm }
+            Menu { aiChoices } label: { Image(systemName: "sparkles").frame(width: 28, height: 32) }
+                .fixedSize()
+                .help(AppLanguage.localized("AI 功能", english: "AI Actions"))
+                .accessibilityLabel(AppLanguage.localized("AI 功能", english: "AI Actions"))
         }
-        .padding(12)
-        .background(
-            XunJianUI.Fill.quiet,
-            in: RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
-        }
-        .padding(.horizontal, XunJianUI.pagePadding(for: contentWidth))
+        .controlSize(.large)
+        .buttonStyle(.borderless)
+        .menuStyle(.borderlessButton)
+        .padding(.horizontal, 20)
         .padding(.vertical, 12)
+        .background(visualTheme.palette(for: colorScheme).canvas)
+    }
+
+    private var workspaceSearch: some View {
+                BrowseSearchField(
+                    store: appModel.browseSearchStore,
+                    appModel: appModel,
+                    isCompact: false,
+                    onMoveSelection: { offset in
+                        guard isVisible, FileResultNavigationPolicy.canNavigate(
+                            hasResults: !browseSnapshot.orderedIDs.isEmpty,
+                            isSearching: appModel.browseSearchStore.isSearching,
+                            snapshotSignature: browseSnapshot.signature,
+                            expectedSignature: displayedFilesRefreshKey.signature,
+                            snapshotUserSignature: browseSnapshot.userSignature,
+                            expectedUserSignature: displayedFilesUserKey.signature
+                        ) else { return false }
+                        appModel.moveDisplayedSelection(by: offset, inIDs: browseSnapshot.orderedIDs,
+                                                        extending: false, idIndex: browseSnapshot.idIndex)
+                        return true
+                    }
+                )
+                .frame(maxWidth: .infinity)
+                .accessibilityIdentifier("library.search")
+    }
+
+    private var sortDescription: String {
+        activeSortOrder.localizedTitle + " · " + (activeSortOrder == .relevance
+            ? AppLanguage.localized("最相关优先", english: "Most Relevant First")
+            : (activeSortAscending ? AppLanguage.localized("升序", english: "Ascending")
+               : AppLanguage.localized("降序", english: "Descending")))
+    }
+
+    private var activeFilterCount: Int {
+        (appModel.selectedKind == nil ? 0 : 1)
+            + (minimumSizeBytes > 0 || appModel.hasInvalidSizeFilterInput ? 1 : 0)
+            + (minimumFilterDate == nil ? 0 : 1)
+    }
+
+    private var activeFilterSummary: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text(AppLanguage.localized("筛选 \(activeFilterCount)", english: "Filters \(activeFilterCount)"))
+                    .foregroundStyle(.secondary)
+                if let kind = appModel.selectedKind {
+                    filterChip(kind.localizedTitle) { appModel.selectedKind = nil }
+                }
+                if minimumSizeBytes > 0 || appModel.hasInvalidSizeFilterInput {
+                    filterChip(appModel.hasInvalidSizeFilterInput
+                        ? AppLanguage.localized("大小条件无效", english: "Invalid Size")
+                        : AppLanguage.localized("大小 ≥ \(appModel.filterMinSizeMB.formatted()) MB",
+                                                english: "Size ≥ \(appModel.filterMinSizeMB.formatted()) MB")) {
+                        appModel.filterMinSizeMB = 0
+                    }
+                }
+                if let date = minimumFilterDate {
+                    filterChip(AppLanguage.localized("修改于 \(date.formatted(date: .numeric, time: .omitted)) 之后",
+                                                     english: "Modified Since \(date.formatted(date: .numeric, time: .omitted))")) {
+                        appModel.filterMinDate = 0
+                    }
+                }
+                Button {
+                    appModel.selectedKind = nil
+                    appModel.filterMinSizeMB = 0
+                    appModel.filterMinDate = 0
+                } label: {
+                    Text(AppLanguage.localized("全部清除", english: "Clear All"))
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: XunJianUI.controlHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .help(AppLanguage.localized("清除类型、大小与日期条件，保留搜索词", english: "Clear type, size and date conditions; keep the search query"))
+            }
+            .font(.callout)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 4)
+        }
+        .background(visualTheme.palette(for: colorScheme).canvas)
+        .overlay(alignment: .bottom) { WorkspaceRowSeparator() }
+    }
+
+    private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
+        Button(action: clear) {
+            HStack(spacing: 6) {
+                Text(title)
+                Image(systemName: "xmark").font(.system(size: 10, weight: .semibold))
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(minHeight: XunJianUI.controlHeight)
+            .background(visualTheme.palette(for: colorScheme).selection, in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(AppLanguage.localized("移除筛选：\(title)", english: "Remove Filter: \(title)"))
+        .help(AppLanguage.localized("移除筛选：\(title)", english: "Remove Filter: \(title)"))
+    }
+
+    private var resultSortChoices: some View {
+        Group {
+            ForEach(availableSortOrders) { order in
+                Toggle(order.localizedTitle, isOn: Binding(
+                    get: { activeSortOrder == order }, set: { if $0 { activeSortOrderBinding.wrappedValue = order } }))
+            }
+            Divider()
+            Toggle(AppLanguage.localized("升序", english: "Ascending"), isOn: Binding(
+                get: { activeSortAscending }, set: { activeSortAscending = $0 }))
+                .disabled(activeSortOrder == .relevance)
+        }
+    }
+
+    private var resultDisplayChoices: some View {
+        Group {
+            Toggle(AppLanguage.localized("结果列表", english: "Results List"), isOn: Binding(
+                get: { viewMode == .list && listPresentation == .results },
+                set: { if $0 { listPresentation = .results; viewMode = .list } }))
+            Toggle(AppLanguage.localized("属性表格", english: "Column Table"), isOn: Binding(
+                get: { viewMode == .list && listPresentation == .table },
+                set: { if $0 { listPresentation = .table; viewMode = .list } }))
+            Toggle(AppLanguage.localized("图标网格", english: "Icon Grid"), isOn: Binding(
+                get: { viewMode == .grid }, set: { if $0 { viewMode = .grid } }))
+        }
     }
 
     /// Manual size/date filter entry point (N02). Highlighted while active so
@@ -209,14 +400,18 @@ struct AllFilesView: View {
         Button {
             showsFilterPopover.toggle()
         } label: {
-            Image(systemName: "line.3.horizontal.decrease.circle")
-                .foregroundStyle(hasActiveManualFilter ? Color.accentColor : .primary)
+            Label(AppLanguage.localized("筛选", english: "Filter"),
+                  systemImage: hasActiveManualFilter || appModel.hasInvalidSizeFilterInput ? "line.3.horizontal.decrease.circle.fill" : "line.3.horizontal.decrease")
+                .labelStyle(.iconOnly)
+                .frame(width: 32, height: 32)
+                .contentShape(Rectangle())
         }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-        .help(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
-        .accessibilityLabel(AppLanguage.localized("按大小或日期过滤", english: "Filter by Size or Date"))
-        .popover(isPresented: $showsFilterPopover, arrowEdge: .bottom) {
+        .help(AppLanguage.localized("按大小或修改日期筛选", english: "Filter by size or modified date"))
+        .accessibilityLabel(AppLanguage.localized("筛选文件", english: "Filter Files"))
+        .popover(isPresented: $showsFilterPopover, arrowEdge: .bottom) { filterPopover }
+    }
+
+    private var filterPopover: some View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(AppLanguage.localized("过滤条件", english: "Filters"))
                     .font(XunJianUI.Typography.sectionTitle)
@@ -231,6 +426,16 @@ struct AllFilesView: View {
                     )
                     .textFieldStyle(.roundedBorder)
                     .frame(width: 140)
+
+                    if appModel.hasInvalidSizeFilterInput {
+                        Text(AppLanguage.localized(
+                            "请输入有效的非负大小，数值不能超过支持范围。",
+                            english: "Enter a non-negative size within the supported range."
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                        .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: 8) {
@@ -272,41 +477,53 @@ struct AllFilesView: View {
                         appModel.filterMinSizeMB = 0
                         appModel.filterMinDate = 0
                     }
-                    .disabled(!hasActiveManualFilter)
-                }
-
-                Divider()
-
-                // N07: keep the current query + filters as a one-click
-                // sidebar entry.
-                HStack(spacing: 8) {
-                    TextField(
-                        AppLanguage.localized("搜索名称", english: "Search name"),
-                        text: $savedSearchName
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 140)
-
-                    Button(AppLanguage.localized("保存搜索", english: "Save Search")) {
-                        appModel.saveSearch(
-                            name: savedSearchName,
-                            query: appModel.searchText,
-                            minSizeBytes: minimumSizeBytes,
-                            minDate: minimumFilterDate
-                        )
-                        savedSearchName = ""
-                        showsFilterPopover = false
-                    }
-                    .disabled(
-                        savedSearchName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                            || (appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                && !hasActiveManualFilter)
-                    )
+                    .disabled(!hasActiveManualFilter && !appModel.hasInvalidSizeFilterInput)
                 }
             }
             .padding(16)
             .frame(width: 280)
+    }
+
+    private var saveSearchForm: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(AppLanguage.localized("保存搜索", english: "Save Search"))
+                .font(.headline)
+            Text(AppLanguage.localized("将当前关键词、类型和筛选条件保存到目录，方便再次查找。", english: "Keep this query, type and filters in the directory for next time."))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField(
+                AppLanguage.localized("搜索名称", english: "Search name"),
+                text: $savedSearchName
+            )
+            .textFieldStyle(.roundedBorder)
+            .accessibilityIdentifier("savedSearch.name")
+            HStack {
+                Spacer()
+                Button(AppLanguage.localized("取消", english: "Cancel")) { showsSaveSearch = false }
+                    .keyboardShortcut(.cancelAction)
+                Button(AppLanguage.localized("保存搜索", english: "Save Search")) {
+                    appModel.saveSearch(
+                        name: savedSearchName,
+                        query: appModel.searchText,
+                        minSizeBytes: minimumSizeBytes,
+                        minDate: minimumFilterDate
+                    )
+                    savedSearchName = ""
+                    showsSaveSearch = false
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(
+                    !Self.canSaveSearch(
+                        name: savedSearchName,
+                        query: appModel.searchText,
+                        hasManualFilter: hasActiveManualFilter,
+                        kind: appModel.selectedKind
+                    ) || appModel.hasInvalidSizeFilterInput
+                )
+            }
         }
+        .padding(24)
+        .frame(width: 380)
     }
 
     private func headerSummary(resultCount: Int) -> some View {
@@ -329,6 +546,7 @@ struct AllFilesView: View {
                 appModel.loadMoreSearchResults()
             } label: {
                 Text(
+                    contentWidth < 700 ? AppLanguage.localized("加载更多", english: "Load More") :
                     AppLanguage.localized(
                         "加载更多（\(searchResultState.results?.count ?? 0)/\(searchResultState.totalCount ?? 0)）",
                         english: "Load More (\(searchResultState.results?.count ?? 0)/\(searchResultState.totalCount ?? 0))"
@@ -345,9 +563,66 @@ struct AllFilesView: View {
         }
     }
 
-    private func aiMenu(compact: Bool) -> some View {
+    private func fileLocationFooter(resultCount: Int) -> some View {
+        VStack(spacing: 0) {
+            Divider()
+            Group {
+                if contentWidth >= 440 {
+                    HStack(spacing: 12) {
+                        footerLocation.frame(minWidth: 0, maxWidth: .infinity)
+                        footerStatus(resultCount: resultCount).fixedSize(horizontal: true, vertical: false)
+                    }
+                    .frame(minHeight: 40)
+                } else {
+                    VStack(spacing: 0) {
+                        footerLocation.frame(height: XunJianUI.controlHeight)
+                        footerStatus(resultCount: resultCount)
+                            .padding(.vertical, 6)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .background(visualTheme.palette(for: colorScheme).canvas)
+    }
+
+    @ViewBuilder
+    private var footerLocation: some View {
+        if appModel.selectedFileIDs.count == 1, let file = appModel.selectedFile {
+            FileLocationPathView(url: file.url)
+                .frame(height: XunJianUI.controlHeight)
+        } else {
+            HStack(spacing: 6) {
+                Image(systemName: "folder")
+                Text(appModel.selectedKind?.localizedTitle ?? AppLanguage.localized("资料库", english: "Library"))
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        }
+    }
+
+    private func footerStatus(resultCount: Int) -> some View {
+        HStack(spacing: 8) {
+            headerSummary(resultCount: resultCount)
+            Spacer(minLength: 4)
+            searchProgress
+            if !appModel.selectedFileIDs.isEmpty {
+                Text(verbatim: AppLanguage.localized(
+                    "已选 \(appModel.selectedFileIDs.count) 项",
+                    english: "\(appModel.selectedFileIDs.count) selected"
+                ))
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            }
+        }
+    }
+
+    private var aiChoices: some View {
         let hasAIProvider = appModel.activeAIProviderKind != nil
-        return Menu {
+        return Group {
             if !hasAIProvider {
                 Text(
                     AppLanguage.localized(
@@ -356,7 +631,7 @@ struct AllFilesView: View {
                     )
                 )
                 Button {
-                    NotificationCenter.default.post(name: .xunJianOpenSettings, object: nil)
+                    NotificationCenter.default.post(name: .xunJianOpenSettings, object: SettingsPage.ai)
                 } label: {
                     Label(
                         AppLanguage.localized("打开设置…", english: "Open Settings…"),
@@ -391,228 +666,17 @@ struct AllFilesView: View {
                 appModel.aiSheetRequest = .classify
             }
             .disabled(!hasAIProvider || appModel.files.isEmpty || appModel.categories.isEmpty)
-        } label: {
-            if compact {
-                Image(systemName: "sparkles")
-            } else {
-                Label(
-                    appModel.activeAIProviderKind?.title
-                        ?? AppLanguage.localized("AI", english: "AI"),
-                    systemImage: "sparkles"
-                )
-            }
-        }
-        .menuStyle(.button)
-        .controlSize(.regular)
-        .fixedSize()
-        .accessibilityLabel(AppLanguage.localized("AI 功能", english: "AI Actions"))
-    }
-
-    private var responsiveFileToolbar: some View {
-        let layout = FileToolbarLayoutPolicy.configuration(for: contentWidth)
-        return fileToolbarRow(
-            compactAI: layout.compactAI,
-            showsFileType: layout.showsFileType,
-            showsSort: layout.showsSort,
-            showsSortDirection: layout.showsSortDirection,
-            showsViewMode: layout.showsViewMode,
-            spacing: layout.spacing
-        )
-    }
-
-    private func fileToolbarRow(
-        compactAI: Bool,
-        showsFileType: Bool,
-        showsSort: Bool,
-        showsSortDirection: Bool,
-        showsViewMode: Bool,
-        spacing: CGFloat
-    ) -> some View {
-        HStack(spacing: spacing) {
-            aiMenu(compact: compactAI)
-
-            if showsFileType {
-                fileTypeMenu
-            }
-
-            if showsSort {
-                sortMenu
-            }
-
-            if showsSortDirection {
-                sortDirectionButton
-            }
-
-            if showsViewMode {
-                Divider()
-                    .frame(height: 18)
-                    .padding(.horizontal, 2)
-                viewModeControl
-            }
-
-            if !showsFileType || !showsSort || !showsSortDirection || !showsViewMode {
-                overflowMenu(
-                    includesFileType: !showsFileType,
-                    includesSort: !showsSort,
-                    includesSortDirection: !showsSortDirection,
-                    includesViewMode: !showsViewMode
-                )
-            }
-        }
-        .frame(height: toolbarControlHeight)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    private var fileTypeMenu: some View {
-        Picker(
-            AppLanguage.localized("文件类型", english: "File Type"),
-            selection: $appModel.selectedKind
-        ) {
-            fileTypeChoices
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .frame(width: FileToolbarMetrics.fileTypeWidth)
-        .fixedSize()
-        .accessibilityLabel(AppLanguage.localized("文件类型", english: "File Type"))
-    }
-
-    private var sortMenu: some View {
-        Picker(
-            AppLanguage.localized("排序", english: "Sort"),
-            selection: activeSortOrderBinding
-        ) {
-            sortChoices
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .frame(width: FileToolbarMetrics.sortWidth(for: activeSortOrder))
-        .fixedSize()
-        .accessibilityLabel(AppLanguage.localized("排序", english: "Sort"))
-    }
-
-    private var viewModeControl: some View {
-        Picker(
-            AppLanguage.localized("显示方式", english: "View"),
-            selection: $viewMode
-        ) {
-            ForEach(ViewMode.allCases) { mode in
-                Image(systemName: mode.symbolName)
-                    .tag(mode)
-                    .accessibilityLabel(Text(verbatim: mode.localizedTitle))
-            }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: FileToolbarMetrics.viewModeWidth)
-        .fixedSize()
-    }
-
-    @ViewBuilder
-    private var fileTypeChoices: some View {
-        Text(AppLanguage.localized("所有类型", english: "All Types")).tag(FileKind?.none)
-        ForEach(FileKind.allCases) { kind in
-            Text(kind.localizedTitle).tag(Optional(kind))
         }
     }
 
-    @ViewBuilder
-    private var sortChoices: some View {
-        ForEach(availableSortOrders) { order in
-            Text(order.localizedTitle).tag(order)
-        }
-    }
-
-    private var sortDirectionButton: some View {
-        Button {
-            activeSortAscending.toggle()
-        } label: {
-            Image(systemName: activeSortAscending ? "arrow.up" : "arrow.down")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.regular)
-        .help(
-            AppLanguage.localized(
-                activeSortAscending ? "升序" : "降序",
-                english: activeSortAscending ? "Ascending" : "Descending"
-            )
-        )
-        .accessibilityLabel(
-            AppLanguage.localized(
-                activeSortAscending ? "升序" : "降序",
-                english: activeSortAscending ? "Ascending" : "Descending"
-            )
-        )
-        .disabled(activeSortOrder == .relevance)
-    }
-
-    private func overflowMenu(
-        includesFileType: Bool,
-        includesSort: Bool,
-        includesSortDirection: Bool,
-        includesViewMode: Bool
-    ) -> some View {
-        Menu {
-            if includesFileType {
-                Picker(
-                    AppLanguage.localized("文件类型", english: "File Type"),
-                    selection: $appModel.selectedKind
-                ) {
-                    fileTypeChoices
-                }
-            }
-            if includesSort {
-                Picker(
-                    AppLanguage.localized("排序", english: "Sort"),
-                    selection: activeSortOrderBinding
-                ) {
-                    sortChoices
-                }
-            }
-            if includesSortDirection {
-                Button(
-                    AppLanguage.localized(
-                        activeSortAscending ? "切换为降序" : "切换为升序",
-                        english: activeSortAscending ? "Switch to Descending" : "Switch to Ascending"
-                    )
-                ) {
-                    activeSortAscending.toggle()
-                }
-                .disabled(activeSortOrder == .relevance)
-            }
-            if includesViewMode {
-                Section(AppLanguage.localized("显示方式", english: "View")) {
-                    ForEach(ViewMode.allCases) { mode in
-                        Toggle(
-                            isOn: Binding(
-                                get: { viewMode == mode },
-                                set: { isSelected in
-                                    guard isSelected else { return }
-                                    viewMode = mode
-                                }
-                            )
-                        ) {
-                            Label(mode.localizedTitle, systemImage: mode.symbolName)
-                        }
-                    }
-                }
-            }
-        } label: {
-            Label(
-                AppLanguage.localized("更多工具", english: "More Tools"),
-                systemImage: "ellipsis"
-            )
-        }
-        .menuStyle(.button)
-        .controlSize(.regular)
-        .labelStyle(.iconOnly)
-        .help(AppLanguage.localized("更多工具", english: "More Tools"))
-        .accessibilityLabel(AppLanguage.localized("更多工具", english: "More Tools"))
-    }
 
     private func emptyState(files: [IndexedFile]) -> some View {
         Group {
-            if browseSnapshot.signature == nil, hasPotentialSourceFilesForDisplay {
+            if FileListLoadingPresentation.showsPreparing(
+                displayedIsEmpty: files.isEmpty, indexIsOpening: appModel.databaseState == .opening,
+                snapshotIsCurrent: browseSnapshot.signature == displayedFilesRefreshKey.signature,
+                hasSourceFiles: hasPotentialSourceFilesForDisplay
+            ) {
                 ProgressView()
                     .controlSize(.small)
                     .accessibilityLabel(
@@ -636,7 +700,8 @@ struct AllFilesView: View {
                     layoutToken: FileTableLayout.snapshotLayoutToken(
                         contentWidth: contentWidth,
                         viewMode: viewMode
-                    )
+                    ),
+                    presentationToken: "\(visualTheme.rawValue)|\(listPresentation.rawValue)|\(appModel.searchText)"
                 ) {
                     fileTable(files: files)
                 }
@@ -650,7 +715,8 @@ struct AllFilesView: View {
                     layoutToken: FileTableLayout.snapshotLayoutToken(
                         contentWidth: contentWidth,
                         viewMode: viewMode
-                    )
+                    ),
+                    presentationToken: visualTheme.rawValue
                 ) {
                     fileGrid(files: files)
                 }
@@ -661,7 +727,9 @@ struct AllFilesView: View {
                 } description: {
                     Text(emptyDescription)
                 } actions: {
-                    if appModel.databaseState.showsFailure {
+                    if appModel.databaseState == .opening {
+                        EmptyView()
+                    } else if appModel.databaseState.showsFailure {
                         Button(AppLanguage.localized("重试", english: "Retry")) {
                             Task { await appModel.retryDatabase() }
                         }
@@ -675,52 +743,39 @@ struct AllFilesView: View {
                                 appModel.searchText = ""
                             }
                         }
-                    } else if !appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button(AppLanguage.localized("清除搜索", english: "Clear Search")) {
-                            appModel.searchText = ""
-                        }
-                        .buttonStyle(.borderedProminent)
-                    } else if hasActiveManualFilter, !appModel.files.isEmpty {
-                        // Size/date filters can hide everything on their own,
-                        // and the popover is not obvious once the list is
-                        // empty, so offer the reset here too.
+                    } else if searchEmptyReason.offersFilterReset {
                         Button(
-                            AppLanguage.localized("清除过滤条件", english: "Clear Filters")
+                            AppLanguage.localized("清除筛选条件", english: "Clear Filters")
                         ) {
                             appModel.filterMinSizeMB = 0
                             appModel.filterMinDate = 0
                             appModel.selectedKind = nil
                         }
                         .buttonStyle(.borderedProminent)
-                    } else if appModel.selectedKind != nil,
-                              appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                              appModel.aiSearchResults == nil,
-                              !appModel.files.isEmpty {
-                        Button(
-                            AppLanguage.localized("清除类型筛选", english: "Clear Type Filter")
-                        ) {
-                            appModel.selectedKind = nil
+                        if !appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                            Button(AppLanguage.localized("清除关键词", english: "Clear Keyword")) {
+                                appModel.searchText = ""
+                            }
                         }
-                    } else if appModel.sources.isEmpty {
-                        Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
-                            appModel.chooseFolder()
+                    } else if searchEmptyReason == .keyword {
+                        Button(AppLanguage.localized("清除关键词", english: "Clear Keyword")) {
+                            appModel.searchText = ""
                         }
                         .buttonStyle(.borderedProminent)
+                    } else if appModel.files.isEmpty {
+                        if indexAvailability.emptyState != .scanning {
+                        Button(indexAvailability.emptyStateActionTitle) {
+                            indexAvailability.performEmptyStateAction()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        }
+                        Button(AppLanguage.localized("管理搜索位置", english: "Manage Search Locations")) {
+                            NotificationCenter.default.post(name: .xunJianOpenSettings, object: SettingsPage.files)
+                        }
                     }
                 }
                 .padding(24)
                 .frame(maxWidth: 560, minHeight: 280)
-                .background(
-                    XunJianUI.Fill.quiet,
-                    in: RoundedRectangle(
-                        cornerRadius: XunJianUI.Radius.card,
-                        style: .continuous
-                    )
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: XunJianUI.Radius.card, style: .continuous)
-                        .strokeBorder(XunJianUI.Fill.stroke, lineWidth: 1)
-                }
                 .padding(XunJianUI.pagePadding(for: contentWidth))
             }
         }
@@ -790,17 +845,25 @@ struct AllFilesView: View {
                 english: "AI found no matching files"
             )
         }
-        if appModel.selectedKind != nil,
-           appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-           !appModel.files.isEmpty {
-            return AppLanguage.localized(
-                "没有这种类型的文件",
-                english: "No files of this type"
-            )
+        if searchEmptyReason == .invalidFilters {
+            return AppLanguage.localized("大小条件无效", english: "Invalid size filter")
+        }
+        if searchEmptyReason == .filters {
+            return AppLanguage.localized("没有符合条件的文件", english: "No files match these filters")
         }
         return appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? AppLanguage.localized("还没有文件", english: "No files yet")
+            ? (appModel.files.isEmpty ? indexAvailability.emptyStateTitle : AppLanguage.localized("还没有文件", english: "No files yet"))
             : AppLanguage.localized("没有找到相关文件", english: "No matching files")
+    }
+
+    private var indexAvailability: IndexAvailabilityPresentation {
+        IndexAvailabilityPresentation(appModel: appModel)
+    }
+
+    private var searchEmptyReason: FileSearchEmptyReason {
+        .resolve(query: appModel.searchText,
+                 hasFilters: hasActiveManualFilter || appModel.selectedKind != nil,
+                 invalidSize: appModel.hasInvalidSizeFilterInput)
     }
 
     private var emptyDescription: String {
@@ -812,9 +875,15 @@ struct AllFilesView: View {
         }
         if appModel.databaseState.showsFailure {
             return AppLanguage.localized(
-                "文件索引无法读取，依赖索引的操作已暂停。",
-                english: "The file index could not be read, so index-dependent actions are paused."
+                "无法读取文件索引，请重试。",
+                english: "The file index could not be read. Please try again."
             )
+        }
+        if appModel.aiSearchResults == nil, searchEmptyReason == .invalidFilters {
+            return AppLanguage.localized("请在筛选中输入有效大小，或清除筛选条件。", english: "Enter a valid size in Filters, or clear the filters.")
+        }
+        if appModel.aiSearchResults == nil, searchEmptyReason == .filters {
+            return AppLanguage.localized("试着放宽类型、大小或日期条件。清除筛选会保留当前关键词。", english: "Try broader type, size or date filters. Clearing filters keeps your keyword.")
         }
         if appModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             if appModel.aiSearchResults != nil {
@@ -825,18 +894,19 @@ struct AllFilesView: View {
             }
             if appModel.selectedKind != nil, !appModel.files.isEmpty {
                 return AppLanguage.localized(
-                    "清除类型筛选即可返回所有文件。",
+                    "清除类型筛选后可查看所有文件。",
                     english: "Clear the type filter to return to all files."
                 )
             }
+            if appModel.files.isEmpty { return indexAvailability.emptyStateDescription }
             return AppLanguage.localized(
-                "添加扫描位置并建立索引后，文件会显示在这里。",
-                english: "Files appear here after you add a location and build its index."
+                "添加文件夹并完成扫描后可查看文件。",
+                english: "Add a folder and scan it to see its files."
             )
         }
         return AppLanguage.localized(
-            "尝试换一个关键词，或者描述你记得的内容。",
-            english: "Try another keyword or describe what you remember."
+            "试试更短的关键词，或检查是否有错别字。",
+            english: "Try a shorter keyword or check the spelling."
         )
     }
 
@@ -1002,7 +1072,7 @@ struct AllFilesView: View {
 
     /// Manual-filter parameters, resolved from persisted UI values (N02).
     private var minimumSizeBytes: Int64 {
-        Int64(appModel.filterMinSizeMB * 1_024 * 1_024)
+        appModel.minimumFilterSizeBytes
     }
 
     private var minimumFilterDate: Date? {
@@ -1011,6 +1081,17 @@ struct AllFilesView: View {
 
     private var hasActiveManualFilter: Bool {
         minimumSizeBytes > 0 || minimumFilterDate != nil
+    }
+
+    nonisolated static func canSaveSearch(
+        name: String,
+        query: String,
+        hasManualFilter: Bool,
+        kind: FileKind?
+    ) -> Bool {
+        !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            && (!query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || hasManualFilter || kind != nil)
     }
 
     private func refreshDisplayedFilesSnapshot() async {
@@ -1168,7 +1249,7 @@ struct AllFilesView: View {
         // Base the renderer on the library size, not the current filter.
         // Otherwise changing file type can tear down AppKit and rebuild a
         // SwiftUI Table exactly while the user is clicking the toolbar.
-        if FileBrowsePerformancePolicy.usesNativeTable(fileCount: appModel.files.count) {
+        if listPresentation == .results || FileBrowsePerformancePolicy.usesNativeTable(fileCount: appModel.files.count) {
             nativeFileTable(files: files)
         } else {
             swiftUIFileTable(files: files)
@@ -1181,7 +1262,13 @@ struct AllFilesView: View {
             idIndex: browseSnapshot.idIndex,
             contentVersion: browseSnapshot.signature ?? 0,
             categoryVersion: categoryIndex.revision,
+            autosaveName: listPresentation == .results ? "XunJian.AllFiles.Results" : "XunJian.AllFiles.LargeTable",
             locale: locale,
+            presentation: listPresentation,
+            resultQuery: appModel.searchText,
+            resultTextProvider: { file in
+                try? await appModel.fetchInspectorPreviewText(forFileID: file.id, maximumCharacters: 8_192)
+            },
             selection: nativeSelectionBinding(for: .list),
             categoryText: { file in
                 categoryIndex.categories(for: file.id)
@@ -1208,6 +1295,7 @@ struct AllFilesView: View {
                 nativeContextMenu(for: file, selectedIDs: selectedIDs)
             }
         )
+        .id(listPresentation)
         .frame(maxHeight: .infinity, alignment: .leading)
     }
 
@@ -1320,6 +1408,8 @@ struct AllFilesView: View {
                         .draggable(file.url)
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(visualTheme.palette(for: colorScheme).canvas)
             .contextMenu(forSelectionType: String.self) { selection in
                 if let file = tableFile(for: selection) {
                     FileContextMenu(file: file)
@@ -1366,6 +1456,7 @@ struct AllFilesView: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
+            .padding(.vertical, visualTheme.rowVerticalPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle())
             .accessibilityHidden(accessibilityHidden)
@@ -1393,8 +1484,8 @@ struct AllFilesView: View {
         let actsOnSelection = selectedIDs.count > 1 && selectedIDs.contains(file.id)
         let categoryRoot = NSMenuItem(
             title: AppLanguage.localized(
-                actsOnSelection ? "批量添加到分类" : "添加到分类",
-                english: actsOnSelection ? "Add Selection to Category" : "Add to Category"
+                actsOnSelection ? "将所选文件添加到资料集" : "添加到资料集",
+                english: actsOnSelection ? "Add Selection to Collection" : "Add to Collection"
             ),
             action: nil,
             keyEquivalent: ""
@@ -1402,14 +1493,14 @@ struct AllFilesView: View {
         let categoryMenu = NSMenu()
         if appModel.categories.isEmpty {
             let empty = NSMenuItem(
-                title: AppLanguage.localized("还没有分类", english: "No categories yet"),
+                title: AppLanguage.localized("还没有资料集", english: "No collections yet"),
                 action: nil,
                 keyEquivalent: ""
             )
             empty.isEnabled = false
             categoryMenu.addItem(empty)
             categoryMenu.addItem(NativeFileActionMenuItem(
-                title: AppLanguage.localized("新建分类…", english: "New Category…")
+                title: AppLanguage.localized("新建资料集…", english: "New Collection…")
             ) {
                 NotificationCenter.default.post(
                     name: .xunJianRequestNewCategory,
@@ -1466,6 +1557,15 @@ struct AllFilesView: View {
         }
         guard let fileID = selection.first else { return nil }
         return appModel.index.file(id: fileID)
+    }
+
+    private func synchronizeSelectionFromModel(_ ids: Set<String>) {
+        guard tableSelectedIDs != ids else { return }
+        tableSelectedIDs = ids
+        // A retained equatable list does not observe this local mirror.
+        // Initial appearance and page restoration need the same epoch as
+        // subsequent model changes, or its native selection remains empty.
+        tableSelectionEpoch &+= 1
     }
 
     /// Table's native selection is the only click path. Same-set writes are

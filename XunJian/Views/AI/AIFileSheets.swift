@@ -197,11 +197,11 @@ struct AIQuestionSheet: View {
                     Spacer(minLength: 0)
                 } else {
                     ContentUnavailableView(
-                        AppLanguage.localized("准备向 AI 提问", english: "Ready to Ask AI"),
+                        AppLanguage.localized("想问这个文件什么？", english: "What would you like to ask about this file?"),
                         systemImage: "bubble.left.and.text.bubble.right",
                         description: Text(AppLanguage.localized(
-                            "仅会发送当前文件中回答问题所需的文本，不发送路径或其他文件。",
-                            english: "Only the text needed to answer is sent from this file. Paths and other files are not."
+                            "提问时会发送这个文件中用于回答的文本，不发送路径或其他文件。",
+                            english: "Asking sends text from this file to answer your question, but not its path or other files."
                         ))
                     )
                 }
@@ -333,12 +333,12 @@ struct AITextResultSheet: View {
                 Spacer(minLength: 0)
             } else if showsStart {
                 ContentUnavailableView(
-                    AppLanguage.localized("准备分析当前文件", english: "Ready to Analyze This File"),
+                    AppLanguage.localized("还没有分析结果", english: "No analysis yet"),
                     systemImage: "sparkles",
                     description: Text(
                         AppLanguage.localized(
-                            "确认后才会读取必要文本并发起 AI 请求。",
-                            english: "Necessary text is read and sent to AI only after you confirm."
+                            "点击“开始分析”后，会读取文件中用于分析的文本并发送给 AI。",
+                            english: "Click Start Analysis to read the text needed from this file and send it to AI."
                         )
                     )
                 )

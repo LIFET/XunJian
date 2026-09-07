@@ -54,9 +54,10 @@ enum DuplicateFileFinder {
         in files: [IndexedFile],
         progress: ProgressHandler = { _, _ in }
     ) async throws -> Result {
-        let candidates = files.filter { $0.size > 0 }
+        try Task.checkCancellation()
         var bySize: [Int64: [IndexedFile]] = [:]
-        for file in candidates {
+        for file in files where file.size > 0 {
+            try Task.checkCancellation()
             bySize[file.size, default: []].append(file)
         }
 
@@ -70,14 +71,17 @@ enum DuplicateFileFinder {
 
         var byHash: [String: [IndexedFile]] = [:]
         for group in groupsToHash {
+            try Task.checkCancellation()
             try await withThrowingTaskGroup(
                 of: (file: IndexedFile, digest: String?).self
             ) { taskGroup in
                 var iterator = group.makeIterator()
-                func addNext() {
+                func addNext() throws {
+                    try Task.checkCancellation()
                     guard let file = iterator.next() else { return }
-                    taskGroup.addTask {
+                    taskGroup.addTaskUnlessCancelled {
                         do {
+                            try Task.checkCancellation()
                             guard canHashFile(at: file.url) else { return (file, nil) }
                             return (file, try await hash(fileAt: file.url))
                         } catch is CancellationError {
@@ -88,9 +92,10 @@ enum DuplicateFileFinder {
                     }
                 }
                 for _ in 0..<min(Self.maximumConcurrentHashes, group.count) {
-                    addNext()
+                    try addNext()
                 }
                 while let completed = try await taskGroup.next() {
+                    try Task.checkCancellation()
                     if let digest = completed.digest {
                         byHash[digest, default: []].append(completed.file)
                     } else {
@@ -101,11 +106,12 @@ enum DuplicateFileFinder {
                     if hashedCount == totalToHash || hashedCount.isMultiple(of: progressStride) {
                         progress(hashedCount, totalToHash)
                     }
-                    addNext()
+                    try addNext()
                 }
             }
         }
 
+        try Task.checkCancellation()
         let groups = byHash.compactMap { digest, files -> DuplicateGroup? in
             guard files.count > 1 else { return nil }
             return DuplicateGroup(
@@ -117,6 +123,7 @@ enum DuplicateFileFinder {
             )
         }
         .sorted { $0.size > $1.size }
+        try Task.checkCancellation()
         return Result(groups: groups, unreadCount: unreadCount)
     }
 
@@ -151,7 +158,9 @@ enum DuplicateFileFinder {
     /// Reads from one descriptor and requires metadata to remain identical for
     /// the whole hash, so a concurrent writer cannot produce a mixed digest.
     static func fingerprint(fileAt url: URL) async throws -> Fingerprint {
-        try await Task.detached(priority: .userInitiated) {
+        try Task.checkCancellation()
+        let worker = Task.detached(priority: .userInitiated) {
+            try Task.checkCancellation()
             let descriptor = open(
                 url.path,
                 O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC
@@ -187,6 +196,7 @@ enum DuplicateFileFinder {
                 }
                 hasher.update(data: chunk)
             }
+            try Task.checkCancellation()
             var after = stat()
             guard fstat(handle.fileDescriptor, &after) == 0 else {
                 throw FileOperationError.fileNotFound
@@ -196,7 +206,14 @@ enum DuplicateFileFinder {
             }
             let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
             return Fingerprint(digest: digest, version: beforeVersion)
-        }.value
+        }
+        return try await withTaskCancellationHandler {
+            let fingerprint = try await worker.value
+            try Task.checkCancellation()
+            return fingerprint
+        } onCancel: {
+            worker.cancel()
+        }
     }
 
     /// Hashing runs with bounded concurrency per size group: duplicate-size

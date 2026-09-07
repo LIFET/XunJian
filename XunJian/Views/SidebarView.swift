@@ -1,32 +1,52 @@
 import SwiftUI
 
+enum SidebarNavigationStep {
+    static func destination(current: NavigationDestination?, destinations: [NavigationDestination], forward: Bool) -> NavigationDestination? {
+        guard !destinations.isEmpty else { return nil }
+        guard let current, let index = destinations.firstIndex(of: current) else {
+            return forward ? destinations.first : destinations.last
+        }
+        return destinations[min(destinations.count - 1, max(0, index + (forward ? 1 : -1)))]
+    }
+}
+
 struct SidebarView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var selection: NavigationDestination?
     let categories: [FileCategory]
 
     @State private var searchToRename: SavedSearch?
     @State private var searchToDelete: SavedSearch?
     @State private var renameDraft = ""
+    @State private var showsSaveSearch = false
+    @State private var savedSearchDraft = ""
     @State private var dropTargetCategoryIDs: Set<UUID> = []
 
     var body: some View {
-        List(selection: $selection) {
-            Section {
-                navigationRow(
-                    Text(AppLanguage.localized("首页", english: "Home")),
-                    symbol: "house",
-                    destination: .home
-                )
-                navigationRow(
-                    Text(AppLanguage.localized("所有文件", english: "All Files")),
-                    symbol: "tray.full",
-                    destination: .allFiles
-                )
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(AppLanguage.localized("资源目录", english: "Directory"))
+                    .font(.headline)
+                Spacer()
+                Button {
+                    NotificationCenter.default.post(name: .xunJianShowCommandPalette, object: nil)
+                } label: { Image(systemName: "command") }
+                .buttonStyle(XunJianIconButtonStyle())
+                .help(AppLanguage.localized("快速前往（⌘K）", english: "Quick Switch (⌘K)"))
+                .accessibilityLabel(AppLanguage.localized("打开命令面板", english: "Open Command Palette"))
             }
+            .padding(16)
+            List(selection: $selection) {
 
-            if !appModel.savedSearches.isEmpty {
-                Section(AppLanguage.localized("保存的搜索", english: "Saved Searches")) {
+                Section {
+                    if appModel.savedSearches.isEmpty {
+                        Text(AppLanguage.localized("保存常用条件，一键再次查找。", english: "Save filters to find them again."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .listRowSeparator(.hidden)
+                    }
                     ForEach(appModel.savedSearches) { search in
                         Button {
                             appModel.applySavedSearch(search)
@@ -47,15 +67,9 @@ struct SidebarView: View {
                                                 ))
                                         }
                                     }
-                                    Text(verbatim: search.conditionSummary(
-                                        usesEnglish: AppLanguage.selected.usesEnglish
-                                    ))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(2)
                                 }
                             } icon: {
-                                Image(systemName: "clock.arrow.circlepath")
+                                Image(systemName: "bookmark")
                                     .symbolRenderingMode(.hierarchical)
                             }
                         }
@@ -82,19 +96,27 @@ struct SidebarView: View {
                             }
                         }
                     }
-                }
+                } header: {
+                    HStack {
+                        Text(AppLanguage.localized("保存的搜索", english: "Saved Searches"))
+                        Spacer()
+                        Button {
+                            savedSearchDraft = appModel.searchText
+                            showsSaveSearch = true
+                        } label: {
+                            Image(systemName: "plus")
+                        }
+                        .buttonStyle(XunJianIconButtonStyle())
+                        .disabled(selection != .allFiles || !canSaveCurrentSearch(named: "Search"))
+                        .help(AppLanguage.localized("保存当前搜索条件", english: "Save Current Search"))
+                        .accessibilityLabel(AppLanguage.localized("保存当前搜索条件", english: "Save Current Search"))
+                    }
             }
 
-            Section(AppLanguage.localized("分类", english: "Categories")) {
-                navigationRow(
-                    Text(AppLanguage.localized("全部分类", english: "All Categories")),
-                    symbol: "square.grid.2x2",
-                    destination: .categories
-                )
-
+            Section(AppLanguage.localized("资料集", english: "Collections")) {
                 ForEach(categories) { category in
                     navigationRow(
-                        Text(verbatim: category.name),
+                        Text(verbatim: category.localizedDisplayName),
                         symbol: category.symbolName,
                         destination: .category(category.id)
                     )
@@ -116,16 +138,38 @@ struct SidebarView: View {
                 }
             }
 
-            Section {
-                navigationRow(
-                    Text(AppLanguage.localized("设置", english: "Settings")),
-                    symbol: "gearshape",
-                    destination: .settings
-                )
-            }
         }
         .listStyle(.sidebar)
-        .navigationTitle(AppLanguage.localized("寻简", english: "XunJian"))
+        .scrollContentBackground(.hidden)
+        .environment(\.defaultMinListRowHeight, 32)
+        Divider().padding(.horizontal, 16)
+        Button {
+            NotificationCenter.default.post(name: .xunJianShowStorageInsights, object: nil)
+        } label: {
+            Label(AppLanguage.localized("存储概览", english: "Storage Overview"), systemImage: "chart.bar.xaxis")
+                .font(.system(size: 13))
+                .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
+                .padding(.horizontal, 14)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+        .accessibilityIdentifier("sidebar.storageOverview")
+        .accessibilityLabel(AppLanguage.localized("存储概览", english: "Storage Overview"))
+        .padding(.bottom, 12)
+        }
+        .background(visualTheme.palette(for: colorScheme).sidebar)
+        .alert(AppLanguage.localized("保存搜索", english: "Save Search"), isPresented: $showsSaveSearch) {
+            TextField(AppLanguage.localized("名称", english: "Name"), text: $savedSearchDraft)
+            Button(AppLanguage.localized("保存", english: "Save")) {
+                appModel.saveSearch(name: savedSearchDraft, query: appModel.searchText,
+                                    minSizeBytes: appModel.minimumFilterSizeBytes,
+                                    minDate: appModel.filterMinDate > 0 ? Date(timeIntervalSince1970: appModel.filterMinDate) : nil)
+            }
+            .disabled(!canSaveCurrentSearch(named: savedSearchDraft))
+            Button(AppLanguage.localized("取消", english: "Cancel"), role: .cancel) { }
+        }
         .alert(
             AppLanguage.localized("重命名保存的搜索", english: "Rename Saved Search"),
             isPresented: Binding(
@@ -182,13 +226,19 @@ struct SidebarView: View {
         symbol: String,
         destination: NavigationDestination
     ) -> some View {
-        Label {
-            title
-        } icon: {
-            Image(systemName: symbol)
-                .symbolRenderingMode(.hierarchical)
+        NavigationLink(value: destination) {
+            Label {
+                title.lineLimit(1)
+            } icon: {
+                Image(systemName: symbol)
+                    .symbolRenderingMode(.monochrome)
+            }
+            .font(.system(size: 13))
         }
+        .listRowSeparator(.hidden)
+        .accessibilityLabel(title)
         .tag(destination)
+        .id(destination)
     }
 
     private func isCurrentSavedSearch(_ search: SavedSearch) -> Bool {
@@ -201,5 +251,11 @@ struct SidebarView: View {
                     : nil,
                 fileKind: appModel.selectedKind
             )
+    }
+
+    private func canSaveCurrentSearch(named name: String) -> Bool {
+        AllFilesView.canSaveSearch(name: name, query: appModel.searchText,
+                                 hasManualFilter: appModel.minimumFilterSizeBytes > 0 || appModel.filterMinDate > 0,
+                                 kind: appModel.selectedKind)
     }
 }

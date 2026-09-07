@@ -186,6 +186,106 @@ private actor OAuthStatusGate {
     }
 }
 
+private actor APIKeyVerificationTransport: AIHTTPTransport {
+    private struct Reply: Sendable {
+        let statusCode: Int
+        let gate: OAuthStatusGate?
+    }
+
+    private var replies: [Reply] = []
+    private(set) var requestCount = 0
+
+    func enqueue(statusCode: Int, gate: OAuthStatusGate? = nil) {
+        replies.append(Reply(statusCode: statusCode, gate: gate))
+    }
+
+    func data(for request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+        guard !replies.isEmpty else { throw FakeOAuthBridgeError.missingStub }
+        let reply = replies.removeFirst()
+        requestCount += 1
+        await reply.gate?.wait()
+        try Task.checkCancellation()
+        let response = HTTPURLResponse(
+            url: URL(string: "https://verification.invalid/chat/completions")!,
+            statusCode: reply.statusCode,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return (Data(#"{"choices":[{"message":{"content":"OK"}}]}"#.utf8), response)
+    }
+}
+
+@MainActor
+private final class APIKeySessionFixture {
+    let root: URL
+    let suiteName: String
+    let defaults: UserDefaults
+    let credentials: LocalCredentialStore
+    let configuration: AIConfigurationStore
+    let transport = APIKeyVerificationTransport()
+    let bridge = FakeOAuthBridgeService()
+    let oauth: OAuthCoordinator
+    let coordinator: AISessionCoordinator
+
+    init() throws {
+        root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("XunJianTests.APIKeySession.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        suiteName = "XunJianTests.APIKeySession.\(UUID().uuidString)"
+        defaults = UserDefaults(suiteName: suiteName)!
+        credentials = LocalCredentialStore(fileURL: root.appendingPathComponent("credentials.plist"))
+        configuration = AIConfigurationStore(defaults: defaults)
+        for kind in [AIProviderKind.deepSeek, .qwen] {
+            try credentials.save("offline-test-key", account: kind.rawValue)
+            configuration.save(AIProviderSettings(
+                kind: kind,
+                baseURL: "https://verification.invalid",
+                model: "offline-test-model",
+                hasAPIKey: true
+            ))
+        }
+        configuration.setAPIKeyVerificationFingerprint(
+            AIConfigurationStore.apiKeyVerificationFingerprint(
+                settings: configuration.settings(for: .deepSeek, hasAPIKey: true),
+                secret: "offline-test-key"
+            ),
+            for: .deepSeek
+        )
+        configuration.activeKind = .deepSeek
+        configuration.activeAuthenticationMode = .apiKey
+        oauth = OAuthCoordinator(
+            bridgeService: bridge,
+            aiConfigurationStore: configuration,
+            isRunningTests: true
+        )
+        coordinator = AISessionCoordinator(
+            credentialStore: credentials,
+            aiConfigurationStore: configuration,
+            oauthBridgeService: bridge,
+            oauth: oauth,
+            isRunningTests: false,
+            transport: transport
+        )
+    }
+
+    func relaunchedCoordinator() -> AISessionCoordinator {
+        AISessionCoordinator(
+            credentialStore: credentials,
+            aiConfigurationStore: AIConfigurationStore(defaults: defaults),
+            oauthBridgeService: bridge,
+            oauth: oauth,
+            isRunningTests: false,
+            transport: transport
+        )
+    }
+
+    func cleanUp() throws {
+        coordinator.cancelAllTasks()
+        defaults.removePersistentDomain(forName: suiteName)
+        try FileManager.default.removeItem(at: root)
+    }
+}
+
 private actor FakeOAuthBridgeService: OAuthBridgeServicing {
     enum Call: Equatable, Sendable {
         case status(OAuthBridgeProvider)
@@ -1440,6 +1540,7 @@ final class OAuthBridgeTests: XCTestCase {
         coordinator.applicationResignedActive()
 
         let secondAttemptID = UUID(uuidString: "F14483B5-D03B-487C-9B9B-5DA7B1779A82")!
+        let restartGate = OAuthStatusGate()
         await fake.configureLoginAttempt(OAuthBridgeLoginAttempt(
             provider: .grok,
             attemptID: secondAttemptID,
@@ -1447,7 +1548,7 @@ final class OAuthBridgeTests: XCTestCase {
             browserLaunchMode: .providerRuntime,
             callbackMode: .automatic,
             authorizationURL: nil
-        ))
+        ), gate: restartGate)
         await fake.enqueueStatus(.success(status(
             provider: .codex,
             credentialState: .signedOut,
@@ -1459,7 +1560,14 @@ final class OAuthBridgeTests: XCTestCase {
             connectionState: .authenticated
         )))
 
-        _ = await coordinator.beginLogin(for: .grok)
+        let restart = Task { await coordinator.beginLogin(for: .grok) }
+        await waitForCallCount(5, fake: fake)
+        // Let the cancelled poll finish while the replacement login is held.
+        try? await Task.sleep(for: .milliseconds(100))
+        let callsWhileStarting = await fake.calls()
+        XCTAssertEqual(callsWhileStarting.count, 5, "登录尚未就绪时不应启动新一轮状态查询")
+        await restartGate.open()
+        _ = await restart.value
         await waitForCallCount(7, fake: fake)
 
         XCTAssertEqual(coordinator.states[.grok], .signedInUnverified)
@@ -1616,7 +1724,16 @@ final class OAuthBridgeTests: XCTestCase {
     @MainActor
     func testExplicitGrokVerificationAloneCanPublishConnected() async {
         let fake = FakeOAuthBridgeService()
-        let model = AppModel(oauthBridgeService: fake)
+        let suiteName = "XunJianTests.GrokExplicitVerification.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            oauthBridgeService: fake,
+            credentialStore: LocalCredentialStore(fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("XunJian-unused-credentials-\(UUID().uuidString).plist")),
+            aiConfigurationStore: AIConfigurationStore(defaults: defaults),
+            filterPreferences: defaults
+        )
         await fake.enqueueStatus(.success(status(
             provider: .grok,
             credentialState: .signedIn,
@@ -1640,7 +1757,16 @@ final class OAuthBridgeTests: XCTestCase {
     @MainActor
     func testExplicitCodexVerificationCanPublishConnected() async {
         let fake = FakeOAuthBridgeService()
-        let model = AppModel(oauthBridgeService: fake)
+        let suiteName = "XunJianTests.CodexExplicitVerification.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            oauthBridgeService: fake,
+            credentialStore: LocalCredentialStore(fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("XunJian-unused-credentials-\(UUID().uuidString).plist")),
+            aiConfigurationStore: AIConfigurationStore(defaults: defaults),
+            filterPreferences: defaults
+        )
         await fake.enqueueStatus(.success(status(
             provider: .codex,
             credentialState: .signedIn,
@@ -2811,7 +2937,16 @@ final class OAuthBridgeTests: XCTestCase {
     @MainActor
     func testTypingNaturalLanguageSearchNeverImplicitlyCallsOAuthGeneration() async {
         let fake = FakeOAuthBridgeService()
-        let model = AppModel(oauthBridgeService: fake)
+        let suiteName = "XunJianTests.NaturalLanguageInput.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let model = AppModel(
+            oauthBridgeService: fake,
+            credentialStore: LocalCredentialStore(fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("XunJian-unused-credentials-\(UUID().uuidString).plist")),
+            aiConfigurationStore: AIConfigurationStore(defaults: defaults),
+            filterPreferences: defaults
+        )
         await fake.enqueueStatus(.success(status(
             provider: .codex,
             credentialState: .signedIn,
@@ -2900,6 +3035,113 @@ final class OAuthBridgeTests: XCTestCase {
 
         XCTAssertNil(model.activeAIProviderKind)
         XCTAssertNil(model.activeAIAuthenticationMode)
+    }
+
+    @MainActor
+    func testSavingOtherProviderPreservesInFlightAPIKeyVerification() async throws {
+        let fixture = try APIKeySessionFixture()
+        defer { try? fixture.cleanUp() }
+        let gate = OAuthStatusGate()
+        await fixture.transport.enqueue(statusCode: 200, gate: gate)
+        fixture.coordinator.testProvider(.deepSeek)
+        await waitForAPIKeyVerificationRequest(fixture.transport)
+
+        XCTAssertTrue(fixture.coordinator.saveProvider(
+            .qwen, baseURL: "https://verification.invalid", model: "changed-model", apiKey: ""
+        ))
+
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .testing)
+        XCTAssertNil(fixture.coordinator.activeProviderKind)
+        fixture.coordinator.cancelTest(.deepSeek)
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .saved)
+        await gate.open()
+    }
+
+    @MainActor
+    func testDeletingOtherProviderPreservesInFlightAPIKeyVerification() async throws {
+        let fixture = try APIKeySessionFixture()
+        defer { try? fixture.cleanUp() }
+        let gate = OAuthStatusGate()
+        await fixture.transport.enqueue(statusCode: 200, gate: gate)
+        fixture.coordinator.testProvider(.deepSeek)
+        await waitForAPIKeyVerificationRequest(fixture.transport)
+
+        fixture.coordinator.deleteAPIKey(for: .qwen)
+
+        XCTAssertFalse(fixture.coordinator.settings(for: .qwen).hasAPIKey)
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .testing)
+        XCTAssertNil(fixture.coordinator.activeProviderKind)
+        fixture.coordinator.cancelTest(.deepSeek)
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .saved)
+        await gate.open()
+    }
+
+    @MainActor
+    func testFailedAPIKeyReverificationCannotBeRestoredByOtherProviderSaveOrRelaunch() async throws {
+        let fixture = try APIKeySessionFixture()
+        defer { try? fixture.cleanUp() }
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .verified)
+        await fixture.transport.enqueue(statusCode: 401)
+        fixture.coordinator.testProvider(.deepSeek)
+        await waitForAPIKeyVerificationToFinish(fixture.coordinator)
+        guard case .failed = fixture.coordinator.connectionState(for: .deepSeek) else {
+            return XCTFail("Reverification must report the rejected offline response")
+        }
+        let failedState = fixture.coordinator.connectionState(for: .deepSeek)
+        XCTAssertNil(fixture.configuration.apiKeyVerificationFingerprint(for: .deepSeek))
+
+        XCTAssertTrue(fixture.coordinator.saveProvider(
+            .qwen, baseURL: "https://verification.invalid", model: "changed-model", apiKey: ""
+        ))
+
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), failedState)
+        XCTAssertNil(fixture.coordinator.activeProviderKind)
+        let relaunched = fixture.relaunchedCoordinator()
+        XCTAssertEqual(relaunched.connectionState(for: .deepSeek), .saved)
+        XCTAssertNil(relaunched.activeProviderKind)
+    }
+
+    @MainActor
+    func testSuccessfulAPIKeyReverificationRestoresPendingProvider() async throws {
+        let fixture = try APIKeySessionFixture()
+        defer { try? fixture.cleanUp() }
+        await fixture.transport.enqueue(statusCode: 401)
+        fixture.coordinator.testProvider(.deepSeek)
+        await waitForAPIKeyVerificationToFinish(fixture.coordinator)
+        XCTAssertNil(fixture.coordinator.activeProviderKind)
+
+        await fixture.transport.enqueue(statusCode: 200)
+        fixture.coordinator.testProvider(.deepSeek)
+        await waitForAPIKeyVerificationToFinish(fixture.coordinator)
+
+        XCTAssertEqual(fixture.coordinator.connectionState(for: .deepSeek), .verified)
+        XCTAssertEqual(fixture.coordinator.activeProviderKind, .deepSeek)
+        XCTAssertNotNil(fixture.configuration.apiKeyVerificationFingerprint(for: .deepSeek))
+        let relaunched = fixture.relaunchedCoordinator()
+        XCTAssertEqual(relaunched.connectionState(for: .deepSeek), .verified)
+        XCTAssertEqual(relaunched.activeProviderKind, .deepSeek)
+    }
+
+    @MainActor
+    private func waitForAPIKeyVerificationRequest(_ transport: APIKeyVerificationTransport) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while clock.now < deadline {
+            if await transport.requestCount > 0 { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for the offline verification request")
+    }
+
+    @MainActor
+    private func waitForAPIKeyVerificationToFinish(_ coordinator: AISessionCoordinator) async {
+        let clock = ContinuousClock()
+        let deadline = clock.now + .seconds(2)
+        while clock.now < deadline {
+            if coordinator.connectionState(for: .deepSeek) != .testing { return }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        XCTFail("Timed out waiting for offline verification to finish")
     }
 
     func testAIConfigurationStorePersistsAuthenticationModeSeparately() {

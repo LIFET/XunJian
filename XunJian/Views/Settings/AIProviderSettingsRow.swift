@@ -70,6 +70,7 @@ struct AIProviderSettingsRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let kind: AIProviderKind
+    var isDetail = false
 
     @State private var baseURL = ""
     @State private var model = ""
@@ -81,129 +82,34 @@ struct AIProviderSettingsRow: View {
     @State private var isExpanded = false
     @State private var didApplyInitialExpansion = false
     @State private var showsSavedConfirmation = false
+    @State private var showsAPIKeyConfiguration = false
 
     var body: some View {
         let _ = locale.identifier
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 10) {
-                if supportsOAuth {
-                    oauthAccountSection
-
-                    Divider()
-
-                    Text(
-                        verbatim: AppLanguage.localized(
-                            "API Key 回退",
-                            english: "API Key Fallback"
-                        )
-                    )
-                    .font(.subheadline.weight(.semibold))
+        Group {
+            if isDetail {
+                VStack(alignment: .leading, spacing: 16) {
+                    providerHeading
+                    providerConfiguration
                 }
-
-                Text(verbatim: kind.localizedConnectionNote)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                responsiveField(AppLanguage.localized("接口地址", english: "Base URL")) {
-                    TextField("https://…", text: $baseURL)
-                        .textFieldStyle(.roundedBorder)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity)
+            } else {
+                DisclosureGroup(isExpanded: $isExpanded) {
+                    providerConfiguration.padding(.top, 10)
+                } label: {
+                    providerHeading
                 }
-
-                responsiveField(AppLanguage.localized("模型", english: "Model")) {
-                    TextField(
-                        AppLanguage.localized("模型名称", english: "Model name"),
-                        text: $model
-                    )
-                        .textFieldStyle(.roundedBorder)
-                        .labelsHidden()
-                        .frame(maxWidth: .infinity)
-                }
-
-                if hasUnsavedConfigurationChanges {
-                    Label(
-                        AppLanguage.localized(
-                            "配置已修改，请先保存后重新测试连接。",
-                            english: "Configuration changed. Save it before testing again."
-                        ),
-                        systemImage: "exclamationmark.circle"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.warning)
-                }
-
-                responsiveField(AppLanguage.localized("API 密钥", english: "API Key")) {
-                    SecureField(
-                        AppLanguage.localized(
-                            settings.hasAPIKey ? "已保存在本机；留空则保持不变" : "输入 API Key",
-                            english: settings.hasAPIKey
-                                ? "Saved on this Mac; leave blank to keep it"
-                                : "Enter API Key"
-                        ),
-                        text: $apiKey
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .labelsHidden()
-                    .frame(maxWidth: .infinity)
-                }
-
-                ViewThatFits(in: .horizontal) {
-                    HStack { apiKeyActionItems }
-                    VStack(alignment: .leading, spacing: 8) {
-                        apiKeyActionItems
-                    }
-                }
-
-                if case let .failed(message) = connectionState {
-                    ErrorMessageRow(message: message)
-                }
-                if showsSavedConfirmation {
-                    Label(
-                        AppLanguage.localized("已保存", english: "Saved"),
-                        systemImage: "checkmark.circle.fill"
-                    )
-                    .font(.caption)
-                    .foregroundStyle(XunJianUI.Semantic.success)
-                    .transition(.opacity)
-                }
+                .disclosureGroupStyle(FullRowDisclosureGroupStyle())
             }
-            .padding(.top, 10)
-        } label: {
-            HStack(spacing: 8) {
-                Text(verbatim: providerTitle)
-                    .font(XunJianUI.Typography.itemTitle)
-                    .layoutPriority(1)
-                Spacer()
-                if ai.activeProviderKind == kind {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundStyle(.tint)
-                }
-                if !isExpanded {
-                    Label {
-                        Text(verbatim: providerStatusTitle)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                    } icon: {
-                        Image(systemName: providerStatusPresentation.tone.symbolName)
-                            .accessibilityHidden(true)
-                    }
-                    .foregroundStyle(providerStatusColor)
-                    .font(XunJianUI.Typography.status)
-                    .help(providerStatusTitle)
-                }
-            }
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
         }
-        .disclosureGroupStyle(FullRowDisclosureGroupStyle())
         .onAppear(perform: restoreDraftOrSynchronizeFields)
         .onAppear {
             guard !didApplyInitialExpansion else { return }
             didApplyInitialExpansion = true
             isExpanded = ai.activeProviderKind == kind
                 || (ai.activeProviderKind == nil && kind == .codex)
+                || draftStore.draft(for: kind) != nil
+            showsAPIKeyConfiguration = draftStore.draft(for: kind) != nil
+                || (ai.activeProviderKind == kind && ai.activeAuthenticationMode == .apiKey)
         }
         .onChange(of: ai.providerSettings) { _, _ in
             guard !hasUnsavedConfigurationChanges else { return }
@@ -224,6 +130,39 @@ struct AIProviderSettingsRow: View {
             await oauth.refreshModels(for: kind)
         }
         .onDisappear(perform: preserveDraftIfNeeded)
+    }
+
+    private var providerHeading: some View {
+        HStack(spacing: 8) {
+            Text(verbatim: providerTitle).font(.headline).layoutPriority(1)
+            Spacer()
+            if ai.activeProviderKind == kind {
+                Image(systemName: "checkmark.circle.fill").foregroundStyle(.tint)
+            }
+            if isDetail || !isExpanded {
+                Label(providerStatusTitle, systemImage: providerStatusPresentation.tone.symbolName)
+                    .font(.caption).foregroundStyle(providerStatusColor).lineLimit(1)
+                    .help(providerStatusTitle)
+            }
+        }
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+    }
+
+    private var providerConfiguration: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if supportsOAuth {
+                Picker(AppLanguage.localized("配置方式", english: "Configuration Method"), selection: $showsAPIKeyConfiguration) {
+                    Text(AppLanguage.localized("官方账号", english: "Official Account")).tag(false)
+                    Text("API Key").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden()
+                .help(AppLanguage.localized("切换配置面板；验证后才可设为当前 AI。", english: "Switch configuration panels. Verify before using as the current AI."))
+                if showsAPIKeyConfiguration { apiKeyConfiguration }
+                else { oauthAccountSection }
+            } else { apiKeyConfiguration }
+        }
     }
 
     private var cancelTitle: String {
@@ -265,8 +204,8 @@ struct AIProviderSettingsRow: View {
 
     private var verifyOAuthMessage: String {
         AppLanguage.localized(
-            "将向 \(providerTitle) 发送固定且禁用工具的最小提示，可能计入模型用量。不会发送文件名、路径或文件内容；完成后会立即关闭并清理本次验证会话。",
-            english: "XunJian will send \(providerTitle) a fixed minimal prompt with tools disabled, which may count toward model usage. No file names, paths, or file contents are sent. The verification session is closed and cleaned up immediately afterward."
+            "会向 \(providerTitle) 发送一条测试消息，可能消耗模型额度。不会调用工具，也不会发送文件名、路径或正文。测试结束后会关闭并清理这次会话。",
+            english: "A test message will be sent to \(providerTitle) and may use your model allowance. No tools are called, and no file names, paths or contents are sent. The test session is closed and cleaned up afterward."
         )
     }
 
@@ -279,8 +218,8 @@ struct AIProviderSettingsRow: View {
 
     private var signOutOAuthMessage: String {
         AppLanguage.localized(
-            "只会清除寻简专属的 \(providerTitle) 登录，不会影响其他应用中的账号。之后如需使用 OAuth，必须重新登录。",
-            english: "This clears only XunJian's private \(providerTitle) sign-in and does not affect accounts in other apps. You must sign in again to use OAuth."
+            "只退出寻简中的 \(providerTitle) 账号，不影响其他应用。下次使用这个账号时需要重新登录。",
+            english: "This signs out of \(providerTitle) in XunJian only, not in other apps. You'll need to sign in again to use this account."
         )
     }
 
@@ -842,6 +781,51 @@ struct AIProviderSettingsRow: View {
 
     private var connectionState: AIConnectionState {
         ai.connectionState(for: kind)
+    }
+
+    private var apiKeyConfiguration: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(verbatim: kind.localizedConnectionNote)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            responsiveField(AppLanguage.localized("接口地址", english: "Base URL")) {
+                TextField("https://…", text: $baseURL)
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+            }
+            responsiveField(AppLanguage.localized("模型", english: "Model")) {
+                TextField(AppLanguage.localized("模型名称", english: "Model name"), text: $model)
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+            }
+            if hasUnsavedConfigurationChanges {
+                Label(AppLanguage.localized("配置已修改，请先保存后重新测试连接。", english: "Configuration changed. Save it before testing again."), systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(XunJianUI.Semantic.warning)
+            }
+            responsiveField(AppLanguage.localized("API 密钥", english: "API Key")) {
+                SecureField(AppLanguage.localized(settings.hasAPIKey ? "已保存在本机；留空则保持不变" : "输入 API Key",
+                                                   english: settings.hasAPIKey ? "Saved on this Mac; leave blank to keep it" : "Enter API Key"), text: $apiKey)
+                    .textFieldStyle(.roundedBorder)
+                    .labelsHidden()
+                    .frame(maxWidth: .infinity)
+            }
+            ViewThatFits(in: .horizontal) {
+                HStack { apiKeyActionItems }
+                VStack(alignment: .leading, spacing: 8) { apiKeyActionItems }
+            }
+            if case let .failed(message) = connectionState {
+                ErrorMessageRow(message: message)
+            }
+            if showsSavedConfirmation {
+                Label(AppLanguage.localized("已保存", english: "Saved"), systemImage: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(XunJianUI.Semantic.success)
+                    .transition(.opacity)
+            }
+        }
     }
 
     private var hasUnsavedConfigurationChanges: Bool {

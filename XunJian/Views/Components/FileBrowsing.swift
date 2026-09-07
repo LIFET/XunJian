@@ -144,7 +144,8 @@ struct FileGridCard: View, Equatable {
     /// Columns the adaptive grid fits at this width. Used so arrow-key
     /// navigation moves a whole row rather than one item.
     static func columnCount(forWidth width: CGFloat) -> Int {
-        max(Int(width / (minimumItemWidth + gridSpacing)), 1)
+        let usableWidth = max(0, width - 2 * XunJianUI.pagePadding(for: width))
+        return max(Int((usableWidth + gridSpacing) / (minimumItemWidth + gridSpacing)), 1)
     }
 }
 

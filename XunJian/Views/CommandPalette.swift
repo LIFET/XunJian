@@ -37,16 +37,19 @@ struct PaletteCommand: Identifiable {
 /// opening the palette never touches the database.
 struct CommandPaletteView: View {
     @EnvironmentObject private var appModel: AppModel
+    @Environment(\.appVisualTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var isPresented: Bool
     @Binding var selection: NavigationDestination?
 
     @State private var query = ""
     @State private var highlightedIndex = 0
     @State private var displayedCommands: [PaletteCommand] = []
+    @State private var displayedQuery = ""
+    @State private var pendingSubmissionQuery: String?
     @State private var filterTask: Task<Void, Never>?
-    @FocusState private var isFieldFocused: Bool
+    @State private var isFieldFocused = false
 
-    @ScaledMetric(relativeTo: .body) private var commandIconSize: CGFloat = 14
     @ScaledMetric(relativeTo: .body) private var rowIconSize: CGFloat = 13
 
     private static let maximumFileResults = 8
@@ -92,6 +95,14 @@ struct CommandPaletteView: View {
     private func panel(maximumResultHeight: CGFloat) -> some View {
         let visibleCommands = displayedCommands
         return VStack(spacing: 0) {
+            HStack {
+                Label(AppLanguage.localized("快速前往", english: "Quick Switcher"), systemImage: "command")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                Text("⌘K").font(.system(.caption, design: .monospaced))
+            }
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16).padding(.top, 16)
             queryField
 
             if visibleCommands.isEmpty {
@@ -108,6 +119,19 @@ struct CommandPaletteView: View {
                 Divider()
                 resultList(visibleCommands, maximumHeight: maximumResultHeight)
             }
+            Divider()
+            HStack(spacing: 16) {
+                Text(AppLanguage.localized("↑ ↓ 选择", english: "↑ ↓ Select"))
+                Text(AppLanguage.localized("↩ 执行", english: "↩ Run"))
+                Spacer(minLength: 8)
+                Button(AppLanguage.localized("关闭 esc", english: "Close esc"), action: dismiss)
+                    .buttonStyle(.borderless)
+                    .help(AppLanguage.localized("关闭命令面板", english: "Close Command Palette"))
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
         }
         .xunjianFloatingSurface()
         .accessibilityElement(children: .contain)
@@ -119,42 +143,29 @@ struct CommandPaletteView: View {
     }
 
     private var queryField: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "command")
-                .font(.system(size: commandIconSize, weight: .medium))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-
-            TextField(
-                "",
-                text: $query,
-                prompt: Text(verbatim: AppLanguage.localized(
-                    "搜索命令、页面或文件…",
-                    english: "Search commands, pages, or files…"
-                ))
-            )
-            .textFieldStyle(.plain)
-            .font(.title3)
-            .focused($isFieldFocused)
-            .onSubmit(runHighlighted)
-            .onChange(of: query) { _, _ in
-                highlightedIndex = 0
-                scheduleCommandFilter(immediate: false)
+        NativeSearchField(
+            text: $query,
+            isFocused: $isFieldFocused,
+            prompt: AppLanguage.localized("搜索命令、页面或文件…", english: "Search commands, pages, or files…"),
+            accessibilityLabel: AppLanguage.localized("命令面板搜索", english: "Command Palette Search"),
+            accessibilityHelp: AppLanguage.localized("输入后按回车执行，按 Escape 关闭", english: "Type and press Return to run, or Escape to close"),
+            onSubmit: { _ in runHighlighted() },
+            onMoveSelection: { offset in
+                guard displayedQuery == query.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !displayedCommands.isEmpty else { return false }
+                moveHighlight(by: offset)
+                return true
+            },
+            onCancel: dismiss
+        )
+        .frame(height: XunJianUI.controlHeight)
+        .padding(12)
+        .onChange(of: query) { _, _ in
+            if pendingSubmissionQuery != query.trimmingCharacters(in: .whitespacesAndNewlines) {
+                pendingSubmissionQuery = nil
             }
-            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                "命令面板搜索",
-                english: "Command Palette Search"
-            )))
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
-        .onKeyPress(.upArrow) {
-            moveHighlight(by: -1)
-            return .handled
-        }
-        .onKeyPress(.downArrow) {
-            moveHighlight(by: 1)
-            return .handled
+            highlightedIndex = 0
+            scheduleCommandFilter(immediate: false)
         }
     }
 
@@ -174,7 +185,11 @@ struct CommandPaletteView: View {
                                 commandRow(command)
                             }
                             .buttonStyle(.plain)
-                                .tag(command.id)
+                            .accessibilityElement(children: .ignore)
+                            .accessibilityLabel(Text(verbatim: command.subtitle.map {
+                                AppLanguage.joinedForAccessibility([command.title, $0])
+                            } ?? command.title))
+                            .tag(command.id)
                         }
                     } header: {
                         Text(verbatim: group.localizedTitle)
@@ -183,6 +198,7 @@ struct CommandPaletteView: View {
             }
         }
         .listStyle(.inset)
+        .disabled(displayedQuery != query.trimmingCharacters(in: .whitespacesAndNewlines))
         .frame(maxHeight: maximumHeight)
     }
 
@@ -229,9 +245,6 @@ struct CommandPaletteView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .help(command.subtitle ?? command.title)
-        .accessibilityLabel(Text(verbatim: command.subtitle.map {
-            AppLanguage.joinedForAccessibility([command.title, $0])
-        } ?? command.title))
     }
 
     // MARK: - Commands
@@ -243,21 +256,30 @@ struct CommandPaletteView: View {
                 try? await Task.sleep(for: .milliseconds(120))
             }
             guard !Task.isCancelled else { return }
-            await rebuildCommands()
+            let published = await rebuildCommands()
+            if published, !Task.isCancelled,
+               pendingSubmissionQuery == displayedQuery,
+               displayedQuery == query.trimmingCharacters(in: .whitespacesAndNewlines) {
+                pendingSubmissionQuery = nil
+                if displayedCommands.indices.contains(highlightedIndex) {
+                    run(displayedCommands[highlightedIndex])
+                }
+            }
         }
     }
 
     @MainActor
-    private func rebuildCommands() async {
+    private func rebuildCommands() async -> Bool {
         let sourceFilesRevision = appModel.filesRevision
         let sourceCategoryRevision = appModel.categoryRevision
         let all = navigationCommands + actionCommands
         let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             guard appModel.filesRevision == sourceFilesRevision,
-                  appModel.categoryRevision == sourceCategoryRevision else { return }
+                  appModel.categoryRevision == sourceCategoryRevision else { return false }
             displayedCommands = all + fileCommands(from: appModel.recentFiles)
-            return
+            displayedQuery = trimmed
+            return true
         }
 
         let matched = all.filter { QuickSearchMatching.matches($0.title, query: trimmed) }
@@ -281,19 +303,21 @@ struct CommandPaletteView: View {
         }
         guard !Task.isCancelled,
               appModel.filesRevision == sourceFilesRevision,
-              appModel.categoryRevision == sourceCategoryRevision else { return }
+              appModel.categoryRevision == sourceCategoryRevision else { return false }
         var commands = matched + fileCommands(from: result.files)
         if result.remainingCount > 0 {
             commands.append(moreFilesCommand(remaining: result.remainingCount, query: trimmed))
         }
         displayedCommands = commands
+        displayedQuery = trimmed
+        return true
     }
 
     private func moreFilesCommand(remaining: Int, query: String) -> PaletteCommand {
         PaletteCommand(
             id: "files-more",
             title: AppLanguage.localized(
-                "在所有文件中查看其余 \(remaining) 条",
+                "在查找中查看其余 \(remaining) 条",
                 english: "See remaining \(remaining) in All Files"
             ),
             symbolName: "ellipsis.circle",
@@ -309,20 +333,20 @@ struct CommandPaletteView: View {
             navigationCommand(
                 .home,
                 id: "nav-home",
-                title: AppLanguage.localized("首页", english: "Home"),
-                symbol: "house"
+                title: NavigationDestination.home.title(categories: []),
+                symbol: "rectangle.3.group"
             ),
             navigationCommand(
                 .allFiles,
                 id: "nav-all-files",
-                title: AppLanguage.localized("所有文件", english: "All Files"),
-                symbol: "doc.on.doc"
+                title: NavigationDestination.allFiles.title(categories: []),
+                symbol: "tray.full"
             ),
             navigationCommand(
                 .categories,
                 id: "nav-categories",
-                title: AppLanguage.localized("分类", english: "Categories"),
-                symbol: "folder"
+                title: NavigationDestination.categories.title(categories: []),
+                symbol: "square.stack"
             ),
             navigationCommand(
                 .settings,
@@ -390,7 +414,7 @@ struct CommandPaletteView: View {
             },
             PaletteCommand(
                 id: "action-new-category",
-                title: AppLanguage.localized("新建分类…", english: "New Category…"),
+                title: AppLanguage.localized("新建资料集…", english: "New Collection…"),
                 symbolName: "plus.rectangle.on.folder",
                 group: .action
             ) {
@@ -406,7 +430,7 @@ struct CommandPaletteView: View {
             },
             PaletteCommand(
                 id: "action-storage-insights",
-                title: AppLanguage.localized("存储洞察", english: "Storage Insights"),
+                title: AppLanguage.localized("存储概览", english: "Storage Overview"),
                 symbolName: "chart.pie",
                 group: .action
             ) {
@@ -459,7 +483,12 @@ struct CommandPaletteView: View {
     }
 
     private func runHighlighted() {
-        guard displayedCommands.indices.contains(highlightedIndex) else { return }
+        guard displayedQuery == query.trimmingCharacters(in: .whitespacesAndNewlines),
+              displayedCommands.indices.contains(highlightedIndex) else {
+            pendingSubmissionQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+            scheduleCommandFilter(immediate: true)
+            return
+        }
         run(displayedCommands[highlightedIndex])
     }
 
@@ -471,6 +500,9 @@ struct CommandPaletteView: View {
     }
 
     private func dismiss() {
+        filterTask?.cancel()
+        pendingSubmissionQuery = nil
+        isFieldFocused = false
         isPresented = false
         query = ""
         highlightedIndex = 0

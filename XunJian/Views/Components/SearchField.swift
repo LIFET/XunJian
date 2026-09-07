@@ -8,6 +8,8 @@ import SwiftUI
 struct BrowseSearchField: View {
     @ObservedObject var store: BrowseSearchStore
     let appModel: AppModel
+    var isCompact = false
+    var onMoveSelection: ((Int) -> Bool)? = nil
 
     var body: some View {
         SearchField(
@@ -15,7 +17,9 @@ struct BrowseSearchField: View {
                 get: { store.query },
                 set: { appModel.searchText = $0 }
             ),
-            focusScope: .allFiles
+            focusScope: .allFiles,
+            isCompact: isCompact,
+            onMoveSelection: onMoveSelection
         )
     }
 }
@@ -27,15 +31,19 @@ struct SearchField: View {
     var prompt: String? = nil
     var accessibilityHint: String? = nil
     var focusScope: XunJianSearchFieldScope
+    var isCompact = false
     /// Called when a recent-search chip is chosen. Home uses this to jump to
     /// All Files; other pages just fill the field via `text`.
     var onHistorySelect: ((String) -> Void)? = nil
+    /// Return true only when this page actually handled result navigation.
+    var onMoveSelection: ((Int) -> Bool)? = nil
     @State private var isFocused = false
 
     /// Shared so the field can offer recent searches without every call site
     /// having to thread a store through (N03).
     @ObservedObject private var history = SearchHistoryStore.shared
     @ScaledMetric(relativeTo: .body) private var fieldHeight: CGFloat = 40
+    @ScaledMetric(relativeTo: .body) private var compactFieldHeight: CGFloat = 34
 
     var body: some View {
         searchRow
@@ -64,7 +72,7 @@ struct SearchField: View {
                 "搜索已索引的本地文件",
                 english: "Searches indexed local files"
             ),
-            controlSize: .large,
+            controlSize: isCompact ? .regular : .large,
             recentSearches: history.entries,
             recentSearchesTitle: AppLanguage.localized("最近搜索", english: "Recent Searches"),
             noRecentSearchesTitle: AppLanguage.localized("没有最近搜索", english: "No Recent Searches"),
@@ -74,9 +82,10 @@ struct SearchField: View {
                 onHistorySelect?(committedText)
             },
             onClearRecentSearches: history.clear,
+            onMoveSelection: onMoveSelection,
             onCancel: handleExitCommand
         )
-        .frame(height: fieldHeight)
+        .frame(height: isCompact ? compactFieldHeight : fieldHeight)
     }
 
     private func handleExitCommand() {
@@ -104,7 +113,7 @@ struct NativeSearchField: NSViewRepresentable {
     var clearRecentSearchesTitle = ""
     let onSubmit: (String) -> Void
     var onClearRecentSearches: () -> Void = {}
-    var onMoveSelection: (Int) -> Void = { _ in }
+    var onMoveSelection: ((Int) -> Bool)? = nil
     let onCancel: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -112,7 +121,10 @@ struct NativeSearchField: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> NSSearchField {
-        let searchField = NSSearchField()
+        let searchField = AttachedSearchField()
+        searchField.onAttach = { [weak coordinator = context.coordinator] field in
+            coordinator?.requestFocus(in: field)
+        }
         searchField.delegate = context.coordinator
         searchField.target = context.coordinator
         searchField.action = #selector(Coordinator.submit(_:))
@@ -142,13 +154,14 @@ struct NativeSearchField: NSViewRepresentable {
             context.coordinator.installSearchMenuIfNeeded(on: searchField)
         }
 
-        guard isFocused else { return }
-        DispatchQueue.main.async { [weak searchField, weak coordinator = context.coordinator] in
-            guard let searchField,
-                  let coordinator,
-                  coordinator.parent.isFocused,
-                  searchField.window?.firstResponder !== searchField.currentEditor() else { return }
-            searchField.window?.makeFirstResponder(searchField)
+        context.coordinator.requestFocus(in: searchField)
+    }
+
+    final class AttachedSearchField: NSSearchField {
+        var onAttach: ((NSSearchField) -> Void)?
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if window != nil { onAttach?(self) }
         }
     }
 
@@ -156,6 +169,15 @@ struct NativeSearchField: NSViewRepresentable {
     final class Coordinator: NSObject, NSSearchFieldDelegate {
         var parent: NativeSearchField
         private var searchMenuSignature: String?
+
+        func requestFocus(in field: NSSearchField) {
+            guard parent.isFocused else { return }
+            DispatchQueue.main.async { [weak self, weak field] in
+                guard let self, self.parent.isFocused, let field, let window = field.window else { return }
+                if let editor = field.currentEditor(), window.firstResponder === editor { return }
+                _ = window.makeFirstResponder(field)
+            }
+        }
 
         init(parent: NativeSearchField) {
             self.parent = parent
@@ -179,6 +201,9 @@ struct NativeSearchField: NSViewRepresentable {
             textView: NSTextView,
             doCommandBy commandSelector: Selector
         ) -> Bool {
+            // Candidate selection, committing and cancelling composed text
+            // belong to the input method, not the file browser.
+            guard !textView.hasMarkedText() else { return false }
             switch commandSelector {
             case #selector(NSResponder.cancelOperation(_:)):
                 parent.onCancel()
@@ -187,11 +212,9 @@ struct NativeSearchField: NSViewRepresentable {
                 }
                 return true
             case #selector(NSResponder.moveUp(_:)):
-                parent.onMoveSelection(-1)
-                return true
+                return parent.onMoveSelection?(-1) ?? false
             case #selector(NSResponder.moveDown(_:)):
-                parent.onMoveSelection(1)
-                return true
+                return parent.onMoveSelection?(1) ?? false
             default:
                 return false
             }

@@ -91,12 +91,13 @@ struct TextPreviewView: View {
             }
         }
         .padding(XunJianUI.Spacing.page)
+        .controlSize(.large)
     }
 
     private var previewIdentity: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(verbatim: file.name)
-                .font(.title3.weight(.semibold))
+                .font(.system(size: 22, weight: .semibold))
                 .lineLimit(2)
             Text(verbatim: file.path)
                 .font(.caption)
@@ -141,7 +142,7 @@ struct TextPreviewView: View {
                     }
                 }
             )
-            .frame(height: 28)
+            .frame(height: 36)
 
             if !query.isEmpty {
                 Text(verbatim: matchSummary)
@@ -283,6 +284,7 @@ struct TextPreviewView: View {
         loadState = .loading
         do {
             let text = try await appModel.fetchTextContent(forFileID: file.id)
+            try Task.checkCancellation()
             guard let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 chunks = []
                 loadState = .empty
@@ -291,6 +293,8 @@ struct TextPreviewView: View {
             chunks = Self.chunk(text)
             loadState = .ready
             query = initialQuery
+        } catch is CancellationError {
+            return
         } catch {
             loadState = .failed(error.localizedDescription)
         }
@@ -309,9 +313,14 @@ struct TextPreviewView: View {
         matchTask = Task {
             do {
                 try await Task.sleep(for: .milliseconds(80))
-                let computed = await Task.detached(priority: .userInitiated) {
+                let worker = Task.detached(priority: .userInitiated) {
                     Self.matchesWithRanges(for: trimmed, in: chunkSnapshot)
-                }.value
+                }
+                let computed = await withTaskCancellationHandler {
+                    await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
                 try Task.checkCancellation()
                 guard query.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else {
                     return
@@ -331,33 +340,54 @@ struct TextPreviewView: View {
         for query: String,
         in chunks: [TextChunk]
     ) -> (matches: [Match], rangesByChunk: [Int: [Range<String.Index>]]) {
+        guard !query.isEmpty, !Task.isCancelled else { return ([], [:]) }
         var matches: [Match] = []
         var rangesByChunk: [Int: [Range<String.Index>]] = [:]
         let fullText = chunks.map(\.text).joined()
-        for globalRange in Self.ranges(of: query, in: fullText) {
-            let lowerOffset = fullText.distance(
-                from: fullText.startIndex,
-                to: globalRange.lowerBound
-            )
-            let upperOffset = fullText.distance(
-                from: fullText.startIndex,
-                to: globalRange.upperBound
-            )
+        let chunkLengths = chunks.map { $0.text.count }
+        var localCursors = chunks.map { $0.text.startIndex }
+        var localOffsets = Array(repeating: 0, count: chunks.count)
+        var firstChunk = 0
+        var searchStart = fullText.startIndex
+        var searchOffset = 0
+        // Both the source cursor and per-chunk cursors only move forward.
+        // Walking from the beginning for every hit made dense Unicode text quadratic.
+        while searchStart < fullText.endIndex {
+            guard !Task.isCancelled else { return ([], [:]) }
+            guard let globalRange = fullText.range(
+                of: query,
+                options: [.caseInsensitive, .diacriticInsensitive],
+                range: searchStart..<fullText.endIndex
+            ), globalRange.upperBound > searchStart else { break }
+            let lowerOffset = searchOffset + fullText.distance(from: searchStart, to: globalRange.lowerBound)
+            let upperOffset = lowerOffset + fullText.distance(from: globalRange.lowerBound, to: globalRange.upperBound)
+            searchStart = globalRange.upperBound
+            searchOffset = upperOffset
+            while firstChunk < chunks.count,
+                  chunks[firstChunk].startOffset + chunkLengths[firstChunk] <= lowerOffset {
+                firstChunk += 1
+            }
             var segments: [MatchSegment] = []
-            for chunk in chunks {
+            var chunkIndex = firstChunk
+            while chunkIndex < chunks.count, chunks[chunkIndex].startOffset < upperOffset {
+                guard !Task.isCancelled else { return ([], [:]) }
+                let chunk = chunks[chunkIndex]
                 let chunkLower = chunk.startOffset
-                let chunkUpper = chunkLower + chunk.text.count
+                let chunkUpper = chunkLower + chunkLengths[chunkIndex]
                 let intersectionLower = max(lowerOffset, chunkLower)
                 let intersectionUpper = min(upperOffset, chunkUpper)
+                defer { chunkIndex += 1 }
                 guard intersectionLower < intersectionUpper else { continue }
                 let localLower = chunk.text.index(
-                    chunk.text.startIndex,
-                    offsetBy: intersectionLower - chunkLower
+                    localCursors[chunkIndex],
+                    offsetBy: intersectionLower - chunkLower - localOffsets[chunkIndex]
                 )
                 let localUpper = chunk.text.index(
-                    chunk.text.startIndex,
-                    offsetBy: intersectionUpper - chunkLower
+                    localLower,
+                    offsetBy: intersectionUpper - intersectionLower
                 )
+                localCursors[chunkIndex] = localUpper
+                localOffsets[chunkIndex] = intersectionUpper - chunkLower
                 let localRange = localLower..<localUpper
                 let segment = MatchSegment(chunkID: chunk.id, range: localRange)
                 segments.append(segment)
@@ -390,18 +420,20 @@ struct TextPreviewView: View {
     }
 
     nonisolated static func ranges(of query: String, in text: String) -> [Range<String.Index>] {
+        guard !query.isEmpty, !Task.isCancelled else { return [] }
         var result: [Range<String.Index>] = []
         var searchStart = text.startIndex
-        while searchStart < text.endIndex,
+        while !Task.isCancelled, searchStart < text.endIndex,
               let found = text.range(
                   of: query,
                   options: [.caseInsensitive, .diacriticInsensitive],
                   range: searchStart..<text.endIndex
               ) {
+            guard found.upperBound > searchStart else { break }
             result.append(found)
             searchStart = found.upperBound
         }
-        return result
+        return Task.isCancelled ? [] : result
     }
 
     /// Exact contiguous slices keep the source reconstructable for matching.

@@ -1,18 +1,31 @@
 import SwiftUI
 
+struct InspectorSelectionActionState {
+    let selectedCount: Int
+    let resolvedCount: Int
+
+    var canApplyBatchActions: Bool {
+        selectedCount > 1 && resolvedCount == selectedCount
+    }
+}
+
 struct FileInspectorView: View {
     nonisolated static let maximumInlinePreviewCharacters = 20_000
     nonisolated static let inlinePreviewFetchCharacterLimit = maximumInlinePreviewCharacters + 1
     @EnvironmentObject private var appModel: AppModel
     @EnvironmentObject private var categoryIndex: CategoryIndexStore
     @Environment(\.locale) private var locale
-    @ScaledMetric(relativeTo: .body) private var actionIconSide: CGFloat = 18
+    @Environment(\.appVisualTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isFileInformationExpanded = false
     let file: IndexedFile?
+    var onClose: (() -> Void)? = nil
 
     // Inline text preview (N08).
     @State private var previewText: String?
-    @State private var previewLimit = 2_000
-    @State private var isLoadingPreview = false
+    @State private var previewLoadState = InspectorPreviewLoadState()
+    private var isLoadingPreview: Bool { previewLoadState.isLoading }
     @State private var previewFailed = false
     @State private var previewRetry = 0
     /// Observe only the presentation query. Search lifecycle changes no
@@ -28,308 +41,26 @@ struct FileInspectorView: View {
     }
 
     var body: some View {
-        Group {
+        VStack(spacing: 0) {
+            inspectorHeader
+            Divider()
             if appModel.selectedFileIDs.count > 1 {
                 multiSelectInspector
             } else if let file {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        VStack(spacing: 12) {
-                            FileThumbnail(file: file, size: 150)
-                                .padding(10)
-                                .background(
-                                    XunJianUI.Fill.quiet,
-                                    in: RoundedRectangle(
-                                        cornerRadius: XunJianUI.Radius.card,
-                                        style: .continuous
-                                    )
-                                )
-                            Text(verbatim: file.name)
-                                .font(XunJianUI.Typography.sectionTitle)
-                                .multilineTextAlignment(.center)
-                                .lineLimit(3)
-                                .textSelection(.enabled)
-                        }
-                        .frame(maxWidth: .infinity)
-
-                        Divider()
-
-                        HStack(spacing: 8) {
-                            Button {
-                                appModel.open(file)
-                            } label: {
-                                Label(
-                                    AppLanguage.localized("打开", english: "Open"),
-                                    systemImage: "arrow.up.forward.app"
-                                )
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(.borderedProminent)
-                            ControlGroup {
-                                Button {
-                                    appModel.quickLook(file)
-                                } label: {
-                                    Image(systemName: "eye")
-                                        .frame(width: actionIconSide, height: actionIconSide)
-                                        .contentShape(Rectangle())
-                                }
-                                .help(AppLanguage.localized("预览", english: "Preview"))
-                                .accessibilityLabel(AppLanguage.localized("预览", english: "Preview"))
-                                Button {
-                                    appModel.showInFinder(file)
-                                } label: {
-                                    Image(systemName: "finder")
-                                        .frame(width: actionIconSide, height: actionIconSide)
-                                        .contentShape(Rectangle())
-                                }
-                                .help(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
-                                .accessibilityLabel(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder"))
-
-                            }
-                            if appModel.activeAIProviderKind != nil {
-                                Menu {
-                                    Button {
-                                        appModel.aiSheetRequest = .explain(file)
-                                    } label: {
-                                        Label(
-                                            AppLanguage.localized("用 AI 解释", english: "Explain with AI"),
-                                            systemImage: "doc.text.magnifyingglass"
-                                        )
-                                    }
-                                    .disabled(!appModel.supportsTextContent(file))
-                                    Button {
-                                        appModel.aiSheetRequest = .ask(file)
-                                    } label: {
-                                        Label(
-                                            AppLanguage.localized("向 AI 提问", english: "Ask AI About File"),
-                                            systemImage: "bubble.left.and.text.bubble.right"
-                                        )
-                                    }
-                                    .disabled(!appModel.supportsTextContent(file))
-                                } label: {
-                                    Image(systemName: "sparkles")
-                                        .frame(width: actionIconSide, height: actionIconSide)
-                                }
-                                .menuStyle(.borderlessButton)
-                                .menuIndicator(.hidden)
-                                .fixedSize()
-                                .help(AppLanguage.localized("AI 文件操作", english: "AI File Actions"))
-                                .accessibilityLabel(AppLanguage.localized("AI 文件操作", english: "AI File Actions"))
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-
-                        HStack(spacing: 8) {
-                            Menu {
-                                if appModel.categories.isEmpty {
-                                    Text(
-                                        AppLanguage.localized(
-                                            "还没有分类，请先新建分类",
-                                            english: "No categories yet. Create one first."
-                                        )
-                                    )
-                                    Divider()
-                                    Button {
-                                        NotificationCenter.default.post(
-                                            name: .xunJianRequestNewCategory,
-                                            object: nil
-                                        )
-                                    } label: {
-                                        Label(
-                                            AppLanguage.localized("新建分类…", english: "New Category…"),
-                                            systemImage: "plus"
-                                        )
-                                    }
-                                } else {
-                                    ForEach(appModel.categories) { category in
-                                        Button {
-                                            appModel.toggleCategory(category, for: file)
-                                        } label: {
-                                            if categoryIndex.isAssigned(category.id, to: file.id) {
-                                                Label {
-                                                    Text(verbatim: category.localizedDisplayName)
-                                                } icon: {
-                                                    Image(systemName: "checkmark")
-                                                }
-                                            } else {
-                                                Label {
-                                                    Text(verbatim: category.localizedDisplayName)
-                                                } icon: {
-                                                    Image(systemName: category.symbolName)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            } label: {
-                                Label {
-                                    Text(verbatim: categorySummary(for: file))
-                                        .lineLimit(1)
-                                        .truncationMode(.tail)
-                                        .help(categorySummary(for: file))
-                                } icon: {
-                                    Image(systemName: "folder.badge.plus")
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .contentShape(Rectangle())
-                            }
-                            .layoutPriority(1)
-
-                            Menu {
-                                Button(AppLanguage.localized("重命名…", english: "Rename…")) {
-                                    appModel.requestRename(file)
-                                }
-                                Button(AppLanguage.localized("移动到…", english: "Move To…")) {
-                                    appModel.chooseMoveDestination(for: file)
-                                }
-                                Divider()
-                                Button(
-                                    AppLanguage.localized("移到废纸篓", english: "Move to Trash"),
-                                    role: .destructive
-                                ) {
-                                    appModel.requestTrash(file)
-                                }
-                            } label: {
-                                Label(
-                                    AppLanguage.localized("更多操作", english: "More Actions"),
-                                    systemImage: "ellipsis.circle"
-                                )
-                            }
-                            .fixedSize()
-                        }
-                        .frame(maxWidth: .infinity)
-
-                        Divider()
-
-                        GroupBox {
-                            VStack(alignment: .leading, spacing: 14) {
-                                detail(
-                                    AppLanguage.localized("类型", english: "Kind"),
-                                    value: file.kind.localizedTitle
-                                )
-                                detail(
-                                    AppLanguage.localized("大小", english: "Size"),
-                                    value: ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
-                                )
-                                detail(
-                                    AppLanguage.localized("位置", english: "Where"),
-                                    value: file.parentPath,
-                                    lineLimit: 3,
-                                    help: file.parentPath
-                                )
-                                detail(
-                                    AppLanguage.localized("创建时间", english: "Created"),
-                                    value: formatted(file.createdAt)
-                                )
-                                detail(
-                                    AppLanguage.localized("修改时间", english: "Modified"),
-                                    value: formatted(file.modifiedAt)
-                                )
-
-                                // N11: read-only Finder tags, fetched live.
-                                if !finderTags.isEmpty {
-                                    detail(
-                                        AppLanguage.localized("Finder 标签", english: "Finder Tags"),
-                                        value: finderTags.joined(separator: AppLanguage.listSeparator)
-                                    )
-                                }
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        } label: {
-                            Label(
-                                AppLanguage.localized("信息", english: "Information"),
-                                systemImage: "info.circle"
-                            )
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        // N08: inline text preview with search-term
-                        // highlighting, so the user can confirm a match
-                        // without leaving the app.
-                        if file.kind.supportsTextExtraction {
-                            Divider()
-                            GroupBox {
-                                VStack(alignment: .leading, spacing: 10) {
-                                    if isLoadingPreview {
-                                        ProgressView()
-                                            .controlSize(.small)
-                                            .accessibilityLabel(Text(verbatim: AppLanguage.localized(
-                                                "正在载入正文",
-                                                english: "Loading text"
-                                            )))
-                                    } else if previewFailed {
-                                        Text(verbatim: AppLanguage.localized(
-                                            "无法读取正文。",
-                                            english: "Couldn’t load the text."
-                                        ))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                        Button(AppLanguage.localized("重试", english: "Retry")) {
-                                            previewRetry += 1
-                                        }
-                                        .buttonStyle(.link)
-                                        .controlSize(.small)
-                                    } else if let previewText, !previewText.isEmpty {
-                                        Text(highlightedPreview(String(previewText.prefix(previewLimit))))
-                                            .font(.body)
-                                            .lineSpacing(4)
-                                            .textSelection(.enabled)
-                                            .frame(
-                                                maxWidth: .infinity,
-                                                alignment: .leading
-                                            )
-
-                                        if previewText.count > previewLimit,
-                                           previewLimit < Self.maximumInlinePreviewCharacters {
-                                            Button(
-                                                AppLanguage.localized(
-                                                    "显示更多",
-                                                    english: "Show More"
-                                                )
-                                            ) {
-                                                previewLimit = min(
-                                                    previewLimit + 2_000,
-                                                    Self.maximumInlinePreviewCharacters
-                                                )
-                                            }
-                                            .buttonStyle(.link)
-                                            .controlSize(.small)
-                                        } else if Self.shouldOfferFullTextPreview(
-                                            fetchedCharacterCount: previewText.count
-                                        ) {
-                                            Button(AppLanguage.localized(
-                                                "打开完整文本预览",
-                                                english: "Open Full Text Preview"
-                                            )) {
-                                                NotificationCenter.default.post(
-                                                    name: .xunJianShowTextPreview,
-                                                    object: nil
-                                                )
-                                            }
-                                            .buttonStyle(.link)
-                                            .controlSize(.small)
-                                        }
-                                    } else {
-                                        Text(verbatim: AppLanguage.localized(
-                                            "没有可提取的文本。",
-                                            english: "No extractable text."
-                                        ))
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                    }
-                                }
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            } label: {
-                                Label(
-                                    AppLanguage.localized("内容预览", english: "Content Preview"),
-                                    systemImage: "doc.text.magnifyingglass"
-                                )
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                VStack(spacing: 0) {
+                    ZStack {
+                        // Keep native PDF/text reading position alive while viewing metadata.
+                        contentPreview(for: file)
+                            .opacity(isFileInformationExpanded ? 0 : 1)
+                            .allowsHitTesting(!isFileInformationExpanded)
+                            .accessibilityHidden(isFileInformationExpanded)
+                        if isFileInformationExpanded {
+                            inspectorFooter(for: file)
+                                .transition(.opacity)
                         }
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(20)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .layoutPriority(1)
                 }
             } else {
                 ContentUnavailableView(
@@ -337,29 +68,33 @@ struct FileInspectorView: View {
                     systemImage: "doc.text.magnifyingglass",
                     description: Text(
                         AppLanguage.localized(
-                            "选择文件后可在这里查看详情。",
+                            "选择一个文件查看内容和信息。",
                             english: "Select a file to see its details here."
                         )
                     )
                 )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(theme.palette(for: colorScheme).canvas)
+        .tint(theme.palette(for: colorScheme).accent)
         .onReceive(
             appModel.browseSearchStore.$highlightQuery.removeDuplicates()
         ) { query in
             highlightQuery = query
         }
-        .navigationTitle(AppLanguage.localized("文件详情", english: "File Details"))
         .onAppear { restoreCachedInspectorContent() }
         .onChange(of: file?.id) { _, _ in
             restoreCachedInspectorContent()
         }
         .task(id: "\(previewCacheKey)-\(previewRetry)") {
+            let generation = previewLoadState.begin()
+            defer { previewLoadState.finish(generation) }
             guard appModel.selectedFileIDs.count <= 1, let file else { return }
-            guard file.kind.supportsTextExtraction else {
+            guard DocumentPreviewPolicy.route(kind: file.kind, fileExtension: file.fileExtension) == .text else {
                 previewText = nil
                 previewFailed = false
-                isLoadingPreview = false
                 return
             }
 
@@ -367,21 +102,16 @@ struct FileInspectorView: View {
                let cached = InspectorPreviewCache.text(for: previewCacheKey) {
                 previewText = cached.text
                 previewFailed = cached.failed
-                previewLimit = 2_000
-                isLoadingPreview = false
                 return
             }
 
-            previewLimit = 2_000
             previewFailed = false
-            isLoadingPreview = true
-            defer { isLoadingPreview = false }
             do {
                 let text = try await appModel.fetchInspectorPreviewText(
                     forFileID: file.id,
                     maximumCharacters: Self.inlinePreviewFetchCharacterLimit
                 )
-                guard !Task.isCancelled, self.file?.id == file.id else { return }
+                guard !Task.isCancelled, previewLoadState.isCurrent(generation), self.file?.id == file.id else { return }
                 let trimmed = (text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                 let resolved = trimmed.isEmpty ? nil : text
                 previewText = resolved
@@ -391,7 +121,7 @@ struct FileInspectorView: View {
                     for: previewCacheKey
                 )
             } catch {
-                guard !Task.isCancelled, self.file?.id == file.id else { return }
+                guard !Task.isCancelled, previewLoadState.isCurrent(generation), self.file?.id == file.id else { return }
                 guard !InspectorPreviewCache.isCancellation(error) else { return }
                 previewFailed = true
             }
@@ -436,6 +166,241 @@ struct FileInspectorView: View {
         }
     }
 
+    private var inspectorHeader: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 12) {
+                inspectorHeading.frame(minWidth: 120)
+                inspectorHeaderActions.fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(height: 48)
+            VStack(alignment: .leading, spacing: 0) {
+                inspectorHeading.frame(height: 32)
+                inspectorHeaderActions.frame(height: 40)
+            }
+            .padding(.vertical, 4)
+        }
+        .padding(.horizontal, theme.contentPadding)
+        .accessibilityElement(children: .contain)
+    }
+
+    private var inspectorHeading: some View {
+        Text(verbatim: appModel.selectedFileIDs.count > 1
+             ? AppLanguage.localized("已选 \(appModel.selectedFileIDs.count) 项", english: "\(appModel.selectedFileIDs.count) selected")
+             : file?.name ?? AppLanguage.localized("文件预览", english: "File Preview"))
+            .font(.system(size: 13, weight: .medium)).lineLimit(1)
+            .truncationMode(.middle).help(file?.name ?? "")
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("inspector.filename")
+    }
+
+    private var inspectorHeaderActions: some View {
+        HStack(spacing: 12) {
+        if let file, appModel.selectedFileIDs.count <= 1 {
+        HStack(spacing: 4) {
+            inspectorTab(AppLanguage.localized("阅读", english: "Read"), information: false)
+            inspectorTab(AppLanguage.localized("信息", english: "Info"), information: true)
+        }
+        .accessibilityIdentifier("inspector.mode")
+        .xunjianAnimation(value: isFileInformationExpanded)
+        .controlSize(.large)
+        .fixedSize()
+        Spacer(minLength: 0)
+            Menu {
+                Button(AppLanguage.localized("快速查看", english: "Quick Look")) { appModel.quickLook(file) }
+                Button(AppLanguage.localized("在 Finder 中显示", english: "Show in Finder")) { appModel.showInFinder(file) }
+                Button(AppLanguage.localized("复制路径", english: "Copy Path")) { appModel.copyPath(file) }
+                categoryMenu(for: file)
+                if appModel.activeAIProviderKind != nil {
+                    Divider()
+                    Button(AppLanguage.localized("用 AI 解释", english: "Explain with AI")) { appModel.aiSheetRequest = .explain(file) }
+                        .disabled(!appModel.supportsTextContent(file))
+                    Button(AppLanguage.localized("向 AI 提问", english: "Ask AI About File")) { appModel.aiSheetRequest = .ask(file) }
+                        .disabled(!appModel.supportsTextContent(file))
+                }
+                Divider()
+                Button(AppLanguage.localized("重命名…", english: "Rename…")) { appModel.requestRename(file) }
+                Button(AppLanguage.localized("移动到…", english: "Move To…")) { appModel.chooseMoveDestination(for: file) }
+                Button(AppLanguage.localized("移到废纸篓", english: "Move to Trash"), role: .destructive) { appModel.requestTrash(file) }
+            } label: {
+                Text(AppLanguage.localized("打开", english: "Open"))
+            } primaryAction: { appModel.open(file) }
+            .controlSize(.large).fixedSize()
+            .accessibilityIdentifier("inspector.open")
+        } else { Spacer(minLength: 0) }
+        if let onClose {
+            Button(action: onClose) {
+                Image(systemName: "xmark").frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .controlSize(.large)
+            .frame(width: 36, height: 36)
+            .contentShape(Rectangle())
+            .help(AppLanguage.localized("关闭阅读区", english: "Close Reading Pane"))
+            .accessibilityLabel(AppLanguage.localized("关闭阅读区", english: "Close Reading Pane"))
+            .accessibilityIdentifier("inspector.close")
+        }
+        }
+    }
+
+    private func inspectorTab(_ title: String, information: Bool) -> some View {
+        Button { isFileInformationExpanded = information } label: {
+            Text(verbatim: title).font(.system(size: 13, weight: .medium))
+                .padding(.horizontal, 8).frame(height: 38)
+                .contentShape(Rectangle())
+                .foregroundStyle(isFileInformationExpanded == information ? theme.palette(for: colorScheme).accent : .secondary)
+                .overlay(alignment: .bottom) {
+                    if isFileInformationExpanded == information { Rectangle().fill(theme.palette(for: colorScheme).accent).frame(height: 2) }
+                }
+        }.buttonStyle(.plain)
+            .accessibilityAddTraits(isFileInformationExpanded == information ? .isSelected : [])
+    }
+
+    private func inspectorFooter(for file: IndexedFile) -> some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                fileIdentity(for: file)
+                Text(AppLanguage.localized("文件信息", english: "File Information"))
+                    .font(.headline)
+                fileInformation(for: file)
+            }
+            .padding(theme.contentPadding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .background(theme.palette(for: colorScheme).surface)
+    }
+
+    private func fileIdentity(for file: IndexedFile) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            FileThumbnail(file: file, size: 28)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(verbatim: file.name)
+                    .font(.body.weight(.medium))
+                    .lineLimit(2)
+                    .textSelection(.enabled)
+                Text(verbatim: file.kind.localizedTitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+
+    private func categoryMenu(for file: IndexedFile) -> some View {
+        Menu(AppLanguage.localized("资料集", english: "Collections")) {
+            if appModel.categories.isEmpty {
+                Text(AppLanguage.localized("还没有资料集", english: "No collections yet"))
+                Button(AppLanguage.localized("新建资料集…", english: "New Collection…")) {
+                    NotificationCenter.default.post(name: .xunJianRequestNewCategory, object: nil)
+                }
+            } else {
+                ForEach(appModel.categories) { category in
+                    Button { appModel.toggleCategory(category, for: file) } label: {
+                        Label(category.localizedDisplayName,
+                              systemImage: categoryIndex.isAssigned(category.id, to: file.id) ? "checkmark" : category.symbolName)
+                    }
+                }
+            }
+        }
+    }
+
+    private func fileInformation(for file: IndexedFile) -> some View {
+            VStack(alignment: .leading, spacing: 14) {
+                detail(
+                    AppLanguage.localized("类型", english: "Kind"),
+                    value: file.kind.localizedTitle
+                )
+                detail(
+                    AppLanguage.localized("大小", english: "Size"),
+                    value: ByteCountFormatter.string(fromByteCount: file.size, countStyle: .file)
+                )
+                detail(
+                    AppLanguage.localized("位置", english: "Where"),
+                    value: file.parentPath,
+                    lineLimit: 3,
+                    help: file.parentPath
+                )
+                detail(
+                    AppLanguage.localized("创建时间", english: "Created"),
+                    value: formatted(file.createdAt)
+                )
+                detail(
+                    AppLanguage.localized("修改时间", english: "Modified"),
+                    value: formatted(file.modifiedAt)
+                )
+                let categories = categoryIndex.categories(for: file.id).map(\.localizedDisplayName)
+                if !categories.isEmpty {
+                    detail(AppLanguage.localized("分类", english: "Categories"),
+                           value: categories.joined(separator: AppLanguage.listSeparator))
+                }
+
+                // N11: read-only Finder tags, fetched live.
+                if !finderTags.isEmpty {
+                    detail(
+                        AppLanguage.localized("Finder 标签", english: "Finder Tags"),
+                        value: finderTags.joined(separator: AppLanguage.listSeparator)
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func contentPreview(for file: IndexedFile) -> some View {
+        Group {
+            let route = DocumentPreviewPolicy.route(kind: file.kind, fileExtension: file.fileExtension)
+            if route == .pdf || route == .image {
+                DocumentPreviewView(file: file, source: appModel.sources.first { $0.id == file.sourceID }) {
+                    appModel.quickLook(file)
+                }
+            } else if route == .text {
+                if isLoadingPreview {
+                    ProgressView(AppLanguage.localized("正在载入正文", english: "Loading text"))
+                        .controlSize(.small)
+                } else if previewFailed {
+                    VStack(spacing: 12) {
+                        Text(AppLanguage.localized("无法读取正文。", english: "Couldn’t load the text."))
+                            .foregroundStyle(.secondary)
+                        Button(AppLanguage.localized("重试", english: "Retry")) { previewRetry += 1 }
+                    }
+                } else if let previewText, !previewText.isEmpty {
+                    InspectorTextDocumentPreview(
+                        text: String(previewText.prefix(Self.maximumInlinePreviewCharacters)),
+                        kind: file.kind,
+                        query: highlightQuery,
+                        hasMore: Self.shouldOfferFullTextPreview(fetchedCharacterCount: previewText.count),
+                        openFullPreview: {
+                            NotificationCenter.default.post(name: .xunJianShowTextPreview, object: nil)
+                        },
+                        readingPositionKey: "\(readingPositionKey)|\(highlightQuery)"
+                    )
+                    .id(file.id)
+                } else {
+                    Text(verbatim: AppLanguage.localized("没有可提取的文本。", english: "No extractable text."))
+                        .foregroundStyle(.secondary)
+                }
+            } else {
+                ContentUnavailableView {
+                    Label(file.kind.localizedTitle, systemImage: file.kind.symbolName)
+                } description: {
+                    Text(AppLanguage.localized("使用系统预览查看原文件。", english: "Use system Preview to view the original file."))
+                } actions: {
+                    Button(AppLanguage.localized("系统预览", english: "System Preview")) { appModel.quickLook(file) }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    nonisolated static func previewFontDesign(for kind: FileKind) -> Font.Design {
+        kind == .code ? .monospaced : .default
+    }
+
+    nonisolated static func isExtractedPDFPreview(fileExtension: String) -> Bool {
+        fileExtension.caseInsensitiveCompare("pdf") == .orderedSame
+    }
+
     nonisolated static func shouldOfferFullTextPreview(
         fetchedCharacterCount: Int
     ) -> Bool {
@@ -445,43 +410,63 @@ struct FileInspectorView: View {
     private var multiSelectInspector: some View {
         let fileCount = appModel.selectedFileIDs.count
         let totalSize = appModel.selectedFileTotalSize
-        return ContentUnavailableView {
-            Label(
-                AppLanguage.localized(
-                    "已选择 \(fileCount) 项",
-                    english: "\(fileCount) Selected"
-                ),
-                systemImage: "checkmark.circle"
-            )
-        } description: {
-            Text(verbatim: AppLanguage.localized(
-                "批量操作请用列表上方的工具条。单文件重命名、移动和废纸篓在只选一项时可用。总大小 \(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))。",
-                english: "Use the batch bar above the list. Rename, move, and Trash apply to a single file when only one is selected. Total size \(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))."
-            ))
+        let actionState = InspectorSelectionActionState(selectedCount: fileCount, resolvedCount: appModel.selectedFiles.count)
+        return VStack(alignment: .leading, spacing: 12) {
+            Text(AppLanguage.localized("已选择 \(fileCount) 项", english: "\(fileCount) Selected"))
+                .font(.headline)
+            Text(ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file))
+                .foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                batchActionRow(fileCount: fileCount, showsTitles: true)
+                batchActionRow(fileCount: fileCount, showsTitles: false)
+            }
+            .disabled(!actionState.canApplyBatchActions)
+            Text(actionState.canApplyBatchActions
+                ? AppLanguage.localized("可为所选文件添加分类，或在更多操作中移到废纸篓。选择一项可阅读正文。", english: "Add the selected files to a category, or move them to Trash from More Actions. Select one file to read its contents.")
+                : AppLanguage.localized("部分所选文件已不可用，请重新选择后操作。", english: "Some selected files are unavailable. Select the files again before continuing."))
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(theme.contentPadding)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    /// Renders the preview with every occurrence of the current search query
-    /// highlighted (N08). Case-insensitive; plain text otherwise.
-    private func highlightedPreview(_ text: String) -> AttributedString {
-        var attributed = AttributedString(text)
-        let query = highlightQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return attributed }
-
-        let lowercasedText = text.lowercased()
-        let lowercasedQuery = query.lowercased()
-        var searchStart = lowercasedText.startIndex
-        while let range = lowercasedText.range(
-            of: lowercasedQuery,
-            range: searchStart..<lowercasedText.endIndex
-        ) {
-            guard let attributedRange = Range(range, in: attributed) else { break }
-            attributed[attributedRange].backgroundColor = XunJianUI.Fill.accentWash
-            attributed[attributedRange].foregroundColor = .accentColor
-            searchStart = range.upperBound
+    private func batchActionRow(fileCount: Int, showsTitles: Bool) -> some View {
+        HStack(spacing: 8) {
+            Menu {
+                if appModel.categories.isEmpty {
+                    Text(AppLanguage.localized("还没有分类", english: "No categories yet"))
+                    Button(AppLanguage.localized("新建资料集…", english: "New Collection…")) {
+                        NotificationCenter.default.post(name: .xunJianRequestNewCategory, object: nil)
+                    }
+                } else {
+                    ForEach(appModel.categories) { category in
+                        Button(category.localizedDisplayName) { appModel.assignSelectedFiles(to: category) }
+                    }
+                }
+            } label: {
+                XunJianToolbarLabel(title: AppLanguage.localized("添加到分类", english: "Add to Category"),
+                                    systemImage: "folder.badge.plus", showsTitle: showsTitles, showsChevron: true)
+            }
+            .accessibilityIdentifier("inspector.batchCategory")
+            Menu {
+                Button(AppLanguage.localized("移到废纸篓（\(fileCount) 项）", english: "Move \(fileCount) Items to Trash"), role: .destructive) {
+                    appModel.requestBatchTrash(appModel.selectedFiles)
+                }
+            } label: {
+                XunJianToolbarLabel(title: AppLanguage.localized("更多操作", english: "More Actions"),
+                                    systemImage: "ellipsis", showsTitle: showsTitles, showsChevron: true)
+            }
+            .accessibilityIdentifier("inspector.batchMore")
         }
-        return attributed
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .buttonStyle(XunJianToolbarButtonStyle())
+        .foregroundStyle(.primary)
+        .tint(.primary)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private func detail(
@@ -516,6 +501,7 @@ struct FileInspectorView: View {
     }
 
     private func restoreCachedInspectorContent() {
+        previewLoadState.invalidate()
         guard let file else {
             previewText = nil
             previewFailed = false
@@ -526,12 +512,9 @@ struct FileInspectorView: View {
         if let cached = InspectorPreviewCache.text(for: previewCacheKey) {
             previewText = cached.text
             previewFailed = cached.failed
-            previewLimit = 2_000
-            isLoadingPreview = false
         } else {
             previewText = nil
             previewFailed = false
-            previewLimit = 2_000
         }
         if let cachedTags = InspectorPreviewCache.tags(for: file.id) {
             finderTags = cachedTags
@@ -544,19 +527,20 @@ struct FileInspectorView: View {
 
     private var previewCacheKey: String {
         guard let file else { return "" }
-        return "\(file.id)|\(file.size)|\(file.modifiedAt?.timeIntervalSince1970 ?? 0)"
+        let identity = DocumentPreviewPolicy.fileIdentity(id: file.id, path: file.path, kind: file.kind, fileExtension: file.fileExtension)
+        return "\(identity)|\(file.size)|\(file.modifiedAt?.timeIntervalSince1970 ?? 0)"
     }
 
-    private func categorySummary(for file: IndexedFile) -> String {
-        if appModel.categories.isEmpty {
-            return AppLanguage.localized("新建分类…", english: "New Category…")
-        }
-        let names = categoryIndex.categories(for: file.id).map(\.localizedDisplayName)
-        guard !names.isEmpty else {
-            return AppLanguage.localized("添加分类", english: "Add Category")
-        }
-        return names.joined(separator: AppLanguage.listSeparator)
+    private var readingPositionKey: String {
+        guard let file else { return "" }
+        let source = appModel.sources.first { $0.id == file.sourceID }
+        let sourceIdentity = source.map { DocumentPreviewPolicy.sourceIdentity(enabled: $0.enabled, bookmark: $0.bookmark) } ?? 0
+        return DocumentPreviewPolicy.readingIdentity(
+            fileIdentity: DocumentPreviewPolicy.fileIdentity(id: file.id, path: file.path, kind: file.kind, fileExtension: file.fileExtension),
+            size: file.size, modifiedAt: file.modifiedAt?.timeIntervalSince1970,
+            accessState: source?.accessState.rawValue ?? "missing", sourceIdentity: sourceIdentity)
     }
+
 }
 
 /// Bounded inspector preview cache. Survives the inspector being dismissed

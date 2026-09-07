@@ -1,9 +1,82 @@
 import SwiftUI
+import AppKit
+
+// 9F THESIS: One flat search and reading desk, no persistent rail or page cards.
+// OWN-WORLD: White, ice gray and graphite; system typography and native controls.
+// STORY: Search, select a result, read it without losing position.
+// FIRST VIEWPORT: Native text navigation, full-width search, narrow index / wide reader.
+// FORM: User-approved Editorial Desk comp; replaces rejected 9E.
+// FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+
+extension Notification.Name {
+    static let xunJianToggleSidebar = Notification.Name("xunJianToggleSidebar")
+}
+
+enum WorkspaceSplitProportions {
+    static func idealInspectorWidth(for theme: AppVisualTheme) -> CGFloat {
+        1_000
+    }
+}
+
+/// Attached below the search strip so native split resizing cannot cover it.
+struct WorkspaceInspectorModifier: ViewModifier {
+    @EnvironmentObject private var appModel: AppModel
+    @Binding var isPresented: Bool
+    var maximumWidth: CGFloat
+
+    func body(content: Content) -> some View {
+        content.inspector(isPresented: $isPresented) {
+            FileInspectorView(file: appModel.selectedFile, onClose: { isPresented = false })
+                .inspectorColumnWidth(min: 280, ideal: min(1_000, maximumWidth), max: maximumWidth)
+                .disabled(!appModel.isDatabaseAvailable)
+        }
+    }
+}
+
+/// Read the actual window viewport, not a split view's larger ideal size.
+/// This is event-driven and never searches or repositions native dividers.
+private struct WorkspaceWindowSizeObserver: NSViewRepresentable {
+    var onResize: (CGFloat) -> Void
+
+    func makeNSView(context: Context) -> ObserverView {
+        let view = ObserverView()
+        view.onResize = onResize
+        return view
+    }
+
+    func updateNSView(_ view: ObserverView, context: Context) {
+        view.onResize = onResize
+    }
+
+    final class ObserverView: NSView {
+        var onResize: ((CGFloat) -> Void)?
+        private var lastWidth: CGFloat?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            NotificationCenter.default.removeObserver(self)
+            lastWidth = nil
+            guard let window else { return }
+            NotificationCenter.default.addObserver(self, selector: #selector(windowResized),
+                                                  name: NSWindow.didResizeNotification, object: window)
+            windowResized()
+        }
+
+        @objc private func windowResized() {
+            guard let width = window?.contentLayoutRect.width, width > 0, width != lastWidth else { return }
+            lastWidth = width
+            DispatchQueue.main.async { [weak self] in self?.onResize?(width) }
+        }
+
+        deinit { NotificationCenter.default.removeObserver(self) }
+    }
+}
 
 struct AppShellResponsiveLayoutState: Equatable {
     private(set) var prefersSidebarVisible = true
     private(set) var prefersInspectorVisible = false
     private(set) var isSidebarForcedCollapsed = false
+    private(set) var isSidebarManuallyPresentedAtCompactWidth = false
     private(set) var isInspectorForcedCollapsed = false
     /// A deliberate open at a compact width stays authoritative. Without
     /// this, the next layout measurement immediately re-applies the automatic
@@ -12,6 +85,15 @@ struct AppShellResponsiveLayoutState: Equatable {
 
     var showsSidebar: Bool {
         prefersSidebarVisible && !isSidebarForcedCollapsed
+    }
+
+    func showsSidebar(for destination: NavigationDestination?) -> Bool {
+        destination != .settings && showsSidebar
+    }
+
+    mutating func setSidebarVisible(_ visible: Bool, for destination: NavigationDestination?) {
+        guard destination != .settings else { return }
+        setSidebarVisible(visible)
     }
 
     var showsInspector: Bool {
@@ -24,8 +106,12 @@ struct AppShellResponsiveLayoutState: Equatable {
         if isSidebarForcedCollapsed {
             if windowWidth > XunJianUI.Breakpoint.sidebarRestore {
                 isSidebarForcedCollapsed = false
+                isSidebarManuallyPresentedAtCompactWidth = false
             }
-        } else if windowWidth < XunJianUI.Breakpoint.sidebarAutoCollapse {
+        } else if windowWidth > XunJianUI.Breakpoint.sidebarRestore {
+            isSidebarManuallyPresentedAtCompactWidth = false
+        } else if !isSidebarManuallyPresentedAtCompactWidth,
+                  windowWidth < XunJianUI.Breakpoint.sidebarAutoCollapse {
             isSidebarForcedCollapsed = true
         }
 
@@ -47,8 +133,15 @@ struct AppShellResponsiveLayoutState: Equatable {
     }
 
     mutating func setSidebarVisible(_ isVisible: Bool) {
+        if isVisible {
+            prefersSidebarVisible = true
+            isSidebarForcedCollapsed = false
+            isSidebarManuallyPresentedAtCompactWidth = true
+            return
+        }
         guard !isSidebarForcedCollapsed else { return }
         prefersSidebarVisible = isVisible
+        isSidebarManuallyPresentedAtCompactWidth = false
     }
 
     mutating func setInspectorVisible(_ isVisible: Bool) {
@@ -82,119 +175,79 @@ struct AppShellView: View {
 
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
     @Environment(\.controlActiveState) private var controlActiveState
-    @State private var selection: NavigationDestination? = .home
-    @State private var responsiveLayout = AppShellResponsiveLayoutState()
+    @State private var selection: NavigationDestination? = .allFiles
+    @State private var settingsPage: SettingsPage = .general
+    @State private var responsiveLayout = AppShellResponsiveLayoutState(prefersSidebarVisible: false)
     @State private var windowWidth: CGFloat = 1_200
     @State private var showsGlobalNewCategory = false
     @StateObject private var aiProviderSettingsDraftStore = AIProviderSettingsDraftStore()
+    @StateObject private var collectionBrowseContext = CollectionBrowseContext()
 
     var body: some View {
         let _ = (locale.identifier, appModel.localeRevision)
-        GeometryReader { geometry in
-            appContent
-                .onAppear {
-                    updateResponsiveLayout(for: geometry.size.width)
-                }
-                .onChange(of: geometry.size.width) { _, newWidth in
-                    updateResponsiveLayout(for: newWidth)
-                }
-        }
+        appContent
+            .modifier(FileWorkspaceDefaultToolbarItems(isFileWorkspace: false))
+            .background {
+                WorkspaceWindowSizeObserver(onResize: updateResponsiveLayout)
+                    .frame(width: 0, height: 0)
+            }
+    }
+
+    private var sidebarVisibility: Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { showsNavigationSidebar ? .all : .detailOnly },
+            set: { visibility in
+                guard selection != .settings else { return }
+                let visible = visibility != .detailOnly
+                if !visible && showsInspector && windowWidth < 1_100 { return }
+                if visible && windowWidth < 1_100 { setInspectorVisible(false) }
+                responsiveLayout.setSidebarVisible(visible, for: selection)
+            }
+        )
+    }
+
+    private var showsNavigationSidebar: Bool {
+        responsiveLayout.showsSidebar(for: selection) && !(showsInspector && windowWidth < 1_100)
     }
 
     private var appContent: some View {
-        let navigation = NavigationSplitView(columnVisibility: columnVisibility) {
-            SidebarView(
-                selection: $selection,
-                categories: appModel.categories.map(\.localizedForDisplay)
-            )
-                .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 260)
+        let workspace = NavigationSplitView(columnVisibility: sidebarVisibility) {
+            SidebarView(selection: $selection, categories: appModel.categories.map(\.localizedForDisplay))
+                .navigationSplitViewColumnWidth(min: 180, ideal: 212, max: 260)
+                .modifier(FileWorkspaceDefaultToolbarItems(isFileWorkspace: false, isSettings: selection == .settings))
         } detail: {
-            GeometryReader { detailGeometry in
+            GeometryReader { geometry in
                 VStack(spacing: 0) {
-                    if selection == .allFiles {
-                        BrowseSearchField(
-                            store: appModel.browseSearchStore,
-                            appModel: appModel
-                        )
-                            .padding(.horizontal, XunJianUI.Spacing.page)
-                            .padding(.top, 12)
-                            .padding(.bottom, 10)
-                    }
-
-                    ScanStatusBanner(
-                        store: appModel.scanProgressStore,
-                        pausesInsteadOfCancels: appModel.scanScopeMode == .wholeMac
-                    ) {
-                        if appModel.scanScopeMode == .wholeMac {
-                            appModel.pauseWholeMacScan()
-                        } else {
-                            appModel.cancelScan()
-                        }
-                    }
-
-                    FileExportProgressBanner(
-                        store: appModel.fileExportProgressStore,
-                        onCancel: appModel.cancelFileListExport
-                    )
-
-                    TrashUndoBanner(
-                        store: appModel.index.trashUndoStore,
-                        onUndo: { appModel.undoLastTrash() },
-                        onDismiss: { appModel.dismissTrashUndoBanner() }
-                    )
-
-                    DatabaseUnavailableBanner(
-                        state: appModel.databaseState,
-                        onRetry: { Task { await appModel.retryDatabase() } }
-                    )
-
-                    Divider()
-                        .opacity(0.7)
-
-                    selectedContent(contentWidth: detailGeometry.size.width)
+                    if !isInspectorDestination { statusBanners }
+                    selectedContent(contentWidth: geometry.size.width)
                 }
-                .background(Color(nsColor: .windowBackgroundColor))
+                .background(visualTheme.palette(for: colorScheme).canvas)
             }
+            .navigationSplitViewColumnWidth(min: 240, ideal: 320)
+            .navigationTitle(AppLanguage.localized("寻简", english: "XunJian"))
         }
-        .inspector(isPresented: inspectorPresentation) {
-            FileInspectorView(file: appModel.selectedFile)
-                .inspectorColumnWidth(min: 260, ideal: 300, max: 360)
-                .environment(\.locale, locale)
-                .disabled(!appModel.isDatabaseAvailable || !supportsInspector)
-                .background(Color(nsColor: .controlBackgroundColor))
-        }
-        .toolbar {
-            if supportsInspector {
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        setInspectorVisible(!showsInspector)
-                    } label: {
-                        Label(
-                            AppLanguage.localized("文件详情", english: "File Details"),
-                            systemImage: "sidebar.right"
-                        )
-                        .symbolVariant(showsInspector ? .fill : .none)
-                    }
-                    .accessibilityValue(
-                        AppLanguage.localized(
-                            showsInspector ? "已显示" : "已隐藏",
-                            english: showsInspector ? "Shown" : "Hidden"
-                        )
-                    )
-                    .accessibilityAddTraits(showsInspector ? .isSelected : [])
-                    .help(
-                        AppLanguage.localized(
-                            showsInspector ? "隐藏文件详情" : "显示文件详情",
-                            english: showsInspector ? "Hide File Details" : "Show File Details"
-                        )
-                    )
-                }
-            }
-        }
+        .navigationSplitViewStyle(.balanced)
         .focusedSceneValue(\.xunJianCommandContext, commandContext)
-        return navigation
+        return workspace
+            .toolbar {
+                navigationToolbar
+                ToolbarItem(id: "workspace.settings", placement: .primaryAction) {
+                    Button { selection = .settings } label: {
+                        Label(AppLanguage.localized("设置", english: "Settings"), systemImage: "gearshape")
+                    }
+                    .help(AppLanguage.localized("设置", english: "Settings"))
+                    .accessibilityIdentifier("workspace.settings")
+                    .accessibilityAddTraits(selection == .settings ? .isSelected : [])
+                }
+                inspectorToolbar
+            }
             .xunjianThinScrollers()
+            .onReceive(NotificationCenter.default.publisher(for: .xunJianToggleSidebar)) { _ in
+                sidebarVisibility.wrappedValue = showsNavigationSidebar ? .detailOnly : .all
+            }
             .onReceive(NotificationCenter.default.publisher(for: .xunJianRevealInAllFiles)) { _ in
                 selection = .allFiles
             }
@@ -234,7 +287,7 @@ struct AppShellView: View {
                 selection = .allFiles
                 appModel.handleExternalPaths(paths)
             }
-            .modifier(GlobalPresentations(selection: $selection))
+            .modifier(GlobalPresentations(selection: $selection, settingsPage: $settingsPage))
             .alert(
                 AppLanguage.localized("操作未完成", english: "Action Couldn’t Finish"),
                 isPresented: presentsErrorAlert
@@ -338,6 +391,33 @@ struct AppShellView: View {
         }
     }
 
+
+    static func workspaceMode(for destination: NavigationDestination) -> NavigationDestination {
+        switch destination {
+        case .category: .categories
+        case .settings: .settings
+        default: destination
+        }
+    }
+
+
+    private var statusBanners: some View {
+        VStack(spacing: 0) {
+            ScanStatusBanner(store: appModel.scanProgressStore,
+                             pausesInsteadOfCancels: appModel.scanScopeMode == .wholeMac) {
+                if appModel.scanScopeMode == .wholeMac { appModel.pauseWholeMacScan() }
+                else { appModel.cancelScan() }
+            }
+            FileExportProgressBanner(store: appModel.fileExportProgressStore,
+                                     onCancel: appModel.cancelFileListExport)
+            TrashUndoBanner(store: appModel.index.trashUndoStore,
+                            onUndo: { appModel.undoLastTrash() },
+                            onDismiss: { appModel.dismissTrashUndoBanner() })
+            DatabaseUnavailableBanner(state: appModel.databaseState,
+                                      onRetry: { Task { await appModel.retryDatabase() } })
+        }
+    }
+
     private var commandContext: XunJianCommandContext {
         let destination = selection ?? .home
         let isFilePage = Self.supportsFileCommands(for: destination)
@@ -406,9 +486,9 @@ struct AppShellView: View {
         for destination: NavigationDestination
     ) -> AppShellSearchCommandRoute {
         switch destination {
-        case .home, .allFiles, .category:
+        case .home, .allFiles, .category, .categories:
             return .focusVisibleField
-        case .categories, .settings:
+        case .settings:
             return .revealAllFilesThenFocus
         }
     }
@@ -423,7 +503,9 @@ struct AppShellView: View {
             return .allFiles
         case .category:
             return .category
-        case .categories, .settings:
+        case .categories:
+            return .collections
+        case .settings:
             return nil
         }
     }
@@ -514,17 +596,64 @@ struct AppShellView: View {
         supportsInspector
     }
 
-    private var showsInspector: Bool {
-        supportsInspector && responsiveLayout.showsInspector
+    private var inspectorWidthLimit: CGFloat {
+        max(280, min(1_040, windowWidth - (showsNavigationSidebar ? 260 : 0) - 440))
     }
 
-    private var columnVisibility: Binding<NavigationSplitViewVisibility> {
-        Binding(
-            get: { responsiveLayout.showsSidebar ? .all : .detailOnly },
-            set: { visibility in
-                responsiveLayout.setSidebarVisible(visibility != .detailOnly)
+    private var workspaceInspector: WorkspaceInspectorModifier {
+        WorkspaceInspectorModifier(isPresented: Binding(
+            get: { showsInspector }, set: { setInspectorVisible($0) }
+        ), maximumWidth: inspectorWidthLimit)
+    }
+
+    private var isInspectorDestination: Bool {
+        switch selection ?? .home {
+        case .allFiles, .category: true
+        case .home, .categories, .settings: false
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var navigationToolbar: some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            ToolbarItem(id: "workspace.destinations", placement: .principal) {
+                EditorialNavigationTabs(selection: $selection)
+            }.sharedBackgroundVisibility(.hidden)
+        } else {
+            ToolbarItem(id: "workspace.destinations", placement: .principal) {
+                EditorialNavigationTabs(selection: $selection)
             }
-        )
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var inspectorToolbar: some ToolbarContent {
+        ToolbarItem(id: "workspace.inspector", placement: .primaryAction) {
+            if isInspectorDestination {
+                Button { setInspectorVisible(!showsInspector) } label: {
+                    Label(inspectorToggleTitle, systemImage: "sidebar.right")
+                }
+                .disabled(!canToggleInspector)
+                .help(inspectorToggleTitle + (canToggleInspector ? " (⌥⌘I)" : ""))
+                .accessibilityIdentifier("workspace.inspector.toggle")
+                .accessibilityValue(showsInspector
+                    ? AppLanguage.localized("已展开", english: "Expanded")
+                    : AppLanguage.localized("已收起", english: "Collapsed"))
+            }
+        }
+    }
+
+    private var inspectorToggleTitle: String {
+        if !canToggleInspector {
+            return AppLanguage.localized("窗口加宽至720点后可显示预览", english: "Widen the window to 720 points to show preview")
+        }
+        return showsInspector
+            ? AppLanguage.localized("隐藏文件预览", english: "Hide File Preview")
+            : AppLanguage.localized("显示文件预览", english: "Show File Preview")
+    }
+
+    private var showsInspector: Bool {
+        supportsInspector && responsiveLayout.showsInspector
     }
 
     static func supportsInspector(
@@ -551,16 +680,6 @@ struct AppShellView: View {
         return .categories
     }
 
-    private var inspectorPresentation: Binding<Bool> {
-        Binding(
-            get: { showsInspector },
-            set: { isPresented in
-                guard supportsInspector else { return }
-                setInspectorVisible(isPresented)
-            }
-        )
-    }
-
     private func updateResponsiveLayout(for newWidth: CGFloat) {
         guard newWidth > 0 else { return }
         windowWidth = newWidth
@@ -578,7 +697,9 @@ struct AppShellView: View {
             AllFilesView(
                 windowWidth: windowWidth,
                 contentWidth: contentWidth,
-                isVisible: showsAllFiles
+                isVisible: showsAllFiles,
+                statusContent: AnyView(statusBanners),
+                workspaceInspector: workspaceInspector
             )
                 .environmentObject(appModel.searchProgressStore)
                 .disabled(!showsAllFiles || !appModel.isDatabaseAvailable)
@@ -598,7 +719,7 @@ struct AppShellView: View {
                     .zIndex(2)
             }
         }
-        .navigationTitle(current.title(categories: appModel.categories))
+        .navigationTitle(AppLanguage.localized("寻简", english: "XunJian"))
     }
 
     @ViewBuilder
@@ -625,20 +746,38 @@ struct AppShellView: View {
         case .allFiles:
             EmptyView()
         case .categories:
-            CategoriesView(selectedCategory: nil) { category in
+            CategoriesView(selectedCategory: nil, browseContext: collectionBrowseContext) { category in
                 selection = .category(category.id)
             }
             .disabled(!appModel.isDatabaseAvailable)
         case let .category(categoryID):
             CategoriesView(
                 selectedCategory: appModel.categories.first(where: { $0.id == categoryID }),
+                browseContext: collectionBrowseContext,
                 openCategory: { category in selection = .category(category.id) },
-                showAllCategories: { selection = .categories }
+                showAllCategories: { selection = .categories },
+                statusContent: AnyView(statusBanners)
             )
+            .modifier(workspaceInspector)
             .disabled(!appModel.isDatabaseAvailable)
         case .settings:
-            SettingsView(presentsErrors: true)
+            SettingsView(presentsErrors: true, selectedPage: $settingsPage)
                 .environmentObject(aiProviderSettingsDraftStore)
+        }
+    }
+}
+
+private struct FileWorkspaceDefaultToolbarItems: ViewModifier {
+    let isFileWorkspace: Bool
+    var isSettings = false
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15, *) {
+            content
+                .toolbar(removing: isFileWorkspace ? .title : nil)
+                .toolbar(removing: isSettings ? .sidebarToggle : nil)
+        } else {
+            content
         }
     }
 }
@@ -669,7 +808,7 @@ private struct FileExportProgressBanner: View {
             .padding(.vertical, 8)
             .background(.bar)
             .overlay(alignment: .bottom) {
-                Divider()
+                WorkspaceRowSeparator()
             }
         }
     }
@@ -823,7 +962,7 @@ private struct TrashUndoBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.bar)
                 .overlay(alignment: .bottom) {
-                    Divider()
+                    WorkspaceRowSeparator()
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -863,7 +1002,7 @@ private struct DatabaseUnavailableBanner: View {
                 .padding(.vertical, 8)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.bar)
-                .overlay(alignment: .bottom) { Divider() }
+                .overlay(alignment: .bottom) { WorkspaceRowSeparator() }
                 .transition(.move(edge: .top).combined(with: .opacity))
             } else if state.showsFailure {
                 HStack(spacing: 8) {
@@ -885,7 +1024,7 @@ private struct DatabaseUnavailableBanner: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(.bar)
                 .overlay(alignment: .bottom) {
-                    Divider()
+                    WorkspaceRowSeparator()
                 }
                 .transition(.move(edge: .top).combined(with: .opacity))
             }
@@ -916,7 +1055,7 @@ private struct ScanStatusView: View {
         .padding(.vertical, 8)
         .background(.bar)
         .overlay(alignment: .bottom) {
-            Divider()
+            WorkspaceRowSeparator()
         }
     }
 

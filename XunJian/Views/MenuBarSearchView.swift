@@ -13,6 +13,9 @@ enum MenuBarSearchPreference {
 struct MenuBarSearchView: View {
     @EnvironmentObject private var appModel: AppModel
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
+    @AppStorage(AppVisualTheme.storageKey) private var visualTheme = AppVisualTheme.reading.rawValue
+    @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var query = ""
     @State private var highlightedIndex = 0
@@ -20,29 +23,54 @@ struct MenuBarSearchView: View {
     @State private var remainingCount = 0
     @State private var filterTask: Task<Void, Never>?
     @State private var isFieldFocused = false
+    @ScaledMetric(relativeTo: .body) private var searchControlHeight: CGFloat = 34
 
     private static let maximumResults = 50
 
+    private var effectiveColorScheme: ColorScheme {
+        AppAppearance(rawValue: appearance)?.colorScheme ?? colorScheme
+    }
+
+    private var theme: AppVisualTheme { AppVisualTheme.resolve(visualTheme) }
+    private var palette: ThemePalette { theme.palette(for: effectiveColorScheme) }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "square.grid.2x2.fill").foregroundStyle(palette.accent)
+                Text(AppLanguage.localized("寻简 · 快速查找", english: "XunJian · Quick Find"))
+                    .font(.system(size: 18, weight: .semibold))
+                Spacer()
+            }
+            .padding(.horizontal, 16).padding(.top, 16)
             searchRow
             Divider()
 
             if displayedResults.isEmpty {
-                Text(verbatim: emptyMessage)
-                    .font(.callout)
+                VStack(alignment: .leading, spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.title3)
+                        .foregroundStyle(palette.accent)
+                        .accessibilityHidden(true)
+                    Text(verbatim: emptyMessage)
+                        .font(.body)
+                    Text(AppLanguage.localized(
+                        "输入文件名或路径；更多检索选项在主窗口。",
+                        english: "Search by name or path. Find more search options in the main window."
+                    ))
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 16)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(16)
             } else {
-                if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    Text(AppLanguage.localized("最近文件", english: "Recent Files"))
+                    Text(verbatim: query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                         ? AppLanguage.localized("最近文件", english: "Recent Files")
+                         : AppLanguage.localized("\(displayedResults.count) 项结果", english: "\(displayedResults.count) results"))
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
+                        .padding(.horizontal, 16)
                         .padding(.top, 8)
-                }
                 resultList
                     .frame(maxHeight: .infinity)
                 if remainingCount > 0 {
@@ -50,13 +78,13 @@ struct MenuBarSearchView: View {
                         revealRemainingInAllFiles()
                     } label: {
                         Text(verbatim: AppLanguage.localized(
-                            "在所有文件中查看其余 \(remainingCount) 条",
+                            "在查找中查看其余 \(remainingCount) 条",
                             english: "See remaining \(remainingCount) in All Files"
                         ))
                         .font(.caption)
                     }
                     .buttonStyle(.plain)
-                    .padding(.horizontal, 14)
+                    .padding(.horizontal, 16)
                     .padding(.bottom, 8)
                 }
             }
@@ -73,6 +101,10 @@ struct MenuBarSearchView: View {
             maxHeight: 620
         )
         .xunjianThinScrollers()
+        .background(palette.canvas)
+        .xunjianVisualTheme(theme)
+        .environment(\.colorScheme, effectiveColorScheme)
+        .preferredColorScheme(AppAppearance(rawValue: appearance)?.colorScheme)
         .environment(
             \.locale,
             AppLanguage(rawValue: language)?.locale ?? .autoupdatingCurrent
@@ -108,7 +140,11 @@ struct MenuBarSearchView: View {
                 english: "Searches indexed local files"
             ),
             onSubmit: { _ in revealHighlighted() },
-            onMoveSelection: moveHighlight,
+            onMoveSelection: { offset in
+                guard !displayedResults.isEmpty else { return false }
+                moveHighlight(by: offset)
+                return true
+            },
             onCancel: {
                 if query.isEmpty {
                     NotificationCenter.default.post(name: .xunJianDismissMenuBarSearch, object: nil)
@@ -117,8 +153,9 @@ struct MenuBarSearchView: View {
                 }
             }
         )
-        .frame(height: XunJianUI.Size.compactControlHeight)
-        .padding(XunJianUI.Spacing.row)
+        .frame(height: searchControlHeight)
+        .padding(.horizontal, 16)
+        .padding(.vertical, theme == .precision ? 12 : 16)
     }
 
     private var emptyMessage: String {
@@ -153,6 +190,7 @@ struct MenuBarSearchView: View {
                     }
                     Spacer(minLength: 0)
                 }
+                .padding(.vertical, theme.rowVerticalPadding)
                 .contentShape(Rectangle())
                 .help(AppLanguage.joinedForAccessibility([file.name, resultSubtitle(for: file)]))
                 .tag(file.id)
@@ -184,6 +222,8 @@ struct MenuBarSearchView: View {
             }
         }
         .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .background(palette.canvas)
     }
 
     private var footer: some View {
@@ -203,16 +243,17 @@ struct MenuBarSearchView: View {
                 openAppButton
             }
         }
-        .controlSize(.small)
+        .controlSize(.regular)
         .font(.callout)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 16)
+        .padding(.vertical, theme == .precision ? 8 : 12)
     }
 
     private var revealButton: some View {
         Button(AppLanguage.localized("在寻简中显示", english: "Show in XunJian")) {
             revealHighlighted()
         }
+        .buttonStyle(.borderedProminent)
         .disabled(!displayedResults.indices.contains(highlightedIndex))
     }
 
@@ -224,9 +265,13 @@ struct MenuBarSearchView: View {
     }
 
     private var openAppButton: some View {
-        Button(AppLanguage.localized("打开寻简", english: "Open XunJian")) {
+        Button {
             activateMainWindow()
+        } label: {
+            Label(AppLanguage.localized("打开寻简", english: "Open XunJian"), systemImage: "macwindow")
+                .labelStyle(.iconOnly)
         }
+        .help(AppLanguage.localized("打开寻简主窗口", english: "Open XunJian Main Window"))
     }
 
     private func resultSubtitle(for file: IndexedFile) -> String {

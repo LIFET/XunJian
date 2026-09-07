@@ -6,6 +6,8 @@ import SwiftUI
 /// Presentation-only roles shared by SwiftUI views. Business timing and model
 /// constants stay with their owning feature.
 enum XunJianUI {
+    static let controlHeight: CGFloat = 34
+    static let iconSize: CGFloat = 16
     enum Spacing {
         static let page: CGFloat = 24
         static let pageCompact: CGFloat = 16
@@ -27,8 +29,8 @@ enum XunJianUI {
     }
 
     enum Typography {
-        static let pageTitle = Font.title2.weight(.semibold)
-        static let sheetTitle = Font.title2.weight(.semibold)
+        static let pageTitle = Font.system(size: 24, weight: .semibold)
+        static let sheetTitle = Font.system(size: 21, weight: .semibold)
         static let sectionTitle = Font.headline
         static let itemTitle = Font.body.weight(.medium)
         static let supporting = Font.caption
@@ -36,12 +38,13 @@ enum XunJianUI {
     }
 
     enum Size {
-        static let compactControlHeight: CGFloat = 30
+        static let compactControlHeight: CGFloat = 34
         static let regularControlHeight: CGFloat = 40
         static let rowIcon: CGFloat = 20
         static let compactIcon: CGFloat = 16
-        static let minimumHitTarget: CGFloat = 28
+        static let minimumHitTarget: CGFloat = 34
         static let readableContentWidth: CGFloat = 760
+        static let overviewContentWidth: CGFloat = 1120
     }
 
     /// Platform semantic surfaces remain legible in light, dark, inactive and
@@ -119,6 +122,90 @@ enum XunJianUI {
     }
 }
 
+/// A horizontal rule must own its axis. Divider inside an overlay can inherit
+/// a horizontal layout proposal and become a full-height vertical line.
+struct WorkspaceRowSeparator: View {
+    var body: some View {
+        Rectangle()
+            .fill(Color(nsColor: .separatorColor).opacity(0.45))
+            .frame(height: 0.5)
+            .accessibilityHidden(true)
+    }
+}
+
+/// A shared target, not just a larger glyph. Keyboard activation remains owned
+/// by Button; hover and pressed feedback never change the layout.
+struct XunJianIconButtonStyle: ButtonStyle {
+    var isSelected = false
+    var expandsForLabel = false
+
+    func makeBody(configuration: Configuration) -> some View {
+        Target(label: configuration.label, isPressed: configuration.isPressed,
+               isSelected: isSelected, expandsForLabel: expandsForLabel)
+    }
+
+    private struct Target<Label: View>: View {
+        @Environment(\.isEnabled) private var isEnabled
+        @Environment(\.colorSchemeContrast) private var contrast
+        @State private var isHovered = false
+        let label: Label
+        let isPressed: Bool
+        let isSelected: Bool
+        let expandsForLabel: Bool
+
+        var body: some View {
+            label
+                .font(.system(size: XunJianUI.iconSize, weight: .medium))
+                .frame(minWidth: XunJianUI.controlHeight)
+                .frame(width: expandsForLabel ? nil : XunJianUI.controlHeight, height: XunJianUI.controlHeight)
+                .foregroundStyle(isEnabled ? (isSelected ? Color.accentColor : Color.primary) : Color.secondary)
+                .background {
+                    RoundedRectangle(cornerRadius: 7)
+                        .fill(isSelected ? XunJianUI.Fill.selected :
+                                (isEnabled && (isHovered || isPressed) ? XunJianUI.Fill.hover : Color.clear))
+                }
+                .overlay {
+                    if isSelected && contrast == .increased {
+                        RoundedRectangle(cornerRadius: 7).strokeBorder(Color.primary, lineWidth: 1)
+                    }
+                }
+                .opacity(isEnabled ? (isPressed ? 0.7 : 1) : 0.45)
+                .contentShape(Rectangle())
+                .onHover { isHovered = $0 }
+                .xunjianAnimation(XunJianUI.feedbackAnimation, value: isHovered)
+                .xunjianAnimation(XunJianUI.feedbackAnimation, value: isPressed)
+        }
+    }
+}
+
+/// Pair with MenuStyle.button. BorderlessButtonMenuStyle ignores the label's
+/// target frame and exposes a glyph-sized native hit area on macOS.
+struct XunJianToolbarButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        XunJianIconButtonStyle(expandsForLabel: true).makeBody(configuration: configuration)
+    }
+}
+
+struct XunJianToolbarLabel: View {
+    let title: String
+    let systemImage: String
+    var showsTitle = true
+    var showsChevron = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Image(systemName: systemImage).font(.system(size: XunJianUI.iconSize))
+            if showsTitle { Text(verbatim: title).font(.system(size: 13, weight: .medium)).lineLimit(1) }
+            if showsChevron { Image(systemName: "chevron.down").font(.system(size: 9, weight: .semibold)) }
+        }
+        .padding(.horizontal, 7)
+        .frame(minWidth: XunJianUI.controlHeight, minHeight: XunJianUI.controlHeight)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+    }
+}
+
 // MARK: - Environment-aware modifiers
 
 private struct XunJianAnimationModifier<Value: Equatable>: ViewModifier {
@@ -190,6 +277,26 @@ extension View {
 }
 
 // MARK: - App-local scrollbar appearance
+
+/// Leading, ungrouped title for file workspaces. The title never acquires
+/// the shared glass background used by adjacent native toolbar buttons.
+struct FileWorkspaceToolbarHeading: ToolbarContent {
+    let title: String
+    let id: String
+
+    var body: some ToolbarContent {
+        if #available(macOS 26, *) {
+            ToolbarItem(id: id + ".title", placement: .navigation) {
+                Text(title).font(.headline).lineLimit(1)
+            }
+            .sharedBackgroundVisibility(.hidden)
+        } else if #available(macOS 15, *) {
+            ToolbarItem(id: id + ".title", placement: .navigation) {
+                Text(title).font(.headline).lineLimit(1)
+            }
+        }
+    }
+}
 
 @MainActor
 enum XunJianScrollAppearance {
@@ -408,13 +515,14 @@ struct SoftCardButtonStyle: ButtonStyle {
     }
 
     private struct PressFeedback<Label: View>: View {
+        @Environment(\.accessibilityReduceMotion) private var reduceMotion
         let isPressed: Bool
         @ViewBuilder var label: () -> Label
 
         var body: some View {
             label()
                 .opacity(isPressed ? 0.9 : 1)
-                .scaleEffect(isPressed ? 0.985 : 1)
+                .scaleEffect(isPressed && !reduceMotion ? 0.985 : 1)
                 .xunjianAnimation(XunJianUI.feedbackAnimation, value: isPressed)
         }
     }

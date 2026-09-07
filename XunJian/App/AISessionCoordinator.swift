@@ -23,6 +23,7 @@ final class AISessionCoordinator: ObservableObject {
     private let aiConfigurationStore: AIConfigurationStore
     private let oauthBridgeService: any OAuthBridgeServicing
     private let oauth: OAuthCoordinator
+    private let transport: any AIHTTPTransport
 
     private var verificationFingerprints: [AIProviderKind: String] = [:]
     private var verificationGenerations: [AIProviderKind: UUID] = [:]
@@ -36,12 +37,14 @@ final class AISessionCoordinator: ObservableObject {
         aiConfigurationStore: AIConfigurationStore,
         oauthBridgeService: any OAuthBridgeServicing,
         oauth: OAuthCoordinator,
-        isRunningTests: Bool
+        isRunningTests: Bool,
+        transport: any AIHTTPTransport = URLSessionAITransport()
     ) {
         self.credentialStore = credentialStore
         self.aiConfigurationStore = aiConfigurationStore
         self.oauthBridgeService = oauthBridgeService
         self.oauth = oauth
+        self.transport = transport
         self.pendingActiveProviderKind = aiConfigurationStore.activeKind
         self.pendingActiveAuthenticationMode = aiConfigurationStore.activeAuthenticationMode
         if isRunningTests {
@@ -122,7 +125,7 @@ final class AISessionCoordinator: ObservableObject {
             verificationGenerations[kind] = UUID()
             verificationFingerprints.removeValue(forKey: kind)
             aiConfigurationStore.setAPIKeyVerificationFingerprint(nil, for: kind)
-            reloadSettings()
+            reloadSettings(for: kind)
             return true
         } catch {
             onError?(Self.message(for: error))
@@ -142,7 +145,7 @@ final class AISessionCoordinator: ObservableObject {
                     && pendingActiveAuthenticationMode == .apiKey) {
                 clearActiveProvider()
             }
-            reloadSettings()
+            reloadSettings(for: kind)
         } catch {
             onError?(Self.message(for: error))
         }
@@ -232,6 +235,8 @@ final class AISessionCoordinator: ObservableObject {
                 connectionStates[kind] = testedSettings.hasAPIKey ? .saved : .notConfigured
             } catch {
                 guard verificationGenerations[kind] == generation else { return }
+                verificationFingerprints.removeValue(forKey: kind)
+                aiConfigurationStore.setAPIKeyVerificationFingerprint(nil, for: kind)
                 connectionStates[kind] = .failed(Self.message(for: error))
             }
         }
@@ -300,7 +305,8 @@ final class AISessionCoordinator: ObservableObject {
         case .apiKey:
             return try AIProviderFactory.make(
                 settings: settings(for: kind),
-                credentialStore: credentialStore
+                credentialStore: credentialStore,
+                transport: transport
             )
         case .oauth:
             guard oauth.states[kind] == .connected else {
@@ -359,11 +365,17 @@ final class AISessionCoordinator: ObservableObject {
 
     // MARK: - Reload
 
-    private func reloadSettings() {
+    private func reloadSettings(for changedKind: AIProviderKind? = nil) {
         var settings: [AIProviderSettings] = []
         var states: [AIProviderKind: AIConnectionState] = [:]
         var credentialErrors: [AIProviderKind: String] = [:]
         for kind in AIProviderKind.allCases {
+            if let changedKind, kind != changedKind {
+                settings.append(self.settings(for: kind))
+                states[kind] = connectionState(for: kind)
+                credentialErrors[kind] = self.credentialErrors[kind]
+                continue
+            }
             let secret: String?
             do {
                 secret = try credentialStore.read(account: kind.rawValue)

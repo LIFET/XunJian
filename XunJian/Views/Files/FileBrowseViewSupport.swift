@@ -1,6 +1,82 @@
 import AppKit
 import SwiftUI
 
+enum FileSearchEmptyReason: Equatable {
+    case invalidFilters, filters, keyword, library
+
+    static func resolve(query: String, hasFilters: Bool, invalidSize: Bool) -> Self {
+        if invalidSize { return .invalidFilters }
+        if hasFilters { return .filters }
+        return query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .library : .keyword
+    }
+
+    var offersFilterReset: Bool { self == .filters || self == .invalidFilters }
+}
+
+enum FileListPresentation: String, CaseIterable {
+    case results
+    case table
+    static var defaultValue: Self { .results }
+}
+
+enum FileResultPresentation {
+    struct Summary {
+        let text: String
+        let isContent: Bool
+        let matchesQuery: Bool
+    }
+    static func summary(textContent: String?, query: String, metadata: String) -> Summary {
+        // Metadata snapshots often omit content. Never fetch a file or claim
+        // a body match merely because the search service returned its ID.
+        let content = String((textContent ?? "").prefix(8_192))
+            .split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+        guard !content.isEmpty else {
+            return Summary(text: metadata, isContent: false, matchesQuery: false)
+        }
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hit = needle.isEmpty ? nil : content.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive])
+        let start = hit.map { content.index($0.lowerBound, offsetBy: -50, limitedBy: content.startIndex) ?? content.startIndex }
+            ?? content.startIndex
+        let end = content.index(start, offsetBy: 180, limitedBy: content.endIndex) ?? content.endIndex
+        let excerpt = (start > content.startIndex ? "…" : "") + content[start..<end] + (end < content.endIndex ? "…" : "")
+        return Summary(text: String(excerpt), isContent: true, matchesQuery: hit != nil)
+    }
+    static func rowHeight(for theme: AppVisualTheme) -> CGFloat { 112 }
+    static func matchLabel(summary: Summary, filename: String, query: String) -> String? {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return nil }
+        if summary.isContent && summary.matchesQuery {
+            return AppLanguage.localized("正文匹配", english: "Content Match")
+        }
+        if filename.range(of: needle, options: [.caseInsensitive, .diacriticInsensitive]) != nil {
+            return AppLanguage.localized("文件名匹配", english: "Name Match")
+        }
+        return nil
+    }
+    static func parentBreadcrumb(for url: URL) -> String {
+        let parent = url.deletingLastPathComponent()
+        let components = parent.pathComponents.filter { $0 != "/" }
+        return components.isEmpty ? "/" : components.suffix(3).joined(separator: " › ")
+    }
+}
+
+enum FileListLoadingPresentation {
+    static func showsPreparing(displayedIsEmpty: Bool, indexIsOpening: Bool,
+                               snapshotIsCurrent: Bool, hasSourceFiles: Bool) -> Bool {
+        displayedIsEmpty && (indexIsOpening || (!snapshotIsCurrent && hasSourceFiles))
+    }
+}
+
+enum FileResultNavigationPolicy {
+    static func canNavigate(hasResults: Bool, isSearching: Bool,
+                            snapshotSignature: Int?, expectedSignature: Int,
+                            snapshotUserSignature: Int?, expectedUserSignature: Int) -> Bool {
+        hasResults && !isSearching
+            && snapshotSignature == expectedSignature
+            && snapshotUserSignature == expectedUserSignature
+    }
+}
+
 struct DisplayedFilesSnapshot {
     let files: [IndexedFile]
     let orderedIDs: [String]
@@ -194,6 +270,7 @@ struct EquatableSnapshotList<Content: View>: View, Equatable {
     let selectionEpoch: UInt64
     let metadataEpoch: UInt64
     let layoutToken: Int
+    let presentationToken: String
     let content: () -> Content
 
     init(
@@ -202,6 +279,7 @@ struct EquatableSnapshotList<Content: View>: View, Equatable {
         selectionEpoch: UInt64,
         metadataEpoch: UInt64,
         layoutToken: Int,
+        presentationToken: String = "",
         @ViewBuilder content: @escaping () -> Content
     ) {
         self.signature = signature
@@ -209,6 +287,7 @@ struct EquatableSnapshotList<Content: View>: View, Equatable {
         self.selectionEpoch = selectionEpoch
         self.metadataEpoch = metadataEpoch
         self.layoutToken = layoutToken
+        self.presentationToken = presentationToken
         self.content = content
     }
 
@@ -218,6 +297,7 @@ struct EquatableSnapshotList<Content: View>: View, Equatable {
             && lhs.selectionEpoch == rhs.selectionEpoch
             && lhs.metadataEpoch == rhs.metadataEpoch
             && lhs.layoutToken == rhs.layoutToken
+            && lhs.presentationToken == rhs.presentationToken
     }
 
     var body: some View {

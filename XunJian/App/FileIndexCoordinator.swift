@@ -149,6 +149,8 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
     @Published private(set) var savedSearches: [SavedSearch] = []
+    private var savedSearchRevision: UInt64 = 0
+    private var savedSearchSessionEpoch: UInt64 = 0
     let browseSearchStore: BrowseSearchStore
     var searchResults: [IndexedFile]? { browseSearchStore.results }
     var searchResultTotalCount: Int? { browseSearchStore.totalCount }
@@ -222,9 +224,12 @@ final class FileIndexCoordinator: ObservableObject {
     private var reloadGeneration: UInt64 = 0
     private var isBatchingIndexReload = false
     private let isRunningTests: Bool
+    private let databaseURLOverride: URL?
+    private let savedSearchSnapshotLoader: (@MainActor (FileIndexDatabase) async throws -> [SavedSearch])?
+    private let fileSystemEventDefaults: UserDefaults
     private let scanner = FileScanner()
     private let bookmarkManager = BookmarkManager()
-    private let fileOperations = FileOperationService()
+    private let fileOperations: FileOperationService
     private let fileSystemMonitor = FileSystemChangeMonitor()
     private let wholeMacTopologyMonitor = DirectoryTopologyMonitor()
 
@@ -260,6 +265,7 @@ final class FileIndexCoordinator: ObservableObject {
     private var fileChangeTasks: [UUID: Task<Void, Never>] = [:]
     private var wholeMacTopologyTask: Task<Void, Never>?
     private var pendingFileChanges: [UUID: Set<FileSystemChangeEvent>] = [:]
+    private var processingFileChangeSourceIDs = Set<UUID>()
     private var pendingFullRescanSourceIDs = Set<UUID>()
     private var sourceEnabledTasks: [UUID: Task<Void, Never>] = [:]
     private var sourceEnabledRevisions: [UUID: UUID] = [:]
@@ -272,9 +278,17 @@ final class FileIndexCoordinator: ObservableObject {
 
     init(
         isRunningTests: Bool,
-        browseSearchStore: BrowseSearchStore = BrowseSearchStore()
+        browseSearchStore: BrowseSearchStore = BrowseSearchStore(),
+        fileSystemEventDefaults: UserDefaults = .standard,
+        databaseURL: URL? = nil,
+        fileOperations: FileOperationService = FileOperationService(),
+        savedSearchSnapshotLoader: (@MainActor (FileIndexDatabase) async throws -> [SavedSearch])? = nil
     ) {
         self.isRunningTests = isRunningTests
+        self.fileOperations = fileOperations
+        self.databaseURLOverride = databaseURL
+        self.savedSearchSnapshotLoader = savedSearchSnapshotLoader
+        self.fileSystemEventDefaults = fileSystemEventDefaults
         self.browseSearchStore = browseSearchStore
         if !isRunningTests {
             includesHiddenFiles = UserDefaults.standard.bool(
@@ -286,12 +300,12 @@ final class FileIndexCoordinator: ObservableObject {
             wholeMacSourceID = UserDefaults.standard
                 .string(forKey: FileIndexPreferences.wholeMacSourceIDKey)
                 .flatMap(UUID.init(uuidString:))
-            let storedCursors = UserDefaults.standard.dictionary(
+            let storedCursors = fileSystemEventDefaults.dictionary(
                 forKey: FileIndexPreferences.fileSystemEventCursorsKey
             ) as? [String: String] ?? [:]
             fileSystemEventCursorByMonitorKey = storedCursors.compactMapValues(UInt64.init)
             fileSystemBaselineSourceIDs = Set(
-                UserDefaults.standard.stringArray(
+                fileSystemEventDefaults.stringArray(
                     forKey: FileIndexPreferences.fileSystemBaselineSourceIDsKey
                 )?.compactMap(UUID.init(uuidString:)) ?? []
             )
@@ -332,10 +346,11 @@ final class FileIndexCoordinator: ObservableObject {
                       requestedBootstrap == self.databaseBootstrapGeneration else { return }
                 self.database = openedDatabase
                 self.databaseGeneration &+= 1
-                self.databaseState = .available
+                // Opening SQLite is not a ready library. Keep the loading UI
+                // until reloadIndex publishes sources and files together.
                 guard await self.ensureDisabledContentIsPurged() else { return }
                 await self.reloadIndex()
-                self.scheduleInitialCatchUpScansIfNeeded()
+                await self.scheduleInitialCatchUpScansIfNeeded()
             } catch is CancellationError {
                 return
             } catch {
@@ -346,6 +361,7 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     func cancelAllTasks() {
+        savedSearchSessionEpoch &+= 1
         databaseBootstrapGeneration &+= 1
         databaseBootstrapTask?.cancel()
         databaseBootstrapTask = nil
@@ -415,9 +431,10 @@ final class FileIndexCoordinator: ObservableObject {
                   requestedBootstrap == databaseBootstrapGeneration else { return }
             database = openedDatabase
             databaseGeneration &+= 1
-            databaseState = .available
             guard await ensureDisabledContentIsPurged() else { return }
             await reloadIndex()
+            hasScheduledInitialCatchUp = false
+            await scheduleInitialCatchUpScansIfNeeded()
             startNextPendingFullRescanIfNeeded()
         } catch is CancellationError {
             return
@@ -458,6 +475,7 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     private func databaseURL() throws -> URL {
+        if let databaseURLOverride { return databaseURLOverride }
         if isRunningTests {
             return FileManager.default.temporaryDirectory
                 .appendingPathComponent(
@@ -489,7 +507,8 @@ final class FileIndexCoordinator: ObservableObject {
                 let requestedIncludesHiddenFiles = includesHiddenFiles
                 let storedCategories = try await database.fetchCategories()
                 let storedLinks = try await database.fetchFileCategoryLinks()
-                let storedSearches = try await database.fetchSavedSearches()
+                let capturedSavedSearchRevision = savedSearchRevision
+                let storedSearches = try await fetchSavedSearchSnapshot(from: database)
                 let derived = await Task.detached(priority: .userInitiated) {
                     let activeSourceIDs = Self.activeSourceIDs(
                         mode: requestedScanScopeMode,
@@ -551,7 +570,9 @@ final class FileIndexCoordinator: ObservableObject {
                 files = derived.files
                 categories = storedCategories
                 fileCategoryLinks = derived.links
-                savedSearches = storedSearches
+                if savedSearchRevision == capturedSavedSearchRevision {
+                    savedSearches = storedSearches
+                }
                 isBatchingIndexReload = false
                 apply(derived.fileDerived)
                 apply(derived.categoryDerived)
@@ -559,8 +580,8 @@ final class FileIndexCoordinator: ObservableObject {
                 activateSecurityScopes()
                 configureFileSystemMonitoring()
                 onFilesChanged?()
-                refreshActiveSearchIfNeeded()
                 databaseState = .available
+                refreshActiveSearchIfNeeded()
                 return
             } catch {
                 guard databaseGeneration == capturedDatabaseGeneration else { return }
@@ -1082,6 +1103,25 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Saved searches (N07)
 
+    private func fetchSavedSearchSnapshot(from database: FileIndexDatabase) async throws -> [SavedSearch] {
+        if let savedSearchSnapshotLoader { return try await savedSearchSnapshotLoader(database) }
+        return try await database.fetchSavedSearches()
+    }
+
+    private func refreshSavedSearchesAfterMutation(from database: FileIndexDatabase, generation: UInt64, epoch: UInt64) async throws {
+        guard databaseGeneration == generation, savedSearchSessionEpoch == epoch else { return }
+        // A successful write invalidates only saved-search snapshots, not the
+        // independently loaded file/category index. Older fetches must not
+        // replace a newer save or resurrect an already deleted search.
+        savedSearchRevision &+= 1
+        let revision = savedSearchRevision
+        let snapshot = try await fetchSavedSearchSnapshot(from: database)
+        guard !Task.isCancelled, databaseGeneration == generation,
+              savedSearchSessionEpoch == epoch, savedSearchRevision == revision else { return }
+        savedSearches = snapshot
+    }
+
+    @discardableResult
     func saveSearch(
         name: String,
         query: String,
@@ -1090,10 +1130,10 @@ final class FileIndexCoordinator: ObservableObject {
         fileKind: FileKind? = nil,
         id: UUID = UUID(),
         createdAt: Date? = nil
-    ) {
-        guard let database else { return reportDatabaseUnavailable() }
+    ) -> Task<Void, Never>? {
+        guard let database else { reportDatabaseUnavailable(); return nil }
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedName.isEmpty else { return }
+        guard !trimmedName.isEmpty else { return nil }
         let search = SavedSearch(
             id: id,
             name: trimmedName,
@@ -1103,23 +1143,38 @@ final class FileIndexCoordinator: ObservableObject {
             createdAt: createdAt ?? Date(),
             fileKind: fileKind
         )
-        Task { [weak self] in
+        let capturedDatabaseGeneration = databaseGeneration
+        let capturedSavedSearchEpoch = savedSearchSessionEpoch
+        return Task { [weak self] in
+            guard !Task.isCancelled, self?.savedSearchSessionEpoch == capturedSavedSearchEpoch else { return }
             do {
                 try await database.upsertSavedSearch(search)
-                self?.savedSearches = try await database.fetchSavedSearches()
+                guard let self else { return }
+                try await self.refreshSavedSearchesAfterMutation(from: database, generation: capturedDatabaseGeneration,
+                                                                 epoch: capturedSavedSearchEpoch)
             } catch {
+                guard !Task.isCancelled, self?.databaseGeneration == capturedDatabaseGeneration,
+                      self?.savedSearchSessionEpoch == capturedSavedSearchEpoch else { return }
                 self?.onError?(Self.message(for: error))
             }
         }
     }
 
-    func deleteSearch(id: UUID) {
-        guard let database else { return reportDatabaseUnavailable() }
-        Task { [weak self] in
+    @discardableResult
+    func deleteSearch(id: UUID) -> Task<Void, Never>? {
+        guard let database else { reportDatabaseUnavailable(); return nil }
+        let capturedDatabaseGeneration = databaseGeneration
+        let capturedSavedSearchEpoch = savedSearchSessionEpoch
+        return Task { [weak self] in
+            guard !Task.isCancelled, self?.savedSearchSessionEpoch == capturedSavedSearchEpoch else { return }
             do {
                 try await database.deleteSavedSearch(id: id)
-                self?.savedSearches = try await database.fetchSavedSearches()
+                guard let self else { return }
+                try await self.refreshSavedSearchesAfterMutation(from: database, generation: capturedDatabaseGeneration,
+                                                                 epoch: capturedSavedSearchEpoch)
             } catch {
+                guard !Task.isCancelled, self?.databaseGeneration == capturedDatabaseGeneration,
+                      self?.savedSearchSessionEpoch == capturedSavedSearchEpoch else { return }
                 self?.onError?(Self.message(for: error))
             }
         }
@@ -1716,6 +1771,7 @@ final class FileIndexCoordinator: ObservableObject {
     }
 
     private func startScan(_ source: FileSource) {
+        guard prepareFullScan(for: [source.id]) else { return }
         cancelScan(startsPendingFullRescan: false)
         fileSystemBaselineSourceIDs.remove(source.id)
         persistFileSystemBaselineSourceIDs()
@@ -1749,6 +1805,7 @@ final class FileIndexCoordinator: ObservableObject {
         if scanScopeMode == .wholeMac {
             resetWholeMacScanCheckpoint()
         }
+        guard prepareFullScan(for: sourceIDsToScan) else { return }
         cancelScan(startsPendingFullRescan: false)
         let generation = UUID()
         scanGeneration = generation
@@ -3108,6 +3165,9 @@ final class FileIndexCoordinator: ObservableObject {
             }
             let indexesFileContents = FileIndexPreferences.indexesFileContents
             let existingSourceFiles = try await database.fetchFiles(forSourceID: source.id)
+            let pendingTextRefreshIDs = try await database.fetchPendingTextRefreshFileIDs(
+                forSourceID: source.id, includesHiddenFiles: includesHiddenFiles
+            )
             let forcesFullTextExtraction = pendingFullTextExtractionSourceIDs.contains(source.id)
             let includesHiddenFiles = self.includesHiddenFiles
             // Path-only comparison off the main actor: the root is
@@ -3150,7 +3210,8 @@ final class FileIndexCoordinator: ObservableObject {
             let filesRequiringTextRefresh = Self.filesRequiringTextRefresh(
                 scannedFiles: scannedFiles,
                 existingFiles: existingSourceFiles,
-                forcesFullRefresh: forcesFullTextExtraction
+                forcesFullRefresh: forcesFullTextExtraction,
+                pendingFileIDs: pendingTextRefreshIDs
             )
             try await database.replaceFiles(
                 for: source.id,
@@ -3289,12 +3350,15 @@ final class FileIndexCoordinator: ObservableObject {
         let indexesFileContents = FileIndexPreferences.indexesFileContents
         let forcesFullTextExtraction = pendingFullTextExtractionSourceIDs.contains(source.id)
         let existingSourceFiles = try await database.fetchFiles(forSourceID: source.id)
+        let pendingTextRefreshIDs = try await database.fetchPendingTextRefreshFileIDs(
+            forSourceID: source.id, includesHiddenFiles: includesHiddenFiles
+        )
         let contentScanID = UUID()
         var hasStagedTextContents = false
         var cumulativeDiscoveredCount = 0
         var topLevelScanSucceeded = true
 
-        if forcesFullTextExtraction {
+        if forcesFullTextExtraction || (indexesFileContents && !pendingTextRefreshIDs.isEmpty) {
             // A staged full-content commit must cover every scope in one pass;
             // a paused metadata checkpoint cannot safely stand in for text
             // extracted during an earlier process lifetime.
@@ -3306,7 +3370,8 @@ final class FileIndexCoordinator: ObservableObject {
             let filesRequiringRefresh = Self.filesRequiringTextRefresh(
                 scannedFiles: files,
                 existingFiles: existingSourceFiles,
-                forcesFullRefresh: forcesFullTextExtraction
+                forcesFullRefresh: forcesFullTextExtraction,
+                pendingFileIDs: pendingTextRefreshIDs
             )
             guard Self.shouldExtractWholeMacText(
                 indexesFileContents: indexesFileContents,
@@ -3632,11 +3697,13 @@ final class FileIndexCoordinator: ObservableObject {
     nonisolated static func filesRequiringTextRefresh(
         scannedFiles: [IndexedFile],
         existingFiles: [IndexedFile],
-        forcesFullRefresh: Bool
+        forcesFullRefresh: Bool,
+        pendingFileIDs: Set<String> = []
     ) -> [IndexedFile] {
         guard !forcesFullRefresh else { return scannedFiles }
         let existingByID = Dictionary(uniqueKeysWithValues: existingFiles.map { ($0.id, $0) })
         return scannedFiles.filter { scanned in
+            if pendingFileIDs.contains(scanned.id) { return true }
             guard let existing = existingByID[scanned.id] else { return true }
             return scanned.size != existing.size
                 || scanned.modifiedAt != existing.modifiedAt
@@ -3734,15 +3801,7 @@ final class FileIndexCoordinator: ObservableObject {
         }
         schedulePendingFileChanges(for: completedSourceIDs)
         let successfulSourceIDs = completedSourceIDs.subtracting(failedSourceIDs)
-        if !successfulSourceIDs.isEmpty {
-            fileSystemBaselineSourceIDs.formUnion(successfulSourceIDs)
-            persistFileSystemBaselineSourceIDs()
-        }
-        for sourceID in successfulSourceIDs {
-            guard pendingFileChanges[sourceID]?.isEmpty != false else { continue }
-            blockedFileSystemEventCursorSourceIDs.remove(sourceID)
-            commitObservedFileSystemEventCursorIfSafe(for: sourceID)
-        }
+        recordSuccessfulFileSystemBaseline(for: successfulSourceIDs)
         startNextPendingFullRescanIfNeeded()
         notifyScanFinished(succeeded: scanSucceeded)
     }
@@ -3790,9 +3849,20 @@ final class FileIndexCoordinator: ObservableObject {
             && scanningSourceIDs.contains(sourceID)
     }
 
+    func prepareFullScan(for sourceIDs: Set<UUID>) -> Bool {
+        guard !processingFileChangeSourceIDs.isDisjoint(with: sourceIDs) else { return true }
+        pendingFullRescanSourceIDs.formUnion(sourceIDs)
+        fileSystemBaselineSourceIDs.subtract(sourceIDs)
+        blockedFileSystemEventCursorSourceIDs.formUnion(sourceIDs)
+        persistFileSystemBaselineSourceIDs()
+        return false
+    }
+
     private func startNextPendingFullRescanIfNeeded() {
         guard !isScanning else { return }
-        while let sourceID = pendingFullRescanSourceIDs.first {
+        while let sourceID = pendingFullRescanSourceIDs.first(where: {
+            !processingFileChangeSourceIDs.contains($0)
+        }) {
             pendingFullRescanSourceIDs.remove(sourceID)
             guard let source = activeSources.first(where: {
                 $0.id == sourceID && $0.enabled && $0.accessState == .available
@@ -3804,7 +3874,7 @@ final class FileIndexCoordinator: ObservableObject {
 
     // MARK: - Filesystem monitoring
 
-    private func scheduleInitialCatchUpScansIfNeeded() {
+    private func scheduleInitialCatchUpScansIfNeeded() async {
         guard !hasScheduledInitialCatchUp else { return }
         hasScheduledInitialCatchUp = true
         let activeSourceIDs = Set(activeSources.lazy
@@ -3815,7 +3885,28 @@ final class FileIndexCoordinator: ObservableObject {
             baselineSourceIDs: fileSystemBaselineSourceIDs
         )
         pendingFullRescanSourceIDs.formUnion(missingBaselineSourceIDs)
+        if FileIndexPreferences.indexesFileContents, let database {
+            do {
+                let dirtySourceIDs = try await database.fetchSourcesRequiringTextRefresh(
+                    includesHiddenFiles: includesHiddenFiles
+                )
+                pendingFullRescanSourceIDs.formUnion(dirtySourceIDs.intersection(activeSourceIDs))
+            } catch {
+                onError?(Self.message(for: error))
+            }
+        }
         startNextPendingFullRescanIfNeeded()
+    }
+
+    func recordSuccessfulFileSystemBaseline(for sourceIDs: Set<UUID>) {
+        guard !sourceIDs.isEmpty else { return }
+        fileSystemBaselineSourceIDs.formUnion(sourceIDs)
+        persistFileSystemBaselineSourceIDs()
+        for sourceID in sourceIDs {
+            // 只有全量补扫能解除先前失败；剩余增量仍由 pending/in-flight 门禁保护。
+            blockedFileSystemEventCursorSourceIDs.remove(sourceID)
+            commitObservedFileSystemEventCursorIfSafe(for: sourceID)
+        }
     }
 
     nonisolated static func sourceIDsRequiringInitialCatchUp(
@@ -3853,7 +3944,8 @@ final class FileIndexCoordinator: ObservableObject {
     ) {
         guard Self.shouldCommitObservedFileSystemEventCursor(
                 isBlocked: blockedFileSystemEventCursorSourceIDs.contains(sourceID),
-                isScanning: scanningSourceIDs.contains(sourceID),
+                isScanning: scanningSourceIDs.contains(sourceID)
+                    || processingFileChangeSourceIDs.contains(sourceID),
                 hasPendingChanges: pendingFileChanges[sourceID]?.isEmpty == false
               ) else { return }
         let prefix = fileSystemMonitorKeyPrefix(for: sourceID)
@@ -3888,14 +3980,14 @@ final class FileIndexCoordinator: ObservableObject {
                 ($0.key, String($0.value))
             }
         )
-        UserDefaults.standard.set(
+        fileSystemEventDefaults.set(
             encoded,
             forKey: FileIndexPreferences.fileSystemEventCursorsKey
         )
     }
 
     private func persistFileSystemBaselineSourceIDs() {
-        UserDefaults.standard.set(
+        fileSystemEventDefaults.set(
             fileSystemBaselineSourceIDs.map(\.uuidString).sorted(),
             forKey: FileIndexPreferences.fileSystemBaselineSourceIDsKey
         )
@@ -3974,23 +4066,9 @@ final class FileIndexCoordinator: ObservableObject {
             sources: monitoredSources,
             handler: { [weak self] sourceID, rootPath, events, lastEventID in
                 Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    let monitorKey = Self.fileSystemMonitorKey(
-                        sourceID: sourceID,
-                        rootPath: rootPath
+                    self?.receiveFileSystemChanges(
+                        events, for: sourceID, rootPath: rootPath, lastEventID: lastEventID
                     )
-                    self.lastObservedFileSystemEventCursorByMonitorKey[monitorKey] = max(
-                        self.lastObservedFileSystemEventCursorByMonitorKey[monitorKey] ?? 0,
-                        lastEventID
-                    )
-                    if events.isEmpty {
-                        self.commitObservedFileSystemEventCursorIfSafe(
-                            for: sourceID,
-                            monitorKeys: [monitorKey]
-                        )
-                    } else {
-                        self.enqueueFileSystemChanges(events, for: sourceID)
-                    }
                 }
             },
             onFailure: { [weak self] sourceID, rootPath in
@@ -4130,6 +4208,23 @@ final class FileIndexCoordinator: ObservableObject {
         startNextPendingFullRescanIfNeeded()
     }
 
+    func receiveFileSystemChanges(
+        _ events: [FileSystemChangeEvent],
+        for sourceID: UUID,
+        rootPath: String,
+        lastEventID: UInt64
+    ) {
+        let monitorKey = Self.fileSystemMonitorKey(sourceID: sourceID, rootPath: rootPath)
+        lastObservedFileSystemEventCursorByMonitorKey[monitorKey] = max(
+            lastObservedFileSystemEventCursorByMonitorKey[monitorKey] ?? 0, lastEventID
+        )
+        if events.isEmpty {
+            commitObservedFileSystemEventCursorIfSafe(for: sourceID, monitorKeys: [monitorKey])
+        } else {
+            enqueueFileSystemChanges(events, for: sourceID)
+        }
+    }
+
     private func enqueueFileSystemChanges(
         _ events: [FileSystemChangeEvent],
         for sourceID: UUID
@@ -4147,24 +4242,35 @@ final class FileIndexCoordinator: ObservableObject {
         }
     }
 
-    private func consumeFileSystemChanges(for sourceID: UUID) async {
+    func consumeFileSystemChanges(
+        for sourceID: UUID,
+        applying applyChanges: (@MainActor ([FileSystemChangeEvent]) async -> Bool)? = nil
+    ) async {
         fileChangeTasks[sourceID] = nil
+        guard !processingFileChangeSourceIDs.contains(sourceID) else { return }
         guard !Self.shouldDeferFileSystemChanges(
             scanningSourceIDs: scanningSourceIDs,
             sourceID: sourceID
         ) else { return }
-        guard let events = pendingFileChanges.removeValue(forKey: sourceID),
-              let source = sources.first(where: { $0.id == sourceID }) else {
+        guard let events = pendingFileChanges.removeValue(forKey: sourceID) else { return }
+        processingFileChangeSourceIDs.insert(sourceID)
+        let applied: Bool
+        if let applyChanges {
+            applied = await applyChanges(Array(events))
+        } else if let source = sources.first(where: { $0.id == sourceID }) {
+            applied = await applyFileSystemChanges(Array(events), to: source)
+        } else {
+            processingFileChangeSourceIDs.remove(sourceID)
             return
         }
-        let applied = await applyFileSystemChanges(Array(events), to: source)
+        processingFileChangeSourceIDs.remove(sourceID)
         if applied {
-            if !scanningSourceIDs.contains(sourceID),
-               pendingFileChanges[sourceID]?.isEmpty != false {
-                blockedFileSystemEventCursorSourceIDs.remove(sourceID)
-            }
             commitObservedFileSystemEventCursorIfSafe(for: sourceID)
+        } else {
+            blockedFileSystemEventCursorSourceIDs.insert(sourceID)
         }
+        schedulePendingFileChanges(for: [sourceID])
+        startNextPendingFullRescanIfNeeded()
     }
 
     private func invalidateFinderTags(forPaths paths: [String]) async {
@@ -4330,6 +4436,11 @@ final class FileIndexCoordinator: ObservableObject {
         guard let database, !files.isEmpty else { return }
         let scanID = UUID()
         do {
+            // 不可提取的新类型也必须清除旧正文，并完成对应 dirty 状态。
+            try await database.stageTextContents(
+                files.map { FileTextContentUpdate(fileID: $0.id, textContent: nil) },
+                scanID: scanID
+            )
             try await scanner.extractTextContents(
                 in: files,
                 consume: { updates in

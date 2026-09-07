@@ -6,6 +6,253 @@ import XCTest
 
 final class RemainingReviewTests: XCTestCase {
     @MainActor
+    func testDuplicateCleanupPartialFailureAndUndoUseIsolatedFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("XunJian-Cleanup-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let folder = root.appendingPathComponent("files", isDirectory: true)
+        let trash = root.appendingPathComponent("test-trash", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: trash, withIntermediateDirectories: false)
+        for name in ["a.txt", "b.txt", "c.txt"] {
+            let url = folder.appendingPathComponent(name)
+            try Data("identical test contents".utf8).write(to: url)
+            try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSince1970: 100)], ofItemAtPath: url.path)
+        }
+        let databaseURL = root.appendingPathComponent("index.sqlite3")
+        let database = try FileIndexDatabase(databaseURL: databaseURL)
+        let bookmark = try folder.bookmarkData(options: .withSecurityScope, includingResourceValuesForKeys: nil, relativeTo: nil)
+        let source = try await database.upsertSource(displayName: "Fixture", path: folder.path, bookmark: bookmark)
+        let files = try await FileScanner().scan(sourceID: source.id, rootURL: folder)
+        try await database.replaceFiles(for: source.id, with: files)
+        let manager = IsolatedDuplicateTrashManager(root: folder, trash: trash)
+        let suite = "XunJian.Cleanup.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let index = FileIndexCoordinator(isRunningTests: true, fileSystemEventDefaults: defaults, databaseURL: databaseURL, fileOperations: FileOperationService(fileManager: manager))
+        let undo = UndoCoordinator()
+        index.undoCoordinator = undo
+        defer { index.cancelAllTasks() }
+        index.start()
+        for _ in 0..<500 where !index.isDatabaseAvailable { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertTrue(index.isDatabaseAvailable)
+        let result = try await DuplicateFileFinder.find(in: files)
+        let group = try XCTUnwrap(result.groups.first)
+        let keeper = try XCTUnwrap(DuplicateCleanup.fileToKeep(in: group.files))
+        index.refreshAllSources()
+        XCTAssertTrue(index.isScanning)
+        do {
+            try await index.confirmDuplicateTrash(group)
+            XCTFail("Injected second-file failure must be reported")
+        } catch { }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: trash.path).count, 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: keeper.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 2)
+        try await undo.undoLast()
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: folder.path).count, 3)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: trash.path).isEmpty)
+        for file in files { XCTAssertEqual(try Data(contentsOf: file.url), Data("identical test contents".utf8)) }
+        for _ in 0..<500 where index.isScanning { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertFalse(index.isScanning)
+        let restoredFiles = try await database.fetchFiles()
+        XCTAssertEqual(Set(restoredFiles.map(\.path)), Set(files.map(\.path)))
+    }
+
+    func testDuplicateSearchOwnershipRejectsCancelledRunAfterRestart() {
+        let oldRun = UUID()
+        let invalidated = UUID()
+        XCTAssertFalse(StorageInsightsView.acceptsDuplicateSearchUpdate(oldRun, current: invalidated))
+        let newRun = UUID()
+        var isFindingNewRun = true
+        var newProgress = 1
+        // Delivery order: A cancelled, B starts, A's progress and completion arrive.
+        if StorageInsightsView.acceptsDuplicateSearchUpdate(oldRun, current: newRun) {
+            newProgress = 100
+            isFindingNewRun = false
+        }
+        XCTAssertEqual(newProgress, 1)
+        XCTAssertTrue(isFindingNewRun)
+        XCTAssertTrue(StorageInsightsView.acceptsDuplicateSearchUpdate(newRun, current: newRun))
+    }
+
+    func testBackgroundExportCancellationReachesWriter() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xunjian-background-cancel-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destination = root.appendingPathComponent("files.csv")
+        try Data("original".utf8).write(to: destination)
+        let files = (0..<500).map { makeFile(name: "\($0).pdf", path: "/synthetic/\($0).pdf") }
+        let reachedFirstBatch = expectation(description: "writer reached first batch")
+        let releaseWriter = DispatchSemaphore(value: 0)
+        let task = Task.detached {
+            try await FileListExport.writeInBackground(files: files, format: .csv, categoryNames: [:], to: destination) { count in
+                if count == 250 {
+                    reachedFirstBatch.fulfill()
+                    _ = releaseWriter.wait(timeout: .now() + 5)
+                }
+            }
+        }
+        await fulfillment(of: [reachedFirstBatch], timeout: 3)
+        task.cancel()
+        releaseWriter.signal()
+        do {
+            try await task.value
+            XCTFail("Cancelling the export owner must cancel the detached writer")
+        } catch is CancellationError { }
+        XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "original")
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["files.csv"])
+    }
+
+    func testCancelledFinalExportProgressPreservesExistingDestination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xunjian-cancel-export-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = [makeFile(name: "new.pdf", path: "/synthetic/new.pdf")]
+        for format in FileListExport.Format.allCases {
+            let destination = root.appendingPathComponent("files.\(format.fileExtension)")
+            try Data("original".utf8).write(to: destination)
+            let task = Task.detached {
+                try FileListExport.write(files: files, format: format, categoryNames: [:], to: destination) { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }
+            }
+            do {
+                try await task.value
+                XCTFail("Cancelled export must not install its temporary file")
+            } catch is CancellationError { }
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "original")
+        }
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".xunjian-export-") })
+    }
+
+    func testCancelledFinalPagedExportProgressPreservesExistingDestination() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xunjian-cancel-page-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = [makeFile(name: "new.pdf", path: "/synthetic/new.pdf")]
+        for format in FileListExport.Format.allCases {
+            let destination = root.appendingPathComponent("files.\(format.fileExtension)")
+            try Data("original".utf8).write(to: destination)
+            let task = Task.detached {
+                try await FileListExport.writePaged(orderedIDs: files.map(\.id), format: format, to: destination, progress: { _ in
+                    withUnsafeCurrentTask { $0?.cancel() }
+                }) { _ in FileExportPage(files: files, categoryNames: [:]) }
+            }
+            do {
+                try await task.value
+                XCTFail("Cancelled paged export must not install its temporary file")
+            } catch is CancellationError { }
+            XCTAssertEqual(try String(contentsOf: destination, encoding: .utf8), "original")
+        }
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".xunjian-export-") })
+    }
+
+    func testCancelledDuplicateFingerprintDoesNotReadFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xunjian-cancel-hash-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent("synthetic.txt")
+        try Data("synthetic".utf8).write(to: url)
+        let task = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return try await DuplicateFileFinder.fingerprint(fileAt: url)
+        }
+        do {
+            _ = try await task.value
+            XCTFail("Fingerprint must inherit cancellation before reading")
+        } catch is CancellationError { }
+    }
+
+    func testDuplicateFindCancellationFromProgressStopsDetection() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("xunjian-cancel-find-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let files = try (0..<12).map { index in
+            let url = root.appendingPathComponent("\(index).txt")
+            try Data("same".utf8).write(to: url)
+            return makeFile(name: url.lastPathComponent, path: url.path, size: 4)
+        }
+        let task = Task.detached {
+            try await DuplicateFileFinder.find(in: files) { _, _ in
+                withUnsafeCurrentTask { $0?.cancel() }
+            }
+        }
+        do {
+            _ = try await task.value
+            XCTFail("Detection must stop rather than return a complete result after cancellation")
+        } catch is CancellationError { }
+    }
+
+    func testPreviewMatchingStopsWhenTaskIsCancelled() async {
+        let chunks = TextPreviewView.chunk(String(repeating: "中文", count: 1_000))
+        let task = Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TextPreviewView.matchesWithRanges(for: "中", in: chunks)
+        }
+        let result = await task.value
+        XCTAssertTrue(result.matches.isEmpty)
+        XCTAssertTrue(result.rangesByChunk.isEmpty)
+    }
+
+    func testPreviewHighFrequencyMatchingScalesToTextLimit() {
+        let start = ContinuousClock.now
+        let baseline = TextPreviewView.matchesWithRanges(for: "中", in: TextPreviewView.chunk(String(repeating: "中", count: 16_000)))
+        let elapsed = start.duration(to: .now)
+        XCTAssertEqual(baseline.matches.count, 16_000)
+        XCTAssertLessThan(elapsed, .seconds(2), "High-frequency matching must avoid quadratic full-text walks")
+        guard elapsed < .seconds(2) else { return }
+        let largeStart = ContinuousClock.now
+        let large = TextPreviewView.matchesWithRanges(for: "中", in: TextPreviewView.chunk(String(repeating: "中", count: 200_000)))
+        XCTAssertEqual(large.matches.count, 200_000)
+        XCTAssertEqual(large.rangesByChunk.values.reduce(0) { $0 + $1.count }, 200_000)
+        XCTAssertLessThan(largeStart.duration(to: .now), .seconds(8))
+    }
+
+    func testPreviewUnicodeCrossChunkRangesAndEmptyQuery() {
+        let text = "🙂Cafe\u{301}中文CAFÉ👨‍👩‍👧‍👦"
+        let chunks = TextPreviewView.chunk(text, maximumChunkLength: 3)
+        let result = TextPreviewView.matchesWithRanges(for: "cafe", in: chunks)
+        XCTAssertEqual(result.matches.count, 2)
+        for match in result.matches {
+            let reconstructed = match.segments.map { segment in
+                String(chunks.first { $0.id == segment.chunkID }!.text[segment.range])
+            }.joined()
+            XCTAssertEqual(reconstructed.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: nil), "cafe")
+        }
+        XCTAssertTrue(TextPreviewView.matchesWithRanges(for: "", in: chunks).matches.isEmpty)
+        XCTAssertTrue(TextPreviewView.matchesWithRanges(for: "absent", in: chunks).matches.isEmpty)
+    }
+
+    @MainActor
+    func testDatabaseDoesNotAdvertiseReadyBeforeInitialSnapshot() async {
+        let coordinator = FileIndexCoordinator(isRunningTests: true)
+        defer { coordinator.cancelAllTasks() }
+        var publishedSnapshot = false
+        coordinator.onFilesChanged = { publishedSnapshot = true }
+        let ready = expectation(description: "ready after initial snapshot")
+        let observation = coordinator.$databaseState
+            .filter { $0 == .available }.prefix(1)
+            .sink { _ in
+                XCTAssertTrue(publishedSnapshot, "数据库打开不代表文件已载入；不能提前显示空库和授权入口")
+                ready.fulfill()
+            }
+        coordinator.start()
+        await fulfillment(of: [ready], timeout: 5)
+        withExtendedLifetime(observation) {}
+        publishedSnapshot = false
+        let retryReady = expectation(description: "retry ready after snapshot")
+        let retryObservation = coordinator.$databaseState.dropFirst()
+            .filter { $0 == .available }.prefix(1)
+            .sink { _ in
+                XCTAssertTrue(publishedSnapshot, "重试也必须等待文件快照")
+                retryReady.fulfill()
+            }
+        await coordinator.retryDatabase()
+        await fulfillment(of: [retryReady], timeout: 5)
+        withExtendedLifetime(retryObservation) {}
+    }
+
+    @MainActor
     func testDatabaseStartsInOpeningStateAndOnlyFailureShowsRetryUI() async throws {
         let coordinator = FileIndexCoordinator(isRunningTests: true)
 
@@ -1037,6 +1284,23 @@ final class RemainingReviewTests: XCTestCase {
             modifiedAt: modifiedAt,
             indexedAt: Date()
         )
+    }
+}
+
+private final class IsolatedDuplicateTrashManager: FileManager, @unchecked Sendable {
+    let root: URL
+    let trash: URL
+    private var calls = 0
+    init(root: URL, trash: URL) { self.root = root; self.trash = trash; super.init() }
+    override func trashItem(at url: URL, resultingItemURL result: AutoreleasingUnsafeMutablePointer<NSURL?>?) throws {
+        guard url.deletingLastPathComponent().standardizedFileURL == root.standardizedFileURL else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
+        calls += 1
+        if calls == 2 { throw CocoaError(.fileWriteNoPermission) }
+        let destination = trash.appendingPathComponent(url.lastPathComponent)
+        try moveItem(at: url, to: destination)
+        result?.pointee = destination as NSURL
     }
 }
 

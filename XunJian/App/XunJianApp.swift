@@ -735,6 +735,7 @@ struct XunJianApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage(AppAppearance.storageKey) private var appearance = AppAppearance.system.rawValue
     @AppStorage(AppLanguage.storageKey) private var language = AppLanguage.system.rawValue
+    @AppStorage(AppVisualTheme.storageKey) private var visualTheme = AppVisualTheme.reading.rawValue
     // Menu bar quick search is an `NSStatusItem` owned by the app delegate
     // rather than a `MenuBarExtra` scene, which hangs the XCTest runner.
     //
@@ -753,6 +754,7 @@ struct XunJianApp: App {
                 .environmentObject(appModel.ai)
                 .environmentObject(appModel.index.categoryIndexStore)
                 .environmentObject(updateCoordinator)
+                .xunjianVisualTheme(AppVisualTheme.resolve(visualTheme))
                 .preferredColorScheme(
                     AppAppearance(rawValue: appearance)?.colorScheme
                 )
@@ -773,10 +775,17 @@ struct XunJianApp: App {
                     }
                 }
         }
-        .defaultSize(width: 1_200, height: 760)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unifiedCompact)
+        .defaultSize(width: 1_440, height: 900)
         .windowResizability(.contentMinSize)
         .commands {
-            SidebarCommands()
+            CommandGroup(before: .toolbar) {
+                Button(AppLanguage.localized("显示/隐藏边栏", english: "Toggle Sidebar")) {
+                    NotificationCenter.default.post(name: .xunJianToggleSidebar, object: nil)
+                }
+                .keyboardShortcut("s", modifiers: [.control, .command])
+            }
             // `XunJianCommands` supplies its own `.newItem` group; replacing it
             // here as well would drop those items.
             XunJianCommands(appModel: appModel, undo: appModel.undo)

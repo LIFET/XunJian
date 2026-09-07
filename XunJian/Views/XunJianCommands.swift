@@ -116,6 +116,7 @@ enum XunJianSearchFieldScope: String, Sendable {
     case home
     case allFiles
     case category
+    case collections
 }
 
 /// The app's menu bar.
@@ -147,7 +148,7 @@ struct XunJianCommands: Commands {
     @CommandsBuilder
     private var fileCommands: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button(AppLanguage.localized("新建分类…", english: "New Category…")) {
+            Button(AppLanguage.localized("新建资料集…", english: "New Collection…")) {
                 commandContext?.createCategory()
             }
             .keyboardShortcut("n", modifiers: .command)
@@ -306,7 +307,7 @@ struct XunJianCommands: Commands {
             .keyboardShortcut("p", modifiers: [.command, .shift])
             .disabled(!availability.canPreviewText)
 
-            Button(AppLanguage.localized("存储洞察…", english: "Storage Insights…")) {
+            Button(AppLanguage.localized("存储概览…", english: "Storage Overview…")) {
                 commandContext?.showStorageInsights()
             }
             .disabled(commandContext == nil)

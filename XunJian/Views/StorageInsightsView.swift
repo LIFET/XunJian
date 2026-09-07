@@ -121,6 +121,8 @@ struct StorageInsightsView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.locale) private var locale
+    @Environment(\.appVisualTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
 
     @State private var snapshot = StorageInsightsSnapshot.empty
     @State private var hasComputed = false
@@ -133,8 +135,16 @@ struct StorageInsightsView: View {
     @State private var hasSearchedDuplicates = false
     @State private var duplicateUnreadCount = 0
     @State private var duplicateSearchTask: Task<Void, Never>?
+    @State private var duplicateSearchGeneration = UUID()
     @State private var cleaningDuplicateGroupID: String?
     @State private var duplicateCleanupError: String?
+    @State private var duplicateResultsRevision: UInt64?
+
+    // Initial results also support isolated previews without reading file contents.
+    init(initialDuplicateGroups: [DuplicateGroup] = []) {
+        _duplicateGroups = State(initialValue: initialDuplicateGroups)
+        _hasSearchedDuplicates = State(initialValue: !initialDuplicateGroups.isEmpty)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -146,14 +156,14 @@ struct StorageInsightsView: View {
                     .controlSize(.regular)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel(AppLanguage.localized(
-                        "正在计算存储洞察",
+                        "正在计算存储概览",
                         english: "Calculating storage insights"
                     ))
-            } else if snapshot.fileCount == 0 {
+            } else if snapshot.fileCount == 0 && !hasSearchedDuplicates && !isFindingDuplicates && cleaningDuplicateGroupID == nil {
                 emptyState
             } else {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
+                    LazyVStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
                         summary
                         kindSection
                         if !snapshot.sources.isEmpty {
@@ -165,24 +175,20 @@ struct StorageInsightsView: View {
                         }
                         duplicateSection
                     }
+                    .frame(maxWidth: XunJianUI.Size.readableContentWidth, alignment: .leading)
                     .padding(XunJianUI.Spacing.page)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
         .frame(minWidth: 360, idealWidth: 620, minHeight: 420, idealHeight: 640)
+        .background(theme.palette(for: colorScheme).canvas)
         .interactiveDismissDisabled(cleaningDuplicateGroupID != nil)
         // Keyed on the index revision so figures stay correct if a scan
         // finishes while the panel is open.
         .task(id: appModel.filesRevision) {
-            duplicateSearchTask?.cancel()
-            duplicateSearchTask = nil
-            duplicateGroups = []
-            hasSearchedDuplicates = false
-            duplicateUnreadCount = 0
-            isFindingDuplicates = false
-            cleaningDuplicateGroupID = nil
-            duplicateCleanupError = nil
-            hasComputed = false
+            // Statistics refresh independently from on-demand file operations.
+            // Keep the previous snapshot visible while the next one is prepared.
             let files = appModel.files
             let sources = appModel.sources
             let computed = await Task.detached(priority: .userInitiated) {
@@ -193,6 +199,7 @@ struct StorageInsightsView: View {
             hasComputed = true
         }
         .onDisappear {
+            duplicateSearchGeneration = UUID()
             duplicateSearchTask?.cancel()
             duplicateSearchTask = nil
             isFindingDuplicates = false
@@ -202,7 +209,7 @@ struct StorageInsightsView: View {
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
             PageHeader(
-                title: AppLanguage.localized("存储洞察", english: "Storage Insights"),
+                title: AppLanguage.localized("存储概览", english: "Storage Overview"),
                 subtitle: AppLanguage.localized(
                     "统计只来自已索引的文件，不会扫描磁盘。",
                     english: "Based on indexed files only. Nothing is scanned from disk."
@@ -228,40 +235,44 @@ struct StorageInsightsView: View {
     }
 
     private var summary: some View {
+        Self.summaryMetrics(fileCount: snapshot.fileCount, totalSize: snapshot.totalSize, sourceCount: snapshot.sources.count)
+            .padding(20)
+            .background(theme.palette(for: colorScheme).selection, in: RoundedRectangle(cornerRadius: 14))
+    }
+
+    static func summaryMetrics(fileCount: Int, totalSize: Int64, sourceCount: Int) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) { summaryItems }
-            VStack(spacing: 8) { summaryItems }
+            HStack(spacing: 12) { summaryItems(fileCount: fileCount, totalSize: totalSize, sourceCount: sourceCount) }
+            VStack(spacing: 8) { summaryItems(fileCount: fileCount, totalSize: totalSize, sourceCount: sourceCount) }
         }
     }
 
     @ViewBuilder
-    private var summaryItems: some View {
+    private static func summaryItems(fileCount: Int, totalSize: Int64, sourceCount: Int) -> some View {
         summaryTile(
-            value: AppLanguage.fileCount(snapshot.fileCount),
+            value: fileCount.formatted(),
             label: AppLanguage.localized("已索引文件", english: "Indexed Files")
         )
         summaryTile(
-            value: Self.sizeText(snapshot.totalSize),
+            value: Self.sizeText(totalSize),
             label: AppLanguage.localized("总体积", english: "Total Size")
         )
         summaryTile(
-            value: "\(snapshot.sources.count)",
+            value: "\(sourceCount)",
             label: AppLanguage.localized("授权位置", english: "Locations")
         )
     }
 
-    private func summaryTile(value: String, label: String) -> some View {
-        GroupBox {
-            LabeledContent {
-                Text(verbatim: value)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            } label: {
+    private static func summaryTile(value: String, label: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
                 Text(verbatim: label)
-                    .foregroundStyle(.secondary)
-            }
+                    .font(.caption).foregroundStyle(.secondary)
+                Text(verbatim: value)
+                    .font(.system(size: 23, weight: .semibold)).monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
         }
+        .padding(.vertical, 12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
     }
@@ -365,7 +376,7 @@ struct StorageInsightsView: View {
     /// Content-hash duplicate detection (N13). Runs on demand because it
     /// reads file contents. Unreadable files are counted instead of aborting.
     private var duplicateSection: some View {
-        VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
+        LazyVStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             HStack {
                 SectionHeader(title: AppLanguage.localized("重复文件", english: "Duplicate Files"))
                 Spacer()
@@ -374,10 +385,11 @@ struct StorageInsightsView: View {
                 ) {
                     findDuplicates()
                 }
-                .disabled(isFindingDuplicates)
+                .disabled(isFindingDuplicates || cleaningDuplicateGroupID != nil)
 
                 if isFindingDuplicates {
                     Button(AppLanguage.localized("取消", english: "Cancel")) {
+                        duplicateSearchGeneration = UUID()
                         duplicateSearchTask?.cancel()
                         duplicateSearchTask = nil
                         isFindingDuplicates = false
@@ -385,6 +397,13 @@ struct StorageInsightsView: View {
                 }
             }
 
+            if let revision = duplicateResultsRevision, revision != appModel.filesRevision {
+                Text(AppLanguage.localized("文件已变化。以下是上次结果，可重新查找；清理前仍会核对文件内容。", english: "Files have changed. These are the previous results; search again to update them. Contents are checked again before cleanup."))
+                    .font(.callout).foregroundStyle(.secondary)
+            }
+            if let duplicateCleanupError {
+                ErrorMessageRow(message: duplicateCleanupError)
+            }
             if isFindingDuplicates {
                 ProgressView(
                     AppLanguage.localized(
@@ -409,9 +428,6 @@ struct StorageInsightsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             } else if !duplicateGroups.isEmpty {
-                if let duplicateCleanupError {
-                    ErrorMessageRow(message: duplicateCleanupError)
-                }
                 if duplicateUnreadCount > 0 {
                     Text(verbatim: AppLanguage.localized(
                         "有 \(duplicateUnreadCount) 个文件无法读取，已跳过。",
@@ -421,15 +437,8 @@ struct StorageInsightsView: View {
                     .foregroundStyle(.secondary)
                 }
                 ForEach(duplicateGroups) { group in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(
-                            AppLanguage.localized(
-                                "\(group.files.count) 个文件 · \(Self.sizeText(group.size))",
-                                english: "\(group.files.count) files · \(Self.sizeText(group.size))"
-                            )
-                        )
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
+                    DisclosureGroup {
+                      LazyVStack(alignment: .leading, spacing: 8) {
                         ForEach(group.files) { file in
                             HStack(spacing: 8) {
                                 FileThumbnail(file: file, size: 16)
@@ -444,6 +453,7 @@ struct StorageInsightsView: View {
                                 }
                                 .buttonStyle(.plain)
                                 .help(AppLanguage.localized("在列表中显示", english: "Show in List"))
+                                .disabled(cleaningDuplicateGroupID != nil)
                                 .accessibilityLabel(Text(verbatim: AppLanguage.localized(
                                     "在列表中显示",
                                     english: "Show in List"
@@ -467,6 +477,7 @@ struct StorageInsightsView: View {
                                 reveal(group.files)
                             }
                             .buttonStyle(.link)
+                            .disabled(cleaningDuplicateGroupID != nil)
                             Button(AppLanguage.localized(
                                 "保留最新，其余进废纸篓",
                                 english: "Keep Newest, Trash Others"
@@ -481,7 +492,17 @@ struct StorageInsightsView: View {
                                     .controlSize(.small)
                             }
                         }
-                        .font(.caption)
+                        .font(.callout)
+                      }
+                      .padding(.top, 8)
+                    } label: {
+                      HStack {
+                        Text(verbatim: AppLanguage.localized("\(group.files.count) 个文件 · \(Self.sizeText(group.size))", english: "\(group.files.count) files · \(Self.sizeText(group.size))"))
+                            .font(.callout.weight(.medium))
+                        if cleaningDuplicateGroupID == group.id {
+                            ProgressView().controlSize(.small)
+                        }
+                      }
                     }
                     .padding(10)
                     .background(
@@ -497,11 +518,12 @@ struct StorageInsightsView: View {
     }
 
     private func findDuplicates() {
-        guard !isFindingDuplicates else { return }
+        guard !isFindingDuplicates, cleaningDuplicateGroupID == nil else { return }
+        let generation = UUID()
+        duplicateSearchGeneration = generation
         duplicateSearchTask?.cancel()
         isFindingDuplicates = true
-        hasSearchedDuplicates = false
-        duplicateUnreadCount = 0
+        duplicateCleanupError = nil
         duplicateProgress = (0, 0)
         let files = appModel.files
         let revision = appModel.filesRevision
@@ -509,25 +531,34 @@ struct StorageInsightsView: View {
             do {
                 let result = try await DuplicateFileFinder.find(in: files) { hashed, total in
                     Task { @MainActor in
+                        guard Self.acceptsDuplicateSearchUpdate(generation, current: duplicateSearchGeneration) else { return }
                         duplicateProgress = (hashed, total)
                     }
                 }
                 try Task.checkCancellation()
-                guard revision == appModel.filesRevision else { return }
+                guard Self.acceptsDuplicateSearchUpdate(generation, current: duplicateSearchGeneration) else { return }
                 duplicateGroups = result.groups
+                duplicateResultsRevision = revision
                 duplicateUnreadCount = result.unreadCount
                 hasSearchedDuplicates = true
             } catch is CancellationError {
                 // Stopping an on-demand scan is not an error.
             } catch {
+                guard Self.acceptsDuplicateSearchUpdate(generation, current: duplicateSearchGeneration) else { return }
                 guard !Task.isCancelled else { return }
                 appModel.reportError(AppLanguage.localized(
                     "重复文件检测失败：\(error.localizedDescription)",
                     english: "Duplicate detection failed: \(error.localizedDescription)"
                 ))
             }
+            guard Self.acceptsDuplicateSearchUpdate(generation, current: duplicateSearchGeneration) else { return }
             isFindingDuplicates = false
+            duplicateSearchTask = nil
         }
+    }
+
+    nonisolated static func acceptsDuplicateSearchUpdate(_ generation: UUID, current: UUID) -> Bool {
+        generation == current
     }
 
     private func reveal(_ file: IndexedFile) {
@@ -535,11 +566,13 @@ struct StorageInsightsView: View {
     }
 
     private func reveal(_ files: [IndexedFile]) {
+        guard cleaningDuplicateGroupID == nil else { return }
         dismiss()
         appModel.revealInAllFiles(files)
     }
 
     private func trashDuplicates(keepingNewestIn group: DuplicateGroup) {
+        guard cleaningDuplicateGroupID == nil else { return }
         let files = DuplicateCleanup.filesToTrash(keepingNewestIn: group.files)
         guard !files.isEmpty else { return }
         let alert = NSAlert()

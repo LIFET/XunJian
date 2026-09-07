@@ -1,42 +1,158 @@
 import SwiftUI
+import UniformTypeIdentifiers
+
+enum HomeEmptyStateKind: Equatable {
+    case unauthorized, scanning, paused, accessUnavailable, readyEmpty
+
+    static func scopedSources<Source>(wholeMac: Bool, wholeMacSource: Source?, selectedFolderSources: [Source]) -> [Source] {
+        wholeMac ? (wholeMacSource.map { [$0] } ?? []) : selectedFolderSources
+    }
+
+    static func resolve(hasSources: Bool, isScanning: Bool, isPaused: Bool,
+                        hasEnabledSource: Bool, hasAvailableSource: Bool) -> Self {
+        guard hasSources else { return .unauthorized }
+        if isScanning { return .scanning }
+        if !hasAvailableSource { return .accessUnavailable }
+        if isPaused || !hasEnabledSource { return .paused }
+        return .readyEmpty
+    }
+}
+
+@MainActor
+struct IndexAvailabilityPresentation {
+    let appModel: AppModel
+    var openAllFiles: (FileKind?) -> Void = { _ in }
+
+    var scopedSources: [FileSource] {
+        HomeEmptyStateKind.scopedSources(
+            wholeMac: appModel.scanScopeMode == .wholeMac,
+            wholeMacSource: appModel.wholeMacSource,
+            selectedFolderSources: appModel.selectedFolderSources
+        )
+    }
+
+    var emptyState: HomeEmptyStateKind {
+        HomeEmptyStateKind.resolve(
+            hasSources: !scopedSources.isEmpty,
+            isScanning: appModel.isScanning,
+            isPaused: appModel.scanScopeMode == .wholeMac && appModel.isWholeMacScanPaused,
+            hasEnabledSource: scopedSources.contains { $0.enabled && $0.accessState == .available },
+            hasAvailableSource: scopedSources.contains { $0.accessState == .available }
+        )
+    }
+
+    var emptyStateTitle: String {
+        switch emptyState {
+        case .unauthorized: appModel.scanScopeMode == .wholeMac
+            ? AppLanguage.localized("授权全盘扫描", english: "Authorize whole Mac scanning")
+            : AppLanguage.localized("添加第一个扫描位置", english: "Add your first scan location")
+        case .scanning: AppLanguage.localized("正在建立文件索引", english: "Building your file index")
+        case .paused: AppLanguage.localized("扫描已暂停", english: "Scanning is paused")
+        case .accessUnavailable: AppLanguage.localized("扫描位置暂不可访问", english: "Scan location unavailable")
+        case .readyEmpty: AppLanguage.localized("暂未发现文件", english: "No files found yet")
+        }
+    }
+
+    var emptyStateDescription: String {
+        switch emptyState {
+        case .unauthorized: appModel.scanScopeMode == .wholeMac
+            ? AppLanguage.localized("请先允许寻简访问启动磁盘。", english: "Allow XunJian to access your startup disk first.")
+            : AppLanguage.localized("添加要搜索的文件夹。文件仍保留在原位置。", english: "Add a folder to search. Your files stay where they are.")
+        case .scanning: AppLanguage.localized("文件会随扫描进度陆续显示，不用重复添加文件夹。", english: "Files appear as scanning progresses. You don't need to add the folders again.")
+        case .paused: AppLanguage.localized("恢复扫描后会继续查找文件。", english: "Resume scanning to continue finding files.")
+        case .accessUnavailable: AppLanguage.localized("请检查磁盘是否连接，或重新授权文件夹。", english: "Check that the drive is connected, or grant folder access again.")
+        case .readyEmpty: AppLanguage.localized("可以重新扫描，或到设置中检查是否排除了这些文件。", english: "Scan again, or check whether these files are excluded in Settings.")
+        }
+    }
+
+    var emptyStateActionTitle: String {
+        switch emptyState {
+        case .unauthorized: appModel.scanScopeMode == .wholeMac
+            ? AppLanguage.localized("授权全盘扫描", english: "Authorize Whole Mac")
+            : AppLanguage.localized("添加文件夹", english: "Add Folder")
+        case .scanning: AppLanguage.localized("查看文件列表", english: "View Files")
+        case .paused: AppLanguage.localized("恢复扫描", english: "Resume Scan")
+        case .accessUnavailable: AppLanguage.localized("重新授权", english: "Reauthorize")
+        case .readyEmpty: AppLanguage.localized("重新扫描", english: "Scan Again")
+        }
+    }
+
+    func performEmptyStateAction() {
+        switch emptyState {
+        case .unauthorized:
+            if appModel.scanScopeMode == .wholeMac { appModel.chooseWholeMacScope() }
+            else { appModel.chooseFolder() }
+        case .scanning: openAllFiles(nil)
+        case .paused:
+            if appModel.scanScopeMode == .wholeMac, appModel.isWholeMacScanPaused { appModel.resumeWholeMacScan() }
+            else if let source = scopedSources.first(where: { !$0.enabled && $0.accessState == .available }) {
+                appModel.setSourceEnabled(source, enabled: true)
+            }
+        case .accessUnavailable:
+            if let source = scopedSources.first(where: { $0.accessState != .available }) { appModel.reauthorizeSource(source) }
+        case .readyEmpty: appModel.refreshAllSources()
+        }
+    }
+
+}
 
 struct HomeView: View {
     @EnvironmentObject private var appModel: AppModel
     @Environment(\.locale) private var locale
+    @Environment(\.appVisualTheme) private var visualTheme
+    @Environment(\.colorScheme) private var colorScheme
     let openAllFiles: (FileKind?) -> Void
     let searchAllFiles: (String) -> Void
 
-    @State private var hoveredFileKind: FileKind?
     @State private var hoveredRecentFileID: String?
     @State private var homeQuery = ""
     @State private var sourcePendingRemoval: FileSource?
 
     // Fixed sizes that still need to grow with the user's text size setting.
-    @ScaledMetric(relativeTo: .body) private var kindIconSize: CGFloat = 15
-    @ScaledMetric(relativeTo: .body) private var kindIconContainer: CGFloat = 28
     @ScaledMetric(relativeTo: .body) private var sourceIconSize: CGFloat = 14
 
     private var finderDateFormatter: DateFormatter {
         FinderDateFormatting.formatter(for: locale)
     }
 
-    private let columns = [
-        GridItem(.adaptive(minimum: XunJianUI.Breakpoint.homeCardMin), spacing: 12)
-    ]
+    private var palette: ThemePalette { visualTheme.palette(for: colorScheme) }
+
+    private var availability: IndexAvailabilityPresentation {
+        IndexAvailabilityPresentation(appModel: appModel, openAllFiles: openAllFiles)
+    }
+
+    private var emptyStateTitle: String { availability.emptyStateTitle }
+    private var emptyStateDescription: String { availability.emptyStateDescription }
+    private var emptyStateActionTitle: String { availability.emptyStateActionTitle }
+    private func performEmptyStateAction() { availability.performEmptyStateAction() }
+
+    private var emptyStateAction: some View {
+        Button(emptyStateActionTitle, action: performEmptyStateAction)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .frame(minHeight: XunJianUI.controlHeight)
+            .disabled(!appModel.isDatabaseAvailable)
+    }
 
     var body: some View {
         GeometryReader { geometry in
-            ScrollView {
-                VStack(alignment: .leading, spacing: XunJianUI.Spacing.section) {
-                    searchHero
-                    recentFiles
-                    fileKinds
-                    scanLocations
+        ScrollView {
+            VStack(alignment: .leading, spacing: 24) {
+                recentSearchBar
+                recentFiles
+                Divider()
+                DisclosureGroup(AppLanguage.localized("搜索位置与授权", english: "Search Locations & Access")) {
+                    scanLocations.padding(.top, 16)
                 }
-                .padding(XunJianUI.pagePadding(for: geometry.size.width))
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .font(.callout)
             }
+            .frame(maxWidth: 1040, alignment: .leading)
+            .padding(24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+
         }
+        }
+        .background(palette.canvas)
         .onAppear {
             appModel.highlightQuery = ""
             appModel.updateCommandTargetFiles(appModel.recentFiles)
@@ -76,26 +192,30 @@ struct HomeView: View {
         }
     }
 
-    private var searchHero: some View {
-        InsetSurface(usesAccentWash: true) {
-            VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
-                PageHeader(
-                    title: AppLanguage.localized(
-                        "在这台 Mac 上，快速找到文件",
-                        english: "Find files on this Mac, fast"
-                    ),
-                    subtitle: AppLanguage.localized(
-                        "搜索已授权位置中的文件名与本地索引内容。",
-                        english: "Search filenames and locally indexed content in authorized locations."
-                    )
-                )
+    private var recentSearchBar: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            StudioPageHeading(
+                title: AppLanguage.localized("最近", english: "Recent"),
+                subtitle: AppLanguage.localized("按修改时间查看最近的文件。", english: "Browse recent files by modification date.")
+            ).padding(.bottom, 16)
+            HStack {
                 SearchField(
                     text: $homeQuery,
                     focusScope: .home,
-                    onHistorySelect: { query in
-                        searchAllFiles(query)
-                    }
+                    onHistorySelect: { query in searchAllFiles(query) }
                 )
+                Menu {
+                    Button(AppLanguage.localized("全部文件", english: "All Files")) { openAllFiles(nil) }
+                    Divider()
+                    ForEach(FileKind.allCases) { kind in
+                        Button { openAllFiles(kind) } label: {
+                            Label(kind.localizedTitle, systemImage: kind.symbolName)
+                        }
+                    }
+                } label: {
+                    Label(AppLanguage.localized("按类型查找", english: "Find by Type"), systemImage: "line.3.horizontal.decrease")
+                }
+                .controlSize(.large)
             }
         }
     }
@@ -103,28 +223,22 @@ struct HomeView: View {
     private var recentFiles: some View {
         section(title: AppLanguage.localized("最近文件", english: "Recent Files")) {
             if appModel.recentFiles.isEmpty {
-                InsetSurface {
+                Group {
                     ViewThatFits(in: .horizontal) {
                         HStack(spacing: XunJianUI.Spacing.sectionInner) {
                             homeEmptyStateIdentity
                             Spacer(minLength: XunJianUI.Spacing.sectionInner)
-                            Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
-                                appModel.chooseFolder()
-                            }
-                            .buttonStyle(.borderedProminent)
+                            emptyStateAction
                         }
 
                         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
                             homeEmptyStateIdentity
-                            Button(AppLanguage.localized("添加文件夹", english: "Add Folder")) {
-                                appModel.chooseFolder()
-                            }
-                            .buttonStyle(.borderedProminent)
+                            emptyStateAction
                         }
                     }
                 }
             } else {
-                GroupedSurface(padding: 4) {
+                Group {
                     VStack(spacing: 0) {
                         ForEach(appModel.recentFiles) { file in
                             Button {
@@ -173,81 +287,16 @@ struct HomeView: View {
         }
     }
 
-    private var fileKinds: some View {
-        section(
-            title: AppLanguage.localized("按类型浏览", english: "Browse by Type"),
-            subtitle: AppLanguage.localized(
-                "直接进入常用文件类型，不改变文件在磁盘上的位置。",
-                english: "Jump to common file types without moving anything on disk."
-            )
-        ) {
-            LazyVGrid(columns: columns, alignment: .leading, spacing: 12) {
-                ForEach(FileKind.allCases) { kind in
-                    Button {
-                        openAllFiles(kind)
-                    } label: {
-                        HStack(spacing: 12) {
-                            Image(systemName: kind.symbolName)
-                                .font(.system(size: kindIconSize, weight: .medium))
-                                .frame(width: kindIconContainer, height: kindIconContainer)
-                                .foregroundStyle(.tint)
-                                .background(
-                                    Color.accentColor.opacity(0.10),
-                                    in: RoundedRectangle(
-                                        cornerRadius: XunJianUI.Radius.chip,
-                                        style: .continuous
-                                    )
-                                )
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(kind.localizedTitle)
-                                    .font(XunJianUI.Typography.itemTitle)
-                                Text(AppLanguage.fileCount(appModel.fileCount(for: kind)))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, XunJianUI.Spacing.sectionInner)
-                        .padding(.vertical, XunJianUI.Spacing.row)
-                        .background {
-                            InteractiveCardBackground(
-                                isSelected: appModel.selectedKind == kind,
-                                isHovered: hoveredFileKind == kind
-                            )
-                        }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(SoftCardButtonStyle())
-                    .onHover { isHovering in
-                        hoveredFileKind = isHovering ? kind : nil
-                    }
-                    .accessibilityLabel(
-                        AppLanguage.joinedForAccessibility([
-                            kind.localizedTitle,
-                            AppLanguage.fileCount(appModel.fileCount(for: kind))
-                        ])
-                    )
-                    .accessibilityValue(
-                        Text(verbatim: appModel.selectedKind == kind
-                             ? AppLanguage.localized("已选择", english: "Selected")
-                             : AppLanguage.localized("未选择", english: "Not Selected"))
-                    )
-                }
-            }
-        }
-    }
-
     private var scanLocations: some View {
         section(
-            title: AppLanguage.localized("扫描位置", english: "Scan Locations"),
+            title: AppLanguage.localized("搜索来源", english: "Search Sources"),
             subtitle: AppLanguage.localized(
                 "寻简只会索引你明确授权的位置。",
                 english: "XunJian indexes only the locations you explicitly authorize."
             )
         ) {
             if appModel.sources.isEmpty {
-                InsetSurface(padding: 14) {
+                Group {
                     HStack(spacing: XunJianUI.Spacing.sectionInner) {
                         Image(systemName: "folder.badge.questionmark")
                             .font(.system(size: 18, weight: .medium))
@@ -263,21 +312,19 @@ struct HomeView: View {
                             .accessibilityHidden(true)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(verbatim: AppLanguage.localized(
-                                "尚未添加扫描位置",
+                                "还没有添加文件夹",
                                 english: "No scan locations yet"
                             ))
                             .font(XunJianUI.Typography.itemTitle)
-                            Text(verbatim: AppLanguage.localized(
-                                "可前往设置添加文件夹。",
-                                english: "Add folders from Settings."
-                            ))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            Button(AppLanguage.localized("管理搜索位置…", english: "Manage Search Locations…")) {
+                                NotificationCenter.default.post(name: .xunJianOpenSettings, object: SettingsPage.files)
+                            }
+                            .buttonStyle(.link)
                         }
                     }
                 }
             } else {
-                GroupBox {
+                Group {
                     VStack(spacing: 0) {
                         ForEach(Array(appModel.sources.enumerated()), id: \.element.id) { index, source in
                             ViewThatFits(in: .horizontal) {
@@ -294,7 +341,7 @@ struct HomeView: View {
                                     sourceActions(source)
                                 }
                             }
-                            .padding(.vertical, 8)
+                            .padding(.vertical, visualTheme.rowVerticalPadding + 2)
 
                             if index < appModel.sources.count - 1 {
                                 Divider()
@@ -314,7 +361,8 @@ struct HomeView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: XunJianUI.Spacing.sectionInner) {
             VStack(alignment: .leading, spacing: 2) {
-                SectionHeader(title: title)
+                Text(verbatim: title)
+                    .font(.headline)
                 if let subtitle, !subtitle.isEmpty {
                     Text(verbatim: subtitle)
                         .font(.caption)
@@ -341,12 +389,9 @@ struct HomeView: View {
                 )
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
-                Text(verbatim: AppLanguage.localized("还没有文件", english: "No Files Yet"))
+                Text(verbatim: emptyStateTitle)
                     .font(XunJianUI.Typography.itemTitle)
-                Text(verbatim: AppLanguage.localized(
-                    "选择一个文件夹，开始建立本地文件索引。",
-                    english: "Choose a folder to start building a local file index."
-                ))
+                Text(verbatim: emptyStateDescription)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -396,7 +441,7 @@ struct HomeView: View {
                 )
             )
             .toggleStyle(.switch)
-            .controlSize(.small)
+            .controlSize(.regular)
             .labelsHidden()
             .help(
                 AppLanguage.localized(
@@ -427,54 +472,51 @@ struct HomeView: View {
                 }
                 .disabled(!appModel.isDatabaseAvailable)
             }
-            .controlSize(.small)
+            .controlSize(.regular)
         }
     }
 
     private func recentFileBackground(for file: IndexedFile) -> Color {
         if appModel.selectedFileID == file.id {
-            return XunJianUI.Fill.selectedSoft
+            return palette.selection
         }
-        return hoveredRecentFileID == file.id ? XunJianUI.Fill.hover : .clear
+        return hoveredRecentFileID == file.id ? palette.surface : .clear
     }
 }
 
 private struct RecentFileRow: View {
+    @Environment(\.appVisualTheme) private var visualTheme
     let file: IndexedFile
     let formattedDate: String?
 
     var body: some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 12) {
-                FileThumbnail(file: file, size: 32)
-                fileIdentity
-                Spacer(minLength: 8)
-                modifiedDate
-            }
-
-            HStack(alignment: .top, spacing: 12) {
-                FileThumbnail(file: file, size: 32)
-                VStack(alignment: .leading, spacing: 4) {
-                    fileIdentity
-                    modifiedDate
-                }
-            }
+        HStack(spacing: 12) {
+            Image(nsImage: NSWorkspace.shared.icon(for: UTType(filenameExtension: file.fileExtension) ?? .data))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 28, height: 32)
+                .accessibilityHidden(true)
+            fileIdentity
+            Spacer(minLength: 8)
+            modifiedDate
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 9)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 10)
         .contentShape(Rectangle())
     }
 
     private var fileIdentity: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(file.name)
+                .font(.body.weight(.medium))
                 .lineLimit(1)
-            Text(file.parentPath)
+            Text(verbatim: file.url.deletingLastPathComponent().lastPathComponent)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+                .help(file.parentPath)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -484,7 +526,7 @@ private struct RecentFileRow: View {
         if let formattedDate {
             Text(verbatim: formattedDate)
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
