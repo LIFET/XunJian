@@ -6,6 +6,21 @@
         <description>寻简正式版本更新</description>
         <language>zh-CN</language>
         <item>
+            <title>0.1.8</title>
+            <pubDate>Mon, 07 Sep 2026 14:43:47 +0800</pubDate>
+            <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.8</link>
+            <sparkle:version>9</sparkle:version>
+            <sparkle:shortVersionString>0.1.8</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <description sparkle:format="markdown"><![CDATA[# 寻简 0.1.8
+
+- 重新整理搜索阅读、资料集、最近文件和设置界面。
+- 完善侧栏、键盘操作、窄窗口展示与细滚动条。
+- 修复索引刷新、保存搜索、查重清理恢复和登录轮询中的状态问题。
+]]></description>
+            <enclosure url="https://github.com/LIFET/XunJian/releases/download/v0.1.8/XunJian-0.1.8-macOS.dmg" length="303923356" type="application/octet-stream" sparkle:edSignature="g842SzhKadsdHBw9aydrRFU1g3SuYACMwM1k2gtm1nxqmstpkvJKNw0jAuOppbM6WrZnPZK5/q8uNWdqe4p+DQ=="/>
+        </item>
+        <item>
             <title>0.1.7</title>
             <pubDate>Thu, 03 Sep 2026 12:16:25 +0800</pubDate>
             <link>https://github.com/LIFET/XunJian/releases/tag/v0.1.7</link>

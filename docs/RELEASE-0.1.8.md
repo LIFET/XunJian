@@ -21,4 +21,12 @@
 
 完整离线回归 568 项、0 失败（4 项条件跳过）；另行开启的 5 万/10 万文件门禁通过。截图使用隔离演示文件，不包含个人资料。本轮未运行真实 OAuth 登录、AI 请求、长时间 Instruments 或跨 macOS 版本验收。
 
-签名、公证和安装包校验结果将在发布完成时补充。
+三个安装包均通过 Developer ID 签名、Apple 公证、票据装订、磁盘映像与 Gatekeeper 校验；挂载复验版本为 0.1.8/build 9，App/XPC 架构符合包名，官方 OAuth Runtime 签名保持不变。
+
+## SHA-256
+
+| 安装包 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| Universal | 303923356 | `610dcfe7932ae96d72092e1c68d7d0e325b7c84be74756bda804acfd06b6163a` |
+| Apple Silicon | 300894651 | `bb57d5f9e3660cd335277f32268420079ebb42335ed6f738fcea87084abd6eaa` |
+| Intel | 301176605 | `5269a0eccf7535bd825884d32244133e56eec6feb2288abf59277a63c18f04e5` |
