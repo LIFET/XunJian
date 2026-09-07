@@ -8,8 +8,10 @@
 - [x] 工程与XcodeGen版本统一为0.1.8/build9。
 - [x] 首轮全量发现OAuth取消后重启轮询竞态；限制登录准备期间启动轮询，登录就绪后统一恢复，加入受控挂起回归。OAuth连续三轮通过；最终主工程529项（4项条件跳过）与OAuth Process39项均0失败。
 - [x] 大库门禁2项通过（`/tmp/XunJian-0.1.8-scale-accepted.log`）；Analyze、Runtime、XML/Plist、diff-check通过。
-- [ ] 最终三架构签名和公证：首轮Universal因Sparkle辅助程序签名失败，补逐层签名脚本后生成新包，不使用失败包。
-- [ ] 提交推送、发布三架构DMG及appcast，在线验证。
+- [x] 三架构Archive及最终签名、公证通过：首轮Universal因Sparkle辅助程序签名失败，补逐层签名脚本后生成修复包；失败包不分发。
+- [x] 源码9a4f0da及标签v0.1.8已推送；7a71e81发布三架构DMG及appcast，GitHub Release已公开。三资产size/digest与本地一致，公开下载均HTTP200；Pages构建完成，HTTPS appcast与本地逐字节一致，Universal EdDSA通过。
+
+最终Accepted任务：Universal `dcf88480-82c5-4bec-b035-f96a20e60b63`（macOS-r2.dmg）；Apple Silicon `8452b32b-ace8-4842-929f-0832471a6b09`；Intel `e6dbc7e4-900d-47f7-bf12-87fc363e0a10`。三包staple/validate、hdiutil、Gatekeeper、挂载版本与架构、Sparkle内部签名/时间戳、官方Runtime均通过。最终哈希见RELEASE-0.1.8.md；本机安装版未替换，.impeccable仅留本地。
 
 截图来自隔离原生测试宿主，OAuth/AI调用0；未修改用户文件。证据：`/tmp/XunJian-0.1.8-tests-final.log`、`/tmp/XunJian-0.1.8-poll-fix.log`、`/tmp/XunJian-release-screens.log`。发现历史公证profile为`XunJian-Notary`，仅使用Keychain引用，不读取凭据正文。未验证项仍保留人工验收边界。
 
